@@ -1,0 +1,32 @@
+requires = ["setuptools>=42", "setuptools_scm[toml]>=6.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+version_file = "fealax_legacy/__version__.py"
+
+[tool.pytest.ini_options]
+# Enforce running environment tests first to validate setup
+testpaths = ["fealax_legacy/tests"]
+python_files = ["test_environment.py", "test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+filterwarnings = [
+    # Ignore SWIG-related deprecation warnings from nlopt and other SWIG packages
+    "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning", 
+    "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
+    # Ignore other common scientific computing warnings
+    "ignore::UserWarning",
+    "ignore::FutureWarning",
+]
+# Ensure environment tests run first
+addopts = [
+    "--strict-markers",
+    "--strict-config", 
+    "-v"
+]
+markers = [
+    "env_validation: Environment validation tests",
+    "gpu: GPU-related tests requiring NVIDIA drivers",
+    "solver: Solver functionality tests"
+]
