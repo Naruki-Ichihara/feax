@@ -12,7 +12,6 @@ from feax.utils import save_as_vtk
 E = 70e3
 nu = 0.3
 mu = E / (2. * (1. + nu))
-lmbda = E * nu / ((1 + nu) * (1 - 2 * nu))
 
 class LinearElasticity(Problem):
     def custom_init(self):
@@ -20,24 +19,36 @@ class LinearElasticity(Problem):
         pass
     
     def get_tensor_map(self):
-        def stress(u_grad):
+        def stress(u_grad, internal_vars):
             epsilon = 0.5 * (u_grad + u_grad.T)
-            # Access lambda and mu directly from the class instance
-            # For now, use scalar values - this will be the same for all cells/quads
-            sigma = lmbda * np.trace(epsilon) * np.eye(self.dim) + 2 * mu * epsilon
+            # Access lambda from internal_vars if provided
+            lmbda_val = internal_vars[0]  # This is a scalar for this quad point
+            sigma = lmbda_val * np.trace(epsilon) * np.eye(self.dim) + 2 * mu * epsilon
             return sigma
         return stress
 
     def get_surface_maps(self):
-        def surface_map(u, x):
+        def surface_map(u, x, internal_vars):
+            # internal_vars would be a list of arrays, each with shape (num_face_quads, ...)
+            # For this example, we don't use internal_vars but they would be available here
             return np.array([0., 0., 100.])
         return [surface_map]
+    
+    # Example of how get_mass_map would work (if needed):
+    # def get_mass_map(self):
+    #     def mass(u, x, internal_vars=None):
+    #         # u: (vec,) - solution values at quadrature point
+    #         # x: (dim,) - physical coordinates of quadrature point  
+    #         # internal_vars: list of arrays, each with shape (num_quads, ...)
+    #         # For this example, we don't use internal_vars but they would be available here
+    #         return density * u  # example mass term
+    #     return mass
 
 # Create mesh
 ele_type = 'HEX8'
 cell_type = get_meshio_cell_type(ele_type)
 Lx, Ly, Lz = 10., 2., 2.
-Nx, Ny, Nz = 25, 5, 55
+Nx, Ny, Nz = 25, 5, 5
 
 import tempfile
 import os
@@ -61,8 +72,20 @@ problem = LinearElasticity(mesh, vec=3, dim=3, ele_type=ele_type, location_fns=l
 # Initial solution guess
 sol_list = np.zeros((problem.fes[0].num_total_nodes, problem.fes[0].vec))
 
-# Get the functional state 
-state = problem.get_functional_state()
+# Example of creating internal variables (optional)
+# For this linear elasticity example, we don't need internal variables,
+# but here's how you would create them:
+# num_quads = problem.fes[0].JxW.shape[1]  # number of quadrature points per cell
+# num_cells = problem.num_cells
+# internal_var1 = np.zeros((num_cells * num_quads, 3))  # example: 3 scalar values per quad
+# internal_var2 = np.ones((num_cells * num_quads, 2, 2))  # example: 2x2 tensor per quad
+# internal_vars = [internal_var1, internal_var2]
+
+# Get the functional state (with optional internal variables)
+# state = problem.get_functional_state(internal_vars)  # with internal variables
+val = E * nu / ((1 + nu) * (1 - 2 * nu))
+lmbdas = np.full((problem.num_cells*8, ), val) 
+state = problem.get_functional_state(internal_vars=[lmbdas])  # pass as list of arrays
 
 # Get sparse system
 from jax.experimental import sparse
@@ -77,6 +100,41 @@ def solve(state, sol_list):
     sol_final = state.unflatten_fn_sol_list(x_sol)
     return sol_final
 
+# Example of vmapped solving for multiple parameter values
+def single_solve(lmbda_values):
+    """Solve for a single set of lambda values across all quadrature points"""
+    # Create internal_vars for this lambda value
+    internal_vars = [lmbda_values]  # List of arrays
+    
+    # Create state with these internal variables
+    state_with_internal = problem.get_functional_state(internal_vars=internal_vars)
+    
+    # Solve
+    sol_final = solve(state_with_internal, sol_list)
+    
+    # Return some key result (e.g., max displacement)
+    displacement_magnitude = np.linalg.norm(sol_final[0], axis=1)
+    max_displacement = np.max(displacement_magnitude)
+    return max_displacement
+
+# Test with different lambda values
+print("Testing vmapped solve with different material parameters...")
+num_cases = 5
+base_lambda = val
+lambda_variations = np.linspace(0.5 * base_lambda, 1.5 * base_lambda, num_cases)
+
+# Create lambda arrays for each case (each has shape num_cells * num_quads)
+lambda_arrays = np.array([np.full((problem.num_cells * 8,), lam_val) for lam_val in lambda_variations])
+
+# Use vmap to solve all cases in parallel
+vmapped_solve = jax.vmap(single_solve)
+max_displacements = vmapped_solve(lambda_arrays)
+
+print(f"Lambda variations: {lambda_variations}")
+print(f"Max displacements: {max_displacements}")
+print(f"Relative displacement changes: {max_displacements / max_displacements[2] - 1}")  # normalized to middle case
+
+# Original single solve for comparison
 sol_final = solve(state, sol_list)
 
 # Calculate and show max displacement
@@ -93,6 +151,7 @@ print(f"Displacement vector: {sol_final[0][max_disp_node]}")
 print("Computing stress for VTK output...")
 u_grad = problem.fes[0].sol_to_grad(sol_final[0])  # (num_cells, num_quads, vec, dim)
 epsilon = 0.5 * (u_grad + u_grad.transpose(0, 1, 3, 2))  # (num_cells, num_quads, vec, dim)
+lmbda = val  # Use the same lambda value as in internal vars
 sigma = lmbda * np.trace(epsilon, axis1=2, axis2=3)[:, :, None, None] * np.eye(problem.dim) + 2 * mu * epsilon
 
 # Calculate von Mises stress
@@ -105,7 +164,7 @@ s_dev = sigma_avg - (1/3) * np.trace(sigma_avg, axis1=1, axis2=2)[:, None, None]
 vm_stress = np.sqrt(3/2 * np.sum(s_dev * s_dev, axis=(1, 2)))
 
 # Save VTK output
-vtk_path = 'linear_elasticity_results.vtu'
+vtk_path = 'outputs/linear_elasticity_results.vtu'
 save_as_vtk(
     mesh=mesh,
     sol_file=vtk_path,
