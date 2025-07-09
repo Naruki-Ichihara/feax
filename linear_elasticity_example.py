@@ -16,17 +16,15 @@ lmbda = E * nu / ((1 + nu) * (1 - 2 * nu))
 
 class LinearElasticity(Problem):
     def custom_init(self):
-        # Internal variables should be shaped as (num_cells, num_quads)
-        num_quads = 8  # HEX8 element has 8 quadrature points
-        self.internal_vars = (
-            np.full((self.num_cells, num_quads), lmbda), 
-            np.full((self.num_cells, num_quads), mu)
-        )
+        # No internal parameters needed - lambda and mu are used as constants
+        pass
     
     def get_tensor_map(self):
-        def stress(u_grad, lmbda_state, mu_state):
+        def stress(u_grad):
             epsilon = 0.5 * (u_grad + u_grad.T)
-            sigma = lmbda_state * np.trace(epsilon) * np.eye(self.dim) + 2 * mu_state * epsilon
+            # Access lambda and mu directly from the class instance
+            # For now, use scalar values - this will be the same for all cells/quads
+            sigma = lmbda * np.trace(epsilon) * np.eye(self.dim) + 2 * mu * epsilon
             return sigma
         return stress
 
@@ -71,11 +69,9 @@ from jax.experimental import sparse
 
 @jax.jit
 def solve(state, sol_list):
-    # API Design Note: Conceptually, state should contain ONLY internal_vars
-    # In the future, problem.assemble_sparse_system should be updated to:
-    # 1. Take internal_vars directly instead of full state
-    # 2. Only use state.internal_vars from the state object
-    A, b = problem.assemble_sparse_system(state, sol_list)
+    # Use the pure functional approach
+    from feax.problem import get_sparse_system
+    A, b = get_sparse_system(state, jax.flatten_util.ravel_pytree(sol_list)[0])
     A_bc, b_bc = apply_bc(A, b, bc_data)
     x_sol, _ = scipy.sparse.linalg.cg(A_bc, b_bc, maxiter=1000)
     sol_final = state.unflatten_fn_sol_list(x_sol)
