@@ -630,6 +630,51 @@ class Problem:
 
 
 @jax.jit
+def get_jacobian_system(state: ProblemState, sol_flat: jax.Array) -> tuple[jax.Array, jax.Array]:
+    """
+    Pure functional get_jacobian_system that computes Jacobian values and residual.
+    
+    Parameters
+    ----------
+    state : ProblemState
+        Immutable problem state containing all parameters including internal_vars
+    sol_flat : jax.Array
+        Flattened solution vector
+        
+    Returns
+    -------
+    J : jax.Array
+        Jacobian values array (flattened, corresponds to I,J indices in state)
+    r : jax.Array
+        Residual vector (flattened)
+    """
+    
+    # Unflatten solution
+    sol_list = state.unflatten_fn_sol_list(sol_flat)
+    
+    # Compute cells solution
+    cells_sol_list = [sol[cells] for cells, sol in zip(state.cells_list, sol_list)]
+    cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
+    
+    # Compute residual and Jacobian for volume integrals
+    weak_form_flat, cells_jac_flat = state.split_and_compute_cell(cells_sol_flat, np, True, state)
+    V_vals = cells_jac_flat.reshape(-1)
+    
+    # Compute residual and Jacobian for surface integrals
+    weak_form_face_flat, cells_jac_face_flat = state.compute_face(cells_sol_flat, np, True, state)
+    for cells_jac_f_flat in cells_jac_face_flat:
+        V_vals = np.hstack((V_vals, cells_jac_f_flat.reshape(-1)))
+    
+    # Compute residual list
+    residual_list = state.compute_residual_vars_helper(weak_form_flat, weak_form_face_flat)
+    
+    # Flatten residual
+    r = jax.flatten_util.ravel_pytree(residual_list)[0]
+    
+    return V_vals, r
+
+
+@jax.jit
 def get_sparse_system(state: ProblemState, sol_flat: jax.Array) -> tuple[jax.Array, jax.Array]:
     """
     Pure functional get_sparse_system that takes state explicitly.

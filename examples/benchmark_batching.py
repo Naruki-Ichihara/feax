@@ -10,6 +10,8 @@ from feax.generate_mesh import box_mesh_gmsh, Mesh
 from feax.boundary_conditions import apply_bc, prepare_bc_info, FixedBC, create_boundary_functions
 
 nu = 0.3
+batch_sizes = [1, 25, 50, 75, 100]
+for_loop_sizes = [1, 50, 100]
 
 class LinearElasticity(Problem):
     def get_tensor_map(self):
@@ -58,7 +60,7 @@ _ = single_solve(E_test)
 print("Compilation complete.")
 
 # Benchmark different batch sizes
-batch_sizes = [1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+
 times_per_case = []
 total_times = []
 
@@ -114,7 +116,7 @@ print(f"Mesh: {problem.num_cells} cells, {problem.fes[0].num_total_nodes * 3} DO
 print(f"Best batch size: {best_batch_size} cases")
 print(f"Best time per case: {best_time_per_case:.4f} seconds")
 print(f"Best throughput: {best_throughput:.2f} cases/second")
-print(f"Efficiency improvement: {efficiency_ratio[best_batch_idx]:.2f}x vs batch=10")
+print(f"Efficiency improvement: {efficiency_ratio[best_batch_idx]:.2f}x vs batch=1")
 
 # Calculate speedup over sequential solving
 sequential_time_estimate = times_per_case[0] * batch_sizes[0]  # Estimate based on batch=10
@@ -131,12 +133,12 @@ def solve_no_jit(state):
     from feax.problem import get_sparse_system
     A, b = get_sparse_system(state, jax.flatten_util.ravel_pytree(sol_list)[0])
     A_bc, b_bc = apply_bc(A, b, bc_data)
-    x_sol, _ = scipy.sparse.linalg.cg(A_bc, b_bc, maxiter=1000)
+    x_sol, _ = scipy.sparse.linalg.bicgstab(A_bc, b_bc, maxiter=1000)
     sol_final = state.unflatten_fn_sol_list(x_sol)
     return np.max(np.linalg.norm(sol_final[0], axis=1))
 
 # Test for loop on batch sizes 10 and 50
-for_loop_sizes = [1, 50, 100]
+
 for_loop_times = []
 for_loop_times_per_case = []
 

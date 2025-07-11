@@ -10,6 +10,7 @@ import jax.numpy as np
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, NamedTuple
 from jax.experimental.sparse import BCOO
+from jax.experimental import sparse
 
 
 @dataclass
@@ -77,10 +78,6 @@ def apply_dirichletBC(A: BCOO, b: np.ndarray, bc_info: BCInfo) -> Tuple[BCOO, np
     """
     Apply Dirichlet boundary conditions to a sparse linear system using row elimination.
     
-    This function modifies the sparse matrix A and RHS vector b to enforce Dirichlet
-    boundary conditions. The method zeros out rows corresponding to constrained DOFs
-    and sets the diagonal to 1, while modifying the RHS to the prescribed values.
-    
     Parameters
     ----------
     A : BCOO
@@ -97,62 +94,14 @@ def apply_dirichletBC(A: BCOO, b: np.ndarray, bc_info: BCInfo) -> Tuple[BCOO, np
         Modified sparse matrix with BC applied
     b_modified : np.ndarray
         Modified RHS vector with BC applied
-        
-    Notes
-    -----
-    The row elimination method works by:
-    1. Identifying constrained DOFs from bc_info
-    2. Zeroing out rows in A corresponding to constrained DOFs
-    3. Setting diagonal entries to 1 for constrained DOFs
-    4. Setting RHS entries to prescribed values for constrained DOFs
-    
-    This approach is mathematically equivalent to:
-    res(u) = D*r(u) + (I - D)*u - u_b
-    where D is a diagonal matrix with 1s at constrained DOFs and 0s elsewhere.
     """
-    # Convert A to dense for modification (only efficient for small systems)
-    # For large systems, we would need a more sophisticated approach
-    if A.nse > 10000:  # Threshold for large systems
-        return _apply_dirichletBC_sparse(A, b, bc_info)
-    else:
-        return _apply_dirichletBC_dense(A, b, bc_info)
+    return _apply_dirichletBC_sparse(A, b, bc_info)
 
 
-def _apply_dirichletBC_dense(A: BCOO, b: np.ndarray, bc_info: BCInfo) -> Tuple[BCOO, np.ndarray]:
-    """Apply BC using dense matrix operations (for small systems)."""
-    # Convert to dense for easier manipulation
-    A_dense = A.todense()
-    b_modified = b.copy()
-    
-    # Apply boundary conditions
-    for bc in bc_info.bcs:
-        # Convert node and vector indices to global DOF indices
-        dof_indices = bc.node_indices * bc_info.vec_dim + bc.vec_indices
-        
-        # Zero out rows corresponding to constrained DOFs
-        A_dense = A_dense.at[dof_indices, :].set(0.0)
-        
-        # Set diagonal entries to 1
-        A_dense = A_dense.at[dof_indices, dof_indices].set(1.0)
-        
-        # Set RHS to prescribed values
-        b_modified = b_modified.at[dof_indices].set(bc.values)
-    
-    # Convert back to sparse format with explicit nse
-    # Count non-zero entries manually to avoid concretization error
-    nse = np.sum(A_dense != 0.0)
-    A_modified = BCOO.fromdense(A_dense, nse=nse)
-    
-    return A_modified, b_modified
 
 
 def _apply_dirichletBC_sparse(A: BCOO, b: np.ndarray, bc_info: BCInfo) -> Tuple[BCOO, np.ndarray]:
-    """Apply BC using sparse matrix operations (for large systems)."""
-    # Extract sparse matrix components
-    data = A.data.copy()
-    indices = A.indices.copy()
-    b_modified = b.copy()
-    
+    """Apply BC using sparse matrix operations with proper duplicate handling."""
     # Collect all constrained DOFs
     constrained_dofs = []
     prescribed_values = []
@@ -165,21 +114,41 @@ def _apply_dirichletBC_sparse(A: BCOO, b: np.ndarray, bc_info: BCInfo) -> Tuple[
     constrained_dofs = np.array(constrained_dofs)
     prescribed_values = np.array(prescribed_values)
     
-    # Create mask for constrained DOFs
-    constrained_mask = np.isin(indices[:, 0], constrained_dofs)
+    if len(constrained_dofs) == 0:
+        return A, b
     
-    # Zero out rows corresponding to constrained DOFs
-    data = np.where(constrained_mask, 0.0, data)
+    # Get matrix data
+    A_data = A.data
+    A_indices = A.indices
+    A_shape = A.shape
     
-    # Find diagonal entries for constrained DOFs
-    diagonal_mask = (indices[:, 0] == indices[:, 1]) & constrained_mask
-    data = np.where(diagonal_mask, 1.0, data)
+    # Create masks
+    row_mask = np.isin(A_indices[:, 0], constrained_dofs)
+    col_mask = np.isin(A_indices[:, 1], constrained_dofs)
+    
+    # Identify diagonal entries at BC DOFs that need to be removed
+    is_bc_diag = row_mask & col_mask & (A_indices[:, 0] == A_indices[:, 1])
+    
+    # Keep non-BC-diagonal entries, but zero out BC rows
+    keep_mask = ~is_bc_diag
+    A_data_filtered = np.where(keep_mask & row_mask, 0.0, A_data)
+    A_data_filtered = np.where(keep_mask, A_data_filtered, 0.0)  # Remove BC diagonals
+    A_indices_filtered = A_indices[keep_mask]
+    
+    # Now add fresh diagonal entries for BC DOFs
+    n_constrained = len(constrained_dofs)
+    diag_indices = np.stack([constrained_dofs, constrained_dofs], axis=1)
+    diag_data = np.ones(n_constrained)
+    
+    # Combine
+    combined_indices = np.concatenate([A_indices_filtered, diag_indices], axis=0)
+    combined_data = np.concatenate([A_data_filtered[keep_mask], diag_data], axis=0)
+    
+    # Create new sparse matrix
+    A_modified = BCOO((combined_data, combined_indices), shape=A_shape)
     
     # Set RHS to prescribed values
-    b_modified = b_modified.at[constrained_dofs].set(prescribed_values)
-    
-    # Create modified sparse matrix
-    A_modified = BCOO((data, indices), shape=A.shape)
+    b_modified = b.at[constrained_dofs].set(prescribed_values)
     
     return A_modified, b_modified
 

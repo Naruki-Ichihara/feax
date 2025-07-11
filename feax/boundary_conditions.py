@@ -83,53 +83,11 @@ def prepare_bc_info(mesh, boundary_conditions, vec_dim: int = 1):
         }
 
 
-def apply_bc_jax_optimized(A, b, dof_indices, prescribed_values):
-    """
-    Fully JAX-optimized boundary condition application with no Python control flow.
-    
-    Args:
-        A: Sparse matrix (LHS)
-        b: Right-hand side vector  
-        dof_indices: JAX array of DOF indices where BC applies
-        prescribed_values: JAX array of prescribed values
-    
-    Returns:
-        A_bc, b_bc: Modified sparse system with boundary conditions applied
-    """
-    # Work directly with sparse matrix without converting to dense
-    # Create new data array with modifications
-    A_data = A.data
-    A_indices = A.indices
-    A_shape = A.shape
-    
-    # Create mask for rows that need modification
-    row_mask = np.isin(A_indices[:, 0], dof_indices)
-    
-    # Zero out rows corresponding to constrained DOFs
-    A_data_modified = np.where(row_mask, 0.0, A_data)
-    
-    # Add diagonal entries for constrained DOFs
-    from jax.experimental import sparse
-    n_constrained = len(dof_indices)
-    diag_indices = np.stack([dof_indices, dof_indices], axis=1)
-    diag_data = np.ones(n_constrained)
-    
-    # Combine original (modified) data with diagonal entries
-    all_indices = np.concatenate([A_indices, diag_indices], axis=0)
-    all_data = np.concatenate([A_data_modified, diag_data], axis=0)
-    
-    # Create new sparse matrix
-    A_modified = sparse.BCOO((all_data, all_indices), shape=A_shape)
-    
-    # Set RHS to prescribed values
-    b_modified = b.at[dof_indices].set(prescribed_values)
-    
-    return A_modified, b_modified
 
 
 def apply_bc_sparse_direct(A, b, dof_indices, prescribed_values):
     """
-    Apply boundary conditions directly to sparse matrix using pure JAX operations.
+    Apply boundary conditions directly to sparse matrix with proper duplicate handling.
     
     Args:
         A: Sparse matrix (BCOO format)
@@ -142,25 +100,35 @@ def apply_bc_sparse_direct(A, b, dof_indices, prescribed_values):
     """
     from jax.experimental import sparse
     
+    if len(dof_indices) == 0:
+        return A, b
+    
     # Get matrix data
     A_data = A.data
     A_indices = A.indices
     A_shape = A.shape
     
-    # Create mask for entries that need to be zeroed (rows corresponding to constrained DOFs)
+    # Create masks
     row_mask = np.isin(A_indices[:, 0], dof_indices)
+    col_mask = np.isin(A_indices[:, 1], dof_indices)
     
-    # Zero out rows corresponding to constrained DOFs
-    A_data_zeroed = np.where(row_mask, 0.0, A_data)
+    # Identify diagonal entries at BC DOFs that need to be removed
+    is_bc_diag = row_mask & col_mask & (A_indices[:, 0] == A_indices[:, 1])
     
-    # Create diagonal entries for constrained DOFs
+    # Keep non-BC-diagonal entries, but zero out BC rows
+    keep_mask = ~is_bc_diag
+    A_data_filtered = np.where(keep_mask & row_mask, 0.0, A_data)
+    A_data_filtered = np.where(keep_mask, A_data_filtered, 0.0)  # Remove BC diagonals
+    A_indices_filtered = A_indices[keep_mask]
+    
+    # Now add fresh diagonal entries for BC DOFs
     n_constrained = len(dof_indices)
     diag_indices = np.stack([dof_indices, dof_indices], axis=1)
     diag_data = np.ones(n_constrained)
     
-    # Combine original (zeroed) indices with diagonal indices
-    combined_indices = np.concatenate([A_indices, diag_indices], axis=0)
-    combined_data = np.concatenate([A_data_zeroed, diag_data], axis=0)
+    # Combine
+    combined_indices = np.concatenate([A_indices_filtered, diag_indices], axis=0)
+    combined_data = np.concatenate([A_data_filtered[keep_mask], diag_data], axis=0)
     
     # Create new sparse matrix
     A_bc = sparse.BCOO((combined_data, combined_indices), shape=A_shape)
@@ -228,73 +196,10 @@ def FixedBC(location, components=None):
     return DirichletBC(location, 0.0, components)
 
 
-def apply_dirichlet_bc(A, b, mesh, location_fn: Callable, value: Union[float, Callable], 
-                      components: Union[int, List[int]] = None, vec_dim: int = 1):
-    """
-    Apply Dirichlet boundary conditions directly to sparse system.
-    
-    Args:
-        A: Sparse matrix (LHS)
-        b: Right-hand side vector
-        mesh: Mesh object with points attribute
-        location_fn: Function that returns True for nodes where BC applies
-        value: Fixed value (float) or function that returns value given point
-        components: Vector component(s) to apply BC to. If None, applies to all components.
-        vec_dim: Vector dimension (1 for scalar, 3 for 3D vector field)
-    
-    Returns:
-        A_bc, b_bc: Modified sparse system with boundary conditions applied
-    """
-    bc = DirichletBC(location_fn, value, components)
-    return apply_bc(A, b, mesh, bc, vec_dim)
 
 
-def apply_fixed_bc(A, b, mesh, location_fn: Callable, 
-                   components: Union[int, List[int]] = None, vec_dim: int = 1):
-    """
-    Apply fixed (zero) Dirichlet boundary conditions.
-    
-    Args:
-        A: Sparse matrix (LHS)
-        b: Right-hand side vector
-        mesh: Mesh object with points attribute
-        location_fn: Function that returns True for nodes where BC applies
-        components: Vector component(s) to apply BC to. If None, applies to all components.
-        vec_dim: Vector dimension (1 for scalar, 3 for 3D vector field)
-    
-    Returns:
-        A_bc, b_bc: Modified sparse system with boundary conditions applied
-    """
-    return apply_dirichlet_bc(A, b, mesh, location_fn, 0.0, components, vec_dim)
 
 
-def apply_multiple_bcs(A, b, mesh, bc_list: List[dict], vec_dim: int = 1):
-    """
-    Apply multiple boundary conditions in sequence.
-    
-    Args:
-        A: Sparse matrix (LHS)
-        b: Right-hand side vector
-        mesh: Mesh object with points attribute
-        bc_list: List of boundary condition dictionaries with keys:
-                 - 'location': location function
-                 - 'value': value (float or function)
-                 - 'components': component(s) to apply to (optional)
-        vec_dim: Vector dimension
-    
-    Returns:
-        A_bc, b_bc: Modified sparse system with boundary conditions applied
-    """
-    A_bc, b_bc = A, b
-    
-    for bc in bc_list:
-        location_fn = bc['location']
-        value = bc['value']
-        components = bc.get('components', None)
-        
-        A_bc, b_bc = apply_dirichlet_bc(A_bc, b_bc, mesh, location_fn, value, components, vec_dim)
-    
-    return A_bc, b_bc
 
 
 # Common boundary condition patterns
