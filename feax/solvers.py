@@ -45,8 +45,11 @@ class SolverOptions:
 
 def _solve_cg(A_fn: Callable, b: jax.Array, options: SolverOptions) -> Tuple[jax.Array, dict]:
     """Internal CG solver that takes a matrix-vector product function."""
+    # If x0 is not provided, use zeros to avoid convergence issues
+    x0 = options.x0 if options.x0 is not None else jnp.zeros_like(b)
+    
     x, info = cg(A_fn, b, 
-                 x0=options.x0, 
+                 x0=x0, 
                  tol=options.tol,
                  atol=options.atol,
                  maxiter=options.max_iter,
@@ -60,8 +63,11 @@ def _solve_cg(A_fn: Callable, b: jax.Array, options: SolverOptions) -> Tuple[jax
 
 def _solve_bicgstab(A_fn: Callable, b: jax.Array, options: SolverOptions) -> Tuple[jax.Array, dict]:
     """Internal BiCGSTAB solver that takes a matrix-vector product function."""
+    # If x0 is not provided, use zeros to avoid convergence issues
+    x0 = options.x0 if options.x0 is not None else jnp.zeros_like(b)
+    
     x, info = bicgstab(A_fn, b,
-                        x0=options.x0,
+                        x0=x0,
                         tol=options.tol, 
                         atol=options.atol,
                         maxiter=options.max_iter,
@@ -75,8 +81,11 @@ def _solve_bicgstab(A_fn: Callable, b: jax.Array, options: SolverOptions) -> Tup
 
 def _solve_gmres(A_fn: Callable, b: jax.Array, options: SolverOptions) -> Tuple[jax.Array, dict]:
     """Internal GMRES solver that takes a matrix-vector product function."""
+    # If x0 is not provided, use zeros to avoid convergence issues
+    x0 = options.x0 if options.x0 is not None else jnp.zeros_like(b)
+    
     x, info = gmres(A_fn, b,
-                    x0=options.x0,
+                    x0=x0,
                     tol=options.tol,
                     atol=options.atol,
                     maxiter=options.max_iter,
@@ -111,14 +120,11 @@ def solve_cg(A: sparse.BCOO, b: jax.Array, options: SolverOptions) -> Tuple[jax.
     """
     logger.debug(f"Solving with CG: max_iter={options.max_iter}, tol={options.tol}")
     
-    # CG expects a function that computes A @ x
     A_fn = lambda x: A @ x
+
+    x, _ = _solve_cg(A_fn, b, options)
     
-    x, info = _solve_cg(A_fn, b, options)
-    
-    logger.debug(f"CG converged: {info['converged']}, iterations: {info['iterations']}")
-    
-    return x, info
+    return x
 
 
 def solve_bicgstab(A: sparse.BCOO, b: jax.Array, options: SolverOptions) -> Tuple[jax.Array, dict]:
@@ -145,11 +151,9 @@ def solve_bicgstab(A: sparse.BCOO, b: jax.Array, options: SolverOptions) -> Tupl
     # BiCGSTAB expects a function that computes A @ x
     A_fn = lambda x: A @ x
     
-    x, info = _solve_bicgstab(A_fn, b, options)
+    x, _ = _solve_bicgstab(A_fn, b, options)
     
-    logger.debug(f"BiCGSTAB converged: {info['converged']}, iterations: {info['iterations']}")
-    
-    return x, info
+    return x
 
 
 def solve_gmres(A: sparse.BCOO, b: jax.Array, options: SolverOptions) -> Tuple[jax.Array, dict]:
@@ -176,11 +180,9 @@ def solve_gmres(A: sparse.BCOO, b: jax.Array, options: SolverOptions) -> Tuple[j
     # GMRES expects a function that computes A @ x
     A_fn = lambda x: A @ x
     
-    x, info = _solve_gmres(A_fn, b, options)
+    x, _ = _solve_gmres(A_fn, b, options)
     
-    logger.debug(f"GMRES converged: {info['converged']}, iterations: {info['iterations']}")
-    
-    return x, info
+    return x
 
 
 # Main solver interface
@@ -231,12 +233,9 @@ def solve(A: sparse.BCOO, b: jax.Array,
     solver_fn = solver_map[method]
     
     # Solve system
-    x, info = solver_fn(A, b, options)
+    x = solver_fn(A, b, options)
     
-    # Add method to info
-    info['method'] = method
-    
-    return x, info
+    return x
 
 
 # Preconditioner helpers

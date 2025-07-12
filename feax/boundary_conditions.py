@@ -82,12 +82,13 @@ def prepare_bc_info(mesh, boundary_conditions, vec_dim: int = 1):
             'has_bc': False
         }
 
-
-
-
-def apply_bc_sparse_direct(A, b, dof_indices, prescribed_values):
+def _apply_bc_sparse_direct_jit(A, b, dof_indices, prescribed_values):
     """
-    Apply boundary conditions directly to sparse matrix with proper duplicate handling.
+    JIT-compatible version of apply_bc_sparse_direct.
+    
+    This version avoids boolean indexing and uses JAX-compatible operations.
+    The key insight: we need to filter out BC diagonal entries and add fresh ones,
+    just like the original implementation, but in a JIT-compatible way.
     
     Args:
         A: Sparse matrix (BCOO format)
@@ -100,49 +101,77 @@ def apply_bc_sparse_direct(A, b, dof_indices, prescribed_values):
     """
     from jax.experimental import sparse
     
-    if len(dof_indices) == 0:
+    # Handle empty BC case
+    if dof_indices.shape[0] == 0:
         return A, b
     
-    # Get matrix data
+    # First, modify RHS using original matrix A
+    u_bc = np.zeros_like(b)
+    u_bc = u_bc.at[dof_indices].set(prescribed_values)
+    b_bc = b - A @ u_bc
+    # Set BC DOF values to prescribed values  
+    b_bc = b_bc.at[dof_indices].set(prescribed_values)
+    
+    # Now modify the matrix A
     A_data = A.data
     A_indices = A.indices
     A_shape = A.shape
     
-    # Create masks
-    row_mask = np.isin(A_indices[:, 0], dof_indices)
-    col_mask = np.isin(A_indices[:, 1], dof_indices)
+    # Create a lookup array for fast checking if index is in dof_indices
+    max_dof = A_shape[0]
+    is_bc_dof = np.zeros(max_dof, dtype=bool)
+    is_bc_dof = is_bc_dof.at[dof_indices].set(True)
     
-    # Identify diagonal entries at BC DOFs that need to be removed
-    is_bc_diag = row_mask & col_mask & (A_indices[:, 0] == A_indices[:, 1])
+    # Check which entries to zero out (BC rows or columns)
+    rows = A_indices[:, 0]
+    cols = A_indices[:, 1]
+    row_is_bc = is_bc_dof[rows]
+    col_is_bc = is_bc_dof[cols]
     
-    # Keep non-BC-diagonal entries, but zero out BC rows
-    keep_mask = ~is_bc_diag
-    A_data_filtered = np.where(keep_mask & row_mask, 0.0, A_data)
-    A_data_filtered = np.where(keep_mask, A_data_filtered, 0.0)  # Remove BC diagonals
-    A_indices_filtered = A_indices[keep_mask]
+    # Identify diagonal entries at BC DOFs that need to be completely removed
+    is_diag = rows == cols
+    is_bc_diag = row_is_bc & col_is_bc & is_diag
     
-    # Now add fresh diagonal entries for BC DOFs
-    n_constrained = len(dof_indices)
+    # Create the filtering approach in a JIT-compatible way
+    # Instead of boolean indexing, we'll use where to set values to NaN for filtering
+    # and then use isfinite to keep only non-NaN values
+    
+    # Zero out BC rows and columns
+    A_data_zeroed = np.where(row_is_bc | col_is_bc, 0.0, A_data)
+    
+    # Mark BC diagonal entries for removal by setting them to NaN
+    A_data_marked = np.where(is_bc_diag, np.nan, A_data_zeroed)
+    
+    # Filter out NaN entries (this is JIT-compatible)
+    valid_mask = np.isfinite(A_data_marked)
+    
+    # Use a clever trick: create indices for the valid entries
+    # We'll build new arrays by concatenating the filtered entries with new diagonal entries
+    num_valid = np.sum(valid_mask)
+    
+    # This is tricky in JIT - let me use a different approach
+    # Instead of filtering, let's just set BC diagonals to 1 and rely on BCOO behavior
+    # But first zero them out completely
+    A_data_modified = np.where(is_bc_diag, 0.0, A_data_zeroed)
+    
+    # Create new diagonal entries for BC DOFs
+    n_constrained = dof_indices.shape[0]
     diag_indices = np.stack([dof_indices, dof_indices], axis=1)
     diag_data = np.ones(n_constrained)
     
-    # Combine
-    combined_indices = np.concatenate([A_indices_filtered, diag_indices], axis=0)
-    combined_data = np.concatenate([A_data_filtered[keep_mask], diag_data], axis=0)
+    # Combine with original (modified) matrix
+    combined_indices = np.concatenate([A_indices, diag_indices], axis=0)
+    combined_data = np.concatenate([A_data_modified, diag_data], axis=0)
     
-    # Create new sparse matrix
+    # Create modified sparse matrix
     A_bc = sparse.BCOO((combined_data, combined_indices), shape=A_shape)
-    
-    # Set RHS to prescribed values
-    b_bc = b.at[dof_indices].set(prescribed_values)
     
     return A_bc, b_bc
 
 
 def apply_bc(A, b, bc_data):
     """
-    Ultra-simple boundary condition application using pre-computed bc_data.
-    This function is fully JAX-compatible with no Python control flow.
+    JIT-compatible version of apply_bc.
     
     Args:
         A: Sparse matrix (LHS)
@@ -156,33 +185,7 @@ def apply_bc(A, b, bc_data):
     dof_indices = bc_data['dof_indices']
     prescribed_values = bc_data['prescribed_values']
     
-    return apply_bc_sparse_direct(A, b, dof_indices, prescribed_values)
-
-
-def _parse_shorthand_bc(shorthand: str, mesh):
-    """Parse shorthand boundary condition strings."""
-    # Extract domain dimensions from mesh bounds
-    points = mesh.points
-    Lx = np.max(points[:, 0]) - np.min(points[:, 0])
-    Ly = np.max(points[:, 1]) - np.min(points[:, 1])
-    Lz = np.max(points[:, 2]) - np.min(points[:, 2]) if points.shape[1] > 2 else None
-    
-    boundary_fns = create_boundary_functions(Lx, Ly, Lz)
-    
-    shorthand_map = {
-        'fixed_left': {'location': boundary_fns['left'], 'value': 0.0},
-        'fixed_right': {'location': boundary_fns['right'], 'value': 0.0},
-        'fixed_bottom': {'location': boundary_fns['bottom'], 'value': 0.0},
-        'fixed_top': {'location': boundary_fns['top'], 'value': 0.0},
-    }
-    
-    if Lz is not None:
-        shorthand_map.update({
-            'fixed_front': {'location': boundary_fns['front'], 'value': 0.0},
-            'fixed_back': {'location': boundary_fns['back'], 'value': 0.0},
-        })
-    
-    return shorthand_map.get(shorthand, {'location': lambda x: False, 'value': 0.0})
+    return _apply_bc_sparse_direct_jit(A, b, dof_indices, prescribed_values)
 
 
 # Convenience functions for common patterns
@@ -194,11 +197,6 @@ def DirichletBC(location, value=0.0, components=None):
 def FixedBC(location, components=None):
     """Create a fixed (zero) boundary condition specification."""
     return DirichletBC(location, 0.0, components)
-
-
-
-
-
 
 
 
@@ -229,24 +227,3 @@ def create_boundary_functions(Lx: float, Ly: float, Lz: Optional[float] = None,
         })
     
     return functions
-
-
-def create_cantilever_bc(A, b, mesh, vec_dim: int = 3):
-    """
-    Create boundary conditions for a cantilever beam problem.
-    Assumes beam extends in x-direction, fixed at x=0.
-    
-    Args:
-        A: Sparse matrix (LHS)
-        b: Right-hand side vector
-        mesh: Mesh object with points attribute
-        vec_dim: Vector dimension (should be 3 for 3D elasticity)
-    
-    Returns:
-        A_bc, b_bc: Modified sparse system with cantilever boundary conditions
-    """
-    # Fixed boundary at x=0 (left end)
-    left_boundary = lambda point: np.isclose(point[0], 0., atol=1e-5)
-    
-    return apply_fixed_bc(A, b, mesh, left_boundary, 
-                         components=list(range(vec_dim)), vec_dim=vec_dim)
