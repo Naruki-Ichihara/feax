@@ -1,91 +1,60 @@
-import numpy as onp
+
 import jax
 import jax.numpy as np
+from jax.experimental import sparse
 import jax.flatten_util
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, List, Union, NamedTuple
 import functools
 
-from feax.utils import timeit 
-from feax.generate_mesh import Mesh
+ 
+from feax.mesh import Mesh
 from feax.fe import FiniteElement
 from feax import logger
-from jax.experimental import sparse
-
-
-class ProblemState(NamedTuple):
-    """Immutable state for JAX-friendly problem solving."""
-    unflatten_fn_sol_list: Any
-    I: jax.Array  # Sparse matrix row indices
-    J: jax.Array  # Sparse matrix column indices
-    num_total_dofs_all_vars: int
-    cells_list: List[jax.Array]
-    split_and_compute_cell: Callable
-    compute_face: Callable
-    compute_residual_vars: Callable
-    compute_residual_vars_helper: Callable
-    internal_vars: Optional[List[jax.Array]] = None
-
-
-# Register as PyTree for JAX compatibility
-def _problem_state_tree_flatten(state):
-    """Flatten ProblemState into children and aux_data."""
-    # Separate JAX arrays from other data
-    if state.internal_vars is not None:
-        jax_arrays = (state.I, state.J, *state.internal_vars)
-    else:
-        jax_arrays = (state.I, state.J)
-    other_data = (state.unflatten_fn_sol_list, state.num_total_dofs_all_vars,
-                  state.cells_list, state.split_and_compute_cell, 
-                  state.compute_face, state.compute_residual_vars, 
-                  state.compute_residual_vars_helper, state.internal_vars is not None)
-    return jax_arrays, other_data
-
-
-def _problem_state_tree_unflatten(aux_data, children):
-    """Unflatten ProblemState from children and aux_data."""
-    (unflatten_fn_sol_list, num_total_dofs_all_vars, cells_list, 
-     split_and_compute_cell, compute_face, compute_residual_vars, 
-     compute_residual_vars_helper, has_internal_vars) = aux_data
-    
-    if has_internal_vars:
-        I, J = children[0], children[1]
-        internal_vars = list(children[2:])
-    else:
-        I, J = children
-        internal_vars = None
-    
-    return ProblemState(
-        unflatten_fn_sol_list=unflatten_fn_sol_list,
-        I=I,
-        J=J,
-        num_total_dofs_all_vars=num_total_dofs_all_vars,
-        cells_list=cells_list,
-        split_and_compute_cell=split_and_compute_cell,
-        compute_face=compute_face,
-        compute_residual_vars=compute_residual_vars,
-        compute_residual_vars_helper=compute_residual_vars_helper,
-        internal_vars=internal_vars
-    )
-
-
-jax.tree_util.register_pytree_node(
-    ProblemState,
-    _problem_state_tree_flatten,
-    _problem_state_tree_unflatten
-)
 
 
 @dataclass
 class Problem:
+    """Problem class to handle one FE variable or multiple coupled FE variables.
+
+    Attributes
+    ----------
+    mesh : Mesh
+        :attr:`~jax_fem.fe.FiniteElement.mesh`
+    vec : int
+        :attr:`~jax_fem.fe.FiniteElement.vec`
+    dim : int
+        :attr:`~jax_fem.fe.FiniteElement.dim`
+    ele_type : str
+        :attr:`~jax_fem.fe.FiniteElement.ele_type`
+    gauss_order : int
+        :attr:`~jax_fem.fe.FiniteElement.gauss_order`
+    dirichlet_bc_info : list
+        :attr:`~jax_fem.fe.FiniteElement.dirichlet_bc_info`
+    location_fns : list
+        A list of location functions useful for surface integrals in the weak form.
+        Such surface integral can be related to Neumann boundary condition, or an integral contributing to the stiffness matrix.
+        Each callable takes a point (NumpyArray) and returns a boolean indicating if the point satisfies the location condition.
+        For example, ::
+        
+            [lambda point: np.isclose(point[0], 0., atol=1e-5)]
+
+    additional_info: tuple
+        Any other information that might be useful can be stored here. This is problem dependent.
+    internal_vars : tuple
+        Internal variables for the problem, typically parameters defined on element quadrature points.
+    internal_vars_surfaces : list
+        Internal variables for surface integrals, typically parameters defined on element surface quadrature points.
+    """
     mesh: Mesh
     vec: int
     dim: int
     ele_type: str = 'HEX8'
     gauss_order: int = None
-    dirichlet_bc_info: Optional[List[Union[List[Callable], List[int], List[Callable]]]] = None
-    location_fns: Optional[List[Callable]] = None
-    additional_info: Any = ()
+    dirichlet_bc_info: list = None
+    location_fns: list = None
+    additional_info: tuple = ()
+    internal_vars: tuple = ()
+    internal_vars_surfaces: list = None
 
     def __post_init__(self):
 
@@ -151,13 +120,13 @@ class Problem:
         dumb_dofs, self.unflatten_fn_sol_list = jax.flatten_util.ravel_pytree(dumb_sol_list)
         self.num_total_dofs_all_vars = len(dumb_dofs)
 
-        self.num_nodes_cumsum = onp.cumsum([0] + [fe.num_nodes for fe in self.fes])
+        self.num_nodes_cumsum = np.cumsum(np.array([0] + [fe.num_nodes for fe in self.fes]))
         # (num_cells, num_vars, num_quads)
-        self.JxW = onp.transpose(onp.stack([fe.JxW for fe in self.fes]), axes=(1, 0, 2)) 
+        self.JxW = np.transpose(np.stack([fe.JxW for fe in self.fes]), axes=(1, 0, 2)) 
         # (num_cells, num_quads, num_nodes +..., dim)
-        self.shape_grads = onp.concatenate([fe.shape_grads for fe in self.fes], axis=2)
+        self.shape_grads = np.concatenate([fe.shape_grads for fe in self.fes], axis=2)
         # (num_cells, num_quads, num_nodes + ..., 1, dim)
-        self.v_grads_JxW = onp.concatenate([fe.v_grads_JxW for fe in self.fes], axis=2)
+        self.v_grads_JxW = np.concatenate([fe.v_grads_JxW for fe in self.fes], axis=2)
 
         # TODO: assert all vars quad points be the same
         # (num_cells, num_quads, dim)
@@ -180,11 +149,11 @@ class Problem:
                 s_shape_vals.append(selected_face_shape_vals)
 
             # (num_selected_faces, num_face_quads, num_nodes + ..., dim)
-            s_shape_grads = onp.concatenate(s_shape_grads, axis=2)
+            s_shape_grads = np.concatenate(s_shape_grads, axis=2)
             # (num_selected_faces, num_vars, num_face_quads)
-            n_scale = onp.transpose(onp.stack(n_scale), axes=(1, 0, 2))  
+            n_scale = np.transpose(np.stack(n_scale), axes=(1, 0, 2))  
             # (num_selected_faces, num_face_quads, num_nodes + ...)
-            s_shape_vals = onp.concatenate(s_shape_vals, axis=2)
+            s_shape_vals = np.concatenate(s_shape_vals, axis=2)
             # (num_selected_faces, num_face_quads, dim)
             physical_surface_quad_points = self.fes[0].get_physical_surface_quad_points(boundary_inds) 
 
@@ -194,6 +163,9 @@ class Problem:
             # TODO: assert all vars face quad points be the same
             self.physical_surface_quad_points.append(physical_surface_quad_points)
 
+        # Initialize internal_vars_surfaces if not provided
+        if self.internal_vars_surfaces is None:
+            self.internal_vars_surfaces = [() for _ in range(len(self.boundary_inds_list))]
         self.custom_init(*self.additional_info)
         self.pre_jit_fns()
 
@@ -204,12 +176,11 @@ class Problem:
 
     def get_laplace_kernel(self, tensor_map):
 
-        def laplace_kernel(cell_sol_flat, cell_shape_grads, cell_v_grads_JxW, cell_internal_vars=None):
+        def laplace_kernel(cell_sol_flat, cell_shape_grads, cell_v_grads_JxW, *cell_internal_vars):
             # cell_sol_flat: (num_nodes*vec + ...,)
             # cell_sol_list: [(num_nodes, vec), ...]
             # cell_shape_grads: (num_quads, num_nodes + ..., dim)
             # cell_v_grads_JxW: (num_quads, num_nodes + ..., 1, dim)
-            # cell_internal_vars: list of (num_quads, ...) arrays or None
 
             cell_sol_list = self.unflatten_fn_dof(cell_sol_flat)
             cell_shape_grads = cell_shape_grads[:, :self.fes[0].num_nodes, :]
@@ -222,16 +193,7 @@ class Problem:
             u_grads = np.sum(u_grads, axis=1)  # (num_quads, vec, dim)
             u_grads_reshape = u_grads.reshape(-1, vec, self.dim)  # (num_quads, vec, dim)
             # (num_quads, vec, dim)
-            if cell_internal_vars is not None:
-                # Create a function that maps over individual quad points
-                def apply_tensor_map_with_internal(u_grad, quad_idx):
-                    # Extract internal vars for this quad point
-                    quad_internal_vars = [iv[quad_idx] for iv in cell_internal_vars]
-                    return tensor_map(u_grad, quad_internal_vars)
-                
-                u_physics = jax.vmap(apply_tensor_map_with_internal)(u_grads_reshape, np.arange(len(u_grads_reshape))).reshape(u_grads.shape)
-            else:
-                u_physics = jax.vmap(tensor_map)(u_grads_reshape).reshape(u_grads.shape)
+            u_physics = jax.vmap(tensor_map)(u_grads_reshape, *cell_internal_vars).reshape(u_grads.shape)
             # (num_quads, num_nodes, vec, dim) -> (num_nodes, vec)
             val = np.sum(u_physics[:, None, :, :] * cell_v_grads_JxW, axis=(0, -1))
             val = jax.flatten_util.ravel_pytree(val)[0] # (num_nodes*vec + ...,)
@@ -241,12 +203,11 @@ class Problem:
 
     def get_mass_kernel(self, mass_map):
 
-        def mass_kernel(cell_sol_flat, x, cell_JxW, cell_internal_vars=None):
+        def mass_kernel(cell_sol_flat, x, cell_JxW, *cell_internal_vars):
             # cell_sol_flat: (num_nodes*vec + ...,)
             # cell_sol_list: [(num_nodes, vec), ...]
             # x: (num_quads, dim)
             # cell_JxW: (num_vars, num_quads)
-            # cell_internal_vars: list of (num_quads, ...) arrays or None
 
             cell_sol_list = self.unflatten_fn_dof(cell_sol_flat)
             cell_sol = cell_sol_list[0]
@@ -254,16 +215,7 @@ class Problem:
             vec = self.fes[0].vec
             # (1, num_nodes, vec) * (num_quads, num_nodes, 1) -> (num_quads, num_nodes, vec) -> (num_quads, vec)
             u = np.sum(cell_sol[None, :, :] * self.fes[0].shape_vals[:, :, None], axis=1)
-            if cell_internal_vars is not None:
-                # Create a function that maps over individual quad points
-                def apply_mass_map_with_internal(u_val, x_val, quad_idx):
-                    # Extract internal vars for this quad point
-                    quad_internal_vars = [iv[quad_idx] for iv in cell_internal_vars]
-                    return mass_map(u_val, x_val, quad_internal_vars)
-                
-                u_physics = jax.vmap(apply_mass_map_with_internal)(u, x, np.arange(len(u)))  # (num_quads, vec)
-            else:
-                u_physics = jax.vmap(mass_map)(u, x)  # (num_quads, vec)
+            u_physics = jax.vmap(mass_map)(u, x, *cell_internal_vars)  # (num_quads, vec)
             # (num_quads, 1, vec) * (num_quads, num_nodes, 1) * (num_quads, 1, 1) -> (num_nodes, vec)
             val = np.sum(u_physics[:, None, :] * self.fes[0].shape_vals[:, :, None] * cell_JxW[:, None, None], axis=0)
             val = jax.flatten_util.ravel_pytree(val)[0] # (num_nodes*vec + ...,)
@@ -273,12 +225,11 @@ class Problem:
 
     def get_surface_kernel(self, surface_map):
 
-        def surface_kernel(cell_sol_flat, x, face_shape_vals, face_shape_grads, face_nanson_scale, cell_internal_vars=None):
+        def surface_kernel(cell_sol_flat, x, face_shape_vals, face_shape_grads, face_nanson_scale, *cell_internal_vars_surface):
             # face_shape_vals: (num_face_quads, num_nodes + ...)
             # face_shape_grads: (num_face_quads, num_nodes + ..., dim)
             # x: (num_face_quads, dim)
             # face_nanson_scale: (num_vars, num_face_quads)
-            # cell_internal_vars: list of (num_face_quads, ...) arrays or None
 
             cell_sol_list = self.unflatten_fn_dof(cell_sol_flat)
             cell_sol = cell_sol_list[0]
@@ -287,16 +238,7 @@ class Problem:
 
             # (1, num_nodes, vec) * (num_face_quads, num_nodes, 1) -> (num_face_quads, vec)
             u = np.sum(cell_sol[None, :, :] * face_shape_vals[:, :, None], axis=1)
-            if cell_internal_vars is not None:
-                # Create a function that maps over individual quad points
-                def apply_surface_map_with_internal(u_val, x_val, quad_idx):
-                    # Extract internal vars for this quad point
-                    quad_internal_vars = [iv[quad_idx] for iv in cell_internal_vars]
-                    return surface_map(u_val, x_val, quad_internal_vars)
-                
-                u_physics = jax.vmap(apply_surface_map_with_internal)(u, x, np.arange(len(u)))  # (num_face_quads, vec)
-            else:
-                u_physics = jax.vmap(surface_map)(u, x)  # (num_face_quads, vec)
+            u_physics = jax.vmap(surface_map)(u, x, *cell_internal_vars_surface)  # (num_face_quads, vec)
             # (num_face_quads, 1, vec) * (num_face_quads, num_nodes, 1) * (num_face_quads, 1, 1) -> (num_nodes, vec)
             val = np.sum(u_physics[:, None, :] * face_shape_vals[:, :, None] * face_nanson_scale[:, None, None], axis=0)
 
@@ -312,7 +254,7 @@ class Problem:
             return y, jac
 
         def get_kernel_fn_cell():
-            def kernel(cell_sol_flat, physical_quad_points, cell_shape_grads, cell_JxW, cell_v_grads_JxW, cell_internal_vars=None):
+            def kernel(cell_sol_flat, physical_quad_points, cell_shape_grads, cell_JxW, cell_v_grads_JxW, *cell_internal_vars):
                 """
                 universal_kernel should be able to cover all situations (including mass_kernel and laplace_kernel).
                 mass_kernel and laplace_kernel are from legacy JAX-FEM. They can still be used, but not mandatory.
@@ -322,20 +264,20 @@ class Problem:
                 # Return a zero array with proper shape will be better.
                 if hasattr(self, 'get_mass_map'):
                     mass_kernel = self.get_mass_kernel(self.get_mass_map())
-                    mass_val = mass_kernel(cell_sol_flat, physical_quad_points, cell_JxW, cell_internal_vars)
+                    mass_val = mass_kernel(cell_sol_flat, physical_quad_points, cell_JxW, *cell_internal_vars)
                 else:
                     mass_val = 0.
 
                 if hasattr(self, 'get_tensor_map'):
                     laplace_kernel = self.get_laplace_kernel(self.get_tensor_map())
-                    laplace_val = laplace_kernel(cell_sol_flat, cell_shape_grads, cell_v_grads_JxW, cell_internal_vars)
+                    laplace_val = laplace_kernel(cell_sol_flat, cell_shape_grads, cell_v_grads_JxW, *cell_internal_vars)
                 else:
                     laplace_val = 0.
 
                 if hasattr(self, 'get_universal_kernel'):
                     universal_kernel = self.get_universal_kernel()
                     universal_val = universal_kernel(cell_sol_flat, physical_quad_points, cell_shape_grads, cell_JxW, 
-                        cell_v_grads_JxW, cell_internal_vars)
+                        cell_v_grads_JxW, *cell_internal_vars)
                 else:
                     universal_val = 0.
 
@@ -349,7 +291,7 @@ class Problem:
             return kernel, kernel_jac
 
         def get_kernel_fn_face(ind):
-            def kernel(cell_sol_flat, physical_surface_quad_points, face_shape_vals, face_shape_grads, face_nanson_scale, cell_internal_vars=None):
+            def kernel(cell_sol_flat, physical_surface_quad_points, face_shape_vals, face_shape_grads, face_nanson_scale, *cell_internal_vars_surface):
                 """
                 universal_kernel should be able to cover all situations (including surface_kernel).
                 surface_kernel is from legacy JAX-FEM. It can still be used, but not mandatory.
@@ -357,14 +299,14 @@ class Problem:
                 if hasattr(self, 'get_surface_maps'):
                     surface_kernel = self.get_surface_kernel(self.get_surface_maps()[ind])
                     surface_val = surface_kernel(cell_sol_flat, physical_surface_quad_points, face_shape_vals,
-                        face_shape_grads, face_nanson_scale, cell_internal_vars)
+                        face_shape_grads, face_nanson_scale, *cell_internal_vars_surface)
                 else:
                     surface_val = 0.
 
                 if hasattr(self, 'get_universal_kernels_surface'):
                     universal_kernel = self.get_universal_kernels_surface()[ind]
                     universal_val = universal_kernel(cell_sol_flat, physical_surface_quad_points, face_shape_vals,
-                        face_shape_grads, face_nanson_scale, cell_internal_vars)
+                        face_shape_grads, face_nanson_scale, *cell_internal_vars_surface)
                 else:
                     universal_val = 0.
 
@@ -401,8 +343,7 @@ class Problem:
             self.kernel_face.append(kernel_face)
             self.kernel_jac_face.append(kernel_jac_face)
 
-    @timeit
-    def split_and_compute_cell(self, cells_sol_flat, np_version, jac_flag, state=None):
+    def split_and_compute_cell(self, cells_sol_flat, np_version, jac_flag, internal_vars):
         """Volume integral in weak form
         """
         vmap_fn = self.kernel_jac if jac_flag else self.kernel
@@ -410,25 +351,16 @@ class Problem:
         if num_cuts > self.num_cells:
             num_cuts = self.num_cells
         batch_size = self.num_cells // num_cuts
-        input_collection = [cells_sol_flat, self.physical_quad_points, self.shape_grads, self.JxW, self.v_grads_JxW]
-        
-        # Add internal_vars if available from state
-        if state is not None and state.internal_vars is not None:
-            # Reshape internal_vars from (num_cells * num_quads, ...) to (num_cells, num_quads, ...)
-            num_quads = self.physical_quad_points.shape[1]  # assuming shape is (num_cells, num_quads, dim)
-            reshaped_internal_vars = [iv.reshape(self.num_cells, num_quads, *iv.shape[1:]) for iv in state.internal_vars]
-            input_collection.append(reshaped_internal_vars)
-        else:
-            input_collection.append(None)
+        input_collection = [cells_sol_flat, self.physical_quad_points, self.shape_grads, self.JxW, self.v_grads_JxW, *internal_vars]
 
         if jac_flag:
             values = []
             jacs = []
             for i in range(num_cuts):
                 if i < num_cuts - 1:
-                    input_col = jax.tree_map(lambda x: x[i * batch_size:(i + 1) * batch_size], input_collection)
+                    input_col = jax.tree_util.tree_map(lambda x: x[i * batch_size:(i + 1) * batch_size], input_collection)
                 else:
-                    input_col = jax.tree_map(lambda x: x[i * batch_size:], input_collection)
+                    input_col = jax.tree_util.tree_map(lambda x: x[i * batch_size:], input_collection)
 
                 val, jac = vmap_fn(*input_col)
                 values.append(val)
@@ -441,16 +373,16 @@ class Problem:
             values = []
             for i in range(num_cuts):
                 if i < num_cuts - 1:
-                    input_col = jax.tree_map(lambda x: x[i * batch_size:(i + 1) * batch_size], input_collection)
+                    input_col = jax.tree_util.tree_map(lambda x: x[i * batch_size:(i + 1) * batch_size], input_collection)
                 else:
-                    input_col = jax.tree_map(lambda x: x[i * batch_size:], input_collection)
+                    input_col = jax.tree_util.tree_map(lambda x: x[i * batch_size:], input_collection)
 
                 val = vmap_fn(*input_col)
                 values.append(val)
             values = np_version.vstack(values)
             return values
 
-    def compute_face(self, cells_sol_flat, np_version, jac_flag, state=None):
+    def compute_face(self, cells_sol_flat, np_version, jac_flag, internal_vars_surfaces):
         """Surface integral in weak form
         """
         if jac_flag:
@@ -460,22 +392,7 @@ class Problem:
                 vmap_fn = self.kernel_jac_face[i]
                 selected_cell_sols_flat = cells_sol_flat[boundary_inds[:, 0]]  # (num_selected_faces, num_nodes*vec + ...))
                 input_collection = [selected_cell_sols_flat, self.physical_surface_quad_points[i], self.selected_face_shape_vals[i], 
-                                    self.selected_face_shape_grads[i], self.nanson_scale[i]]
-                
-                # Add internal_vars for selected faces if available from state
-                if state is not None and state.internal_vars is not None:
-                    # Extract internal vars for selected faces
-                    num_quads = self.physical_surface_quad_points[i].shape[1]  # (num_selected_faces, num_face_quads, dim)
-                    selected_face_internal_vars = []
-                    for iv in state.internal_vars:
-                        # Reshape from (num_cells * num_quads, ...) to (num_cells, num_quads, ...)
-                        iv_reshaped = iv.reshape(self.num_cells, -1, *iv.shape[1:])
-                        # Select faces: (num_selected_faces, num_face_quads, ...)
-                        selected_iv = iv_reshaped[boundary_inds[:, 0]]
-                        selected_face_internal_vars.append(selected_iv)
-                    input_collection.append(selected_face_internal_vars)
-                else:
-                    input_collection.append(None)
+                                    self.selected_face_shape_grads[i], self.nanson_scale[i], *internal_vars_surfaces[i]]
 
                 val, jac = vmap_fn(*input_collection)
                 values.append(val)
@@ -488,23 +405,7 @@ class Problem:
                 selected_cell_sols_flat = cells_sol_flat[boundary_inds[:, 0]]  # (num_selected_faces, num_nodes*vec + ...))
                 # TODO: duplicated code
                 input_collection = [selected_cell_sols_flat, self.physical_surface_quad_points[i], self.selected_face_shape_vals[i], 
-                                    self.selected_face_shape_grads[i], self.nanson_scale[i]]
-                
-                # Add internal_vars for selected faces if available from state
-                if state is not None and state.internal_vars is not None:
-                    # Extract internal vars for selected faces
-                    num_quads = self.physical_surface_quad_points[i].shape[1]  # (num_selected_faces, num_face_quads, dim)
-                    selected_face_internal_vars = []
-                    for iv in state.internal_vars:
-                        # Reshape from (num_cells * num_quads, ...) to (num_cells, num_quads, ...)
-                        iv_reshaped = iv.reshape(self.num_cells, -1, *iv.shape[1:])
-                        # Select faces: (num_selected_faces, num_face_quads, ...)
-                        selected_iv = iv_reshaped[boundary_inds[:, 0]]
-                        selected_face_internal_vars.append(selected_iv)
-                    input_collection.append(selected_face_internal_vars)
-                else:
-                    input_collection.append(None)
-                    
+                                    self.selected_face_shape_grads[i], self.nanson_scale[i], *internal_vars_surfaces[i]]
                 val = vmap_fn(*input_collection)
                 values.append(val)
             return values
@@ -522,162 +423,114 @@ class Problem:
 
         return res_list
 
-    def compute_residual_vars(self, sol_list):
+    def compute_residual_vars(self, sol_list, internal_vars, internal_vars_surfaces):
         logger.debug(f"Computing cell residual...")
         cells_sol_list = [sol[cells] for cells, sol in zip(self.cells_list, sol_list)] # [(num_cells, num_nodes, vec), ...]
         cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list) # (num_cells, num_nodes*vec + ...)
-        
-        weak_form_flat = self.split_and_compute_cell(cells_sol_flat, np, False)  # (num_cells, num_nodes*vec + ...)
-        weak_form_face_flat = self.compute_face(cells_sol_flat, np, False)  # [(num_selected_faces, num_nodes*vec + ...), ...]
+        weak_form_flat = self.split_and_compute_cell(cells_sol_flat, np, False, internal_vars)  # (num_cells, num_nodes*vec + ...)
+        weak_form_face_flat = self.compute_face(cells_sol_flat, np, False, internal_vars_surfaces)  # [(num_selected_faces, num_nodes*vec + ...), ...]
         return self.compute_residual_vars_helper(weak_form_flat, weak_form_face_flat)
 
-    def compute_newton_vars(self, sol_list):
-        logger.debug(f"Computing cell Jacobian and cell residual...")
-        cells_sol_list = [sol[cells] for cells, sol in zip(self.cells_list, sol_list)] # [(num_cells, num_nodes, vec), ...]
-        cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list) # (num_cells, num_nodes*vec + ...)
-        
-        # (num_cells, num_nodes*vec + ...),  (num_cells, num_nodes*vec + ..., num_nodes*vec + ...)
-        weak_form_flat, cells_jac_flat = self.split_and_compute_cell(cells_sol_flat, np, True)
-        V_vals = np.array(cells_jac_flat.reshape(-1))
+    def get_res(self, sol_list):
+        """Compute residual list (alias for compute_residual).
 
-        # [(num_selected_faces, num_nodes*vec + ...,), ...], [(num_selected_faces, num_nodes*vec + ..., num_nodes*vec + ...,), ...]
-        weak_form_face_flat, cells_jac_face_flat = self.compute_face(cells_sol_flat, np, True)
-        for cells_jac_f_flat in cells_jac_face_flat:
-            V_vals = np.hstack((V_vals, np.array(cells_jac_f_flat.reshape(-1))))
-
-        # Store V_vals for backwards compatibility (some code might still expect self.V)
-        self.V = V_vals
-        
-        return self.compute_residual_vars_helper(weak_form_flat, weak_form_face_flat)
-
-    def compute_residual(self, sol_list):
-        return self.compute_residual_vars(sol_list)
-
-    def newton_update(self, sol_list):
-        return self.compute_newton_vars(sol_list)
-
-    def assemble_sparse_system(self, state, sol_list):
-        """Assemble the sparse system matrix A and vector b.
-        
         Parameters
         ----------
-        state : FunctionalState
-            Functional state object containing problem data
-        sol_list : array or list
-            Solution list (can be nested list or flattened array)
-            
+        sol_list : list
+            A list of JaxArray with the shape being (num_total_nodes, vec).
+
         Returns
         -------
-        A : jax.experimental.sparse.BCOO
-            Sparse system matrix in BCOO format
-        b : jax.numpy.ndarray
-            Right-hand side vector
+        res_list : list
+            Same shape as sol_list.
         """
-        from jax.experimental import sparse
+        return self.compute_residual_vars(sol_list, self.internal_vars, self.internal_vars_surfaces)
+
+    def get_J(self, sol_list):
+        """Compute Jacobian matrix and return as JAX BCOO sparse matrix.
+
+        Parameters
+        ----------
+        sol_list : list
+            A list of JaxArray with the shape being (num_total_nodes, vec).
+
+        Returns
+        -------
+        J : jax.experimental.sparse.BCOO
+            Sparse Jacobian matrix.
+        """
+
         
-        # Handle both flattened and nested solution formats
-        if isinstance(sol_list, (list, tuple)):
-            # Already in nested format
-            sol_list_nested = sol_list
-        else:
-            # Flatten if needed and then unflatten to nested format
-            sol_list_nested = state.unflatten_fn_sol_list(sol_list)
-        
-        # Compute residual and Jacobian without modifying self.V
-        cells_sol_list = [sol[cells] for cells, sol in zip(self.cells_list, sol_list_nested)]
+        logger.debug(f"Computing Jacobian matrix...")
+        cells_sol_list = [sol[cells] for cells, sol in zip(self.cells_list, sol_list)]
         cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
         
-        # Compute residual
-        weak_form_flat = self.split_and_compute_cell(cells_sol_flat, np, False)
-        weak_form_face_flat = self.compute_face(cells_sol_flat, np, False)
-        residual_list = self.compute_residual_vars_helper(weak_form_flat, weak_form_face_flat)
-        
-        # Compute Jacobian values without storing in self.V
-        _, cells_jac_flat = self.split_and_compute_cell(cells_sol_flat, np, True)
-        V_vals = np.array(cells_jac_flat.reshape(-1))
-        
-        # Add face contributions
-        _, cells_jac_face_flat = self.compute_face(cells_sol_flat, np, True)
+        # Compute Jacobian values from volume integrals
+        _, cells_jac_flat = self.split_and_compute_cell(cells_sol_flat, np, True, self.internal_vars)
+        V = np.array(cells_jac_flat.reshape(-1))
+
+        # Add Jacobian values from surface integrals
+        _, cells_jac_face_flat = self.compute_face(cells_sol_flat, np, True, self.internal_vars_surfaces)
         for cells_jac_f_flat in cells_jac_face_flat:
-            V_vals = np.hstack((V_vals, np.array(cells_jac_f_flat.reshape(-1))))
-        
-        # Flatten residual to get RHS vector b (negative for Newton's method)
-        b = -jax.flatten_util.ravel_pytree(residual_list)[0]
-        
-        # Create sparse matrix A from I, J, V in BCOO format
+            V = np.hstack((V, np.array(cells_jac_f_flat.reshape(-1))))
+
+        # Build BCOO sparse matrix
+        indices = np.stack([self.I, self.J], axis=1)  # (nnz, 2)
         shape = (self.num_total_dofs_all_vars, self.num_total_dofs_all_vars)
-        # BCOO expects (data, indices) where indices is shape (nse, 2)
-        indices = np.stack([self.I, self.J], axis=1)
-        A = sparse.BCOO((V_vals, indices), shape=shape)
+        J = sparse.BCOO((V, indices), shape=shape)
         
-        return A, b
-    
+        return J
 
-    def get_functional_state(self, internal_vars: Optional[List[jax.Array]] = None) -> ProblemState:
-        """Create functional state for JAX-friendly operations."""
-        return ProblemState(
-            unflatten_fn_sol_list=self.unflatten_fn_sol_list,
-            I=self.I,
-            J=self.J,
-            num_total_dofs_all_vars=self.num_total_dofs_all_vars,
-            cells_list=self.cells_list,
-            split_and_compute_cell=self.split_and_compute_cell,
-            compute_face=self.compute_face,
-            compute_residual_vars=self.compute_residual_vars,
-            compute_residual_vars_helper=self.compute_residual_vars_helper,
-            internal_vars=internal_vars
+
+    def __jax_tree_flatten__(self):
+        """Flatten the Problem into dynamic (differentiable) and static parts."""
+        # Dynamic parts - things that can be differentiated
+        dynamic = (self.internal_vars, self.internal_vars_surfaces)
+        
+        # Static parts - everything else
+        static = {
+            'mesh': self.mesh,
+            'vec': self.vec,
+            'dim': self.dim,
+            'ele_type': self.ele_type,
+            'gauss_order': self.gauss_order,
+            'dirichlet_bc_info': self.dirichlet_bc_info,
+            'location_fns': self.location_fns,
+            'additional_info': self.additional_info,
+        }
+        return dynamic, static
+    
+    @classmethod
+    def __jax_tree_unflatten__(cls, static, dynamic):
+        """Reconstruct the Problem from flattened parts."""
+        internal_vars, internal_vars_surfaces = dynamic
+        
+        # Create a new instance with the original constructor parameters
+        instance = cls(
+            mesh=static['mesh'],
+            vec=static['vec'],
+            dim=static['dim'],
+            ele_type=static['ele_type'],
+            gauss_order=static['gauss_order'],
+            dirichlet_bc_info=static['dirichlet_bc_info'],
+            location_fns=static['location_fns'],
+            additional_info=static['additional_info'],
+            internal_vars=internal_vars,
+            internal_vars_surfaces=internal_vars_surfaces
         )
-
-@jax.jit
-def get_sparse_system(state: ProblemState, sol_flat: jax.Array) -> tuple[jax.Array, jax.Array]:
-    """
-    Pure functional get_sparse_system that takes state explicitly.
-    
-    Parameters
-    ----------
-    state : ProblemState
-        Immutable problem state containing all parameters including internal_vars
-    sol_flat : jax.Array
-        Flattened solution vector
         
-    Returns
-    -------
-    A : jax.experimental.sparse.BCOO
-        Sparse system matrix in BCOO format
-    b : jax.Array
-        Right-hand side vector
-    """
-    
-    # Unflatten solution
-    sol_list = state.unflatten_fn_sol_list(sol_flat)
-    
-    # Compute residual using explicit state
-    cells_sol_list = [sol[cells] for cells, sol in zip(state.cells_list, sol_list)]
-    cells_sol_flat_for_residual = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
-    weak_form_flat = state.split_and_compute_cell(cells_sol_flat_for_residual, np, False, state)
-    weak_form_face_flat = state.compute_face(cells_sol_flat_for_residual, np, False, state)
-    residual_list = state.compute_residual_vars_helper(weak_form_flat, weak_form_face_flat)
-    
-    # For Jacobian, we need to compute it differently to keep it pure
-    cells_sol_list = [sol[cells] for cells, sol in zip(state.cells_list, sol_list)]
-    cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
-    
-    # Compute Jacobian values
-    _, cells_jac_flat = state.split_and_compute_cell(cells_sol_flat, np, True, state)
-    V_vals = cells_jac_flat.reshape(-1)
-    
-    # Add face contributions
-    _, cells_jac_face_flat = state.compute_face(cells_sol_flat, np, True, state)
-    for cells_jac_f_flat in cells_jac_face_flat:
-        V_vals = np.hstack((V_vals, cells_jac_f_flat.reshape(-1)))
-    
-    # Flatten residual to get RHS vector b (negative for Newton's method)
-    b = -jax.flatten_util.ravel_pytree(residual_list)[0]
-    
-    # Create sparse matrix A from I, J, V in BCOO format
-    shape = (state.num_total_dofs_all_vars, state.num_total_dofs_all_vars)
-    # BCOO expects (data, indices) where indices is shape (nse, 2)
-    indices = np.stack([state.I, state.J], axis=1)
-    A = sparse.BCOO((V_vals, indices), shape=shape)
-    
-    return A, b
+        return instance
+
+
+# Register as a PyTree
+def _problem_tree_flatten(obj):
+    return obj.__jax_tree_flatten__()
+
+def _problem_tree_unflatten(static, dynamic):
+    return Problem.__jax_tree_unflatten__(static, dynamic)
+
+jax.tree_util.register_pytree_node(
+    Problem,
+    _problem_tree_flatten,
+    _problem_tree_unflatten
+)

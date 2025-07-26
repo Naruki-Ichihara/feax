@@ -1,214 +1,233 @@
 """
-Test suite for feax.problem module.
-
-Tests problem definition and solution functionality.
+Test suite for the Problem class using pytest.
+Tests the modified problem.py file where onp has been replaced with np (jax.numpy).
 """
 
 import pytest
+import jax
+import jax.numpy as np
 import numpy as onp
-from feax.problem import *
-from feax.generate_mesh import Mesh
+from feax.problem import Problem
+from feax.mesh import Mesh
+
+# Set up JAX to use float64
+jax.config.update("jax_enable_x64", True)
 
 
-class TestProblem:
-    """Test problem module functionality."""
+class TestProblem(Problem):
+    """A simple test problem class that inherits from Problem"""
     
-    def create_simple_tet_mesh(self):
-        """Create a simple tetrahedral mesh for testing."""
-        points = onp.array([
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0]
-        ])
-        cells = onp.array([[0, 1, 2, 3]])
+    def custom_init(self):
+        """Override custom_init for testing"""
+        self.custom_init_called = True
         
-        return Mesh(points, cells, 'TET4')
+    def get_tensor_map(self):
+        """Define a simple tensor map for testing Laplace kernel"""
+        def tensor_fn(u_grad, *args):
+            # Simple identity mapping for testing
+            return u_grad
+        return tensor_fn
     
-    def create_simple_hex_mesh(self):
-        """Create a simple hexahedral mesh for testing."""
-        points = onp.array([
-            [0.0, 0.0, 0.0],  # 0
-            [1.0, 0.0, 0.0],  # 1
-            [1.0, 1.0, 0.0],  # 2
-            [0.0, 1.0, 0.0],  # 3
-            [0.0, 0.0, 1.0],  # 4
-            [1.0, 0.0, 1.0],  # 5
-            [1.0, 1.0, 1.0],  # 6
-            [0.0, 1.0, 1.0]   # 7
-        ])
-        cells = onp.array([[0, 1, 2, 3, 4, 5, 6, 7]])
-        
-        return Mesh(points, cells, 'HEX8')
+    def get_mass_map(self):
+        """Define a simple mass map for testing mass kernel"""
+        def mass_fn(u, x, *args):
+            # Simple identity mapping for testing
+            return u
+        return mass_fn
     
-    def test_problem_module_imports(self):
-        """Test that problem module can be imported."""
-        from feax import problem
-        assert problem is not None
+    def get_universal_kernel(self):
+        """Define a universal kernel for testing"""
+        def universal_kernel(cell_sol_flat, physical_quad_points, cell_shape_grads, 
+                           cell_JxW, cell_v_grads_JxW, *cell_internal_vars):
+            # Simple kernel that returns zeros for testing
+            return np.zeros_like(cell_sol_flat)
+        return universal_kernel
     
-    def test_problem_with_tet_mesh(self):
-        """Test problem setup with tetrahedral mesh."""
-        mesh = self.create_simple_tet_mesh()
-        
-        # Test that mesh is valid for problem setup
-        assert mesh is not None
-        assert mesh.points.shape == (4, 3)
-        assert mesh.cells.shape == (1, 4)
-        assert mesh.ele_type == 'TET4'
+    def get_surface_maps(self):
+        """Define surface maps for testing"""
+        def surface_fn(u, x, *args):
+            return u
+        return [surface_fn]  # Return list with one surface map
     
-    def test_problem_with_hex_mesh(self):
-        """Test problem setup with hexahedral mesh."""
-        mesh = self.create_simple_hex_mesh()
-        
-        # Test that mesh is valid for problem setup
-        assert mesh is not None
-        assert mesh.points.shape == (8, 3)
-        assert mesh.cells.shape == (1, 8)
-        assert mesh.ele_type == 'HEX8'
+    def set_params(self, params):
+        """Override set_params for testing parameter setting"""
+        self.internal_vars = [params]
+        self.params_set = True
+
+
+@pytest.fixture
+def simple_mesh():
+    """Create a simple 3D mesh for testing"""
+    # Create a simple 2x2x2 cube mesh with 1 element
+    points = onp.array([
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 1.0],
+        [1.0, 1.0, 1.0],
+        [0.0, 1.0, 1.0]
+    ])
     
-    def test_problem_mesh_properties(self):
-        """Test problem mesh properties."""
-        mesh = self.create_simple_tet_mesh()
-        
-        # Test mesh properties that are important for problem setup
-        assert hasattr(mesh, 'points')
-        assert hasattr(mesh, 'cells')
-        assert hasattr(mesh, 'ele_type')
-        
-        # Test mesh geometry
-        assert mesh.points.ndim == 2
-        assert mesh.cells.ndim == 2
-        assert mesh.points.shape[1] == 3  # 3D coordinates
+    # Define hex element
+    cells = onp.array([
+        [0, 1, 2, 3, 4, 5, 6, 7]
+    ])
     
-    def test_problem_boundary_conditions(self):
-        """Test problem boundary condition setup."""
-        mesh = self.create_simple_tet_mesh()
-        
-        # Test boundary condition functions
-        location_fn = lambda x: onp.isclose(x[0], 0.0)
-        value_fn = lambda x: 0.0
-        
-        # Test that functions work with mesh points
-        boundary_flags = [location_fn(point) for point in mesh.points]
-        boundary_values = [value_fn(point) for point in mesh.points]
-        
-        assert len(boundary_flags) == len(mesh.points)
-        assert len(boundary_values) == len(mesh.points)
-        assert all(isinstance(flag, (bool, onp.bool_)) for flag in boundary_flags)
-        assert all(isinstance(val, (float, onp.floating)) for val in boundary_values)
+    return Mesh(points, cells)
+
+
+@pytest.fixture
+def problem_instance(simple_mesh):
+    """Create a TestProblem instance"""
+    # Define boundary conditions
+    def left(point):
+        return np.isclose(point[0], 0., atol=1e-5)
     
-    def test_problem_material_properties(self):
-        """Test problem material property setup."""
-        mesh = self.create_simple_tet_mesh()
-        
-        # Test common material properties
-        E = 200e9  # Young's modulus
-        nu = 0.3   # Poisson's ratio
-        
-        # Test material property calculations
-        lame_lambda = E * nu / ((1 + nu) * (1 - 2 * nu))
-        lame_mu = E / (2 * (1 + nu))
-        
-        assert lame_lambda > 0
-        assert lame_mu > 0
-        assert isinstance(lame_lambda, (float, onp.floating))
-        assert isinstance(lame_mu, (float, onp.floating))
+    def right(point):
+        return np.isclose(point[0], 1., atol=1e-5)
     
-    def test_problem_load_conditions(self):
-        """Test problem load condition setup."""
-        mesh = self.create_simple_tet_mesh()
-        
-        # Test load functions
-        body_force_fn = lambda x: onp.array([0.0, 0.0, -9.81])  # Gravity
-        traction_fn = lambda x: onp.array([1000.0, 0.0, 0.0])  # Surface traction
-        
-        # Test that functions work with mesh points
-        body_forces = [body_force_fn(point) for point in mesh.points]
-        tractions = [traction_fn(point) for point in mesh.points]
-        
-        assert len(body_forces) == len(mesh.points)
-        assert len(tractions) == len(mesh.points)
-        assert all(len(force) == 3 for force in body_forces)
-        assert all(len(traction) == 3 for traction in tractions)
+    def dirichlet_val(point):
+        return 0.
     
-    def test_problem_dimensions(self):
-        """Test problem dimension consistency."""
-        mesh = self.create_simple_tet_mesh()
-        
-        # Test 3D problem setup
-        dim = 3
-        vec = 3  # 3D displacement field
-        
-        assert mesh.points.shape[1] == dim
-        assert vec == dim  # For displacement problems
-        
-        # Test total DOFs
-        num_nodes = len(mesh.points)
-        total_dofs = num_nodes * vec
-        
-        assert total_dofs == 12  # 4 nodes * 3 components
+    location_fns = [left, right]
+    value_fns = [dirichlet_val, dirichlet_val]
+    vecs = [0, 0]  # Component 0 for both BCs
+    dirichlet_bc_info = [location_fns, vecs, value_fns]
     
-    def test_problem_solution_vector(self):
-        """Test problem solution vector setup."""
-        mesh = self.create_simple_tet_mesh()
-        
-        vec = 3  # 3D displacement
-        num_nodes = len(mesh.points)
-        
-        # Test solution vector initialization
-        sol = onp.zeros((num_nodes, vec))
-        
-        assert sol.shape == (num_nodes, vec)
-        assert sol.dtype == onp.float64
-        
-        # Test solution vector with values
-        sol_with_values = onp.ones((num_nodes, vec))
-        assert onp.all(sol_with_values == 1.0)
+    # Create problem instance
+    problem = TestProblem(
+        mesh=simple_mesh,
+        vec=1,
+        dim=3,
+        ele_type='HEX8',
+        gauss_order=2,
+        dirichlet_bc_info=dirichlet_bc_info,
+        location_fns=[left]  # For surface integrals
+    )
     
-    def test_problem_element_types(self):
-        """Test problem with different element types."""
-        # Test TET4
-        tet_mesh = self.create_simple_tet_mesh()
-        assert tet_mesh.ele_type == 'TET4'
-        
-        # Test HEX8
-        hex_mesh = self.create_simple_hex_mesh()
-        assert hex_mesh.ele_type == 'HEX8'
-        
-        # Test element type consistency
-        assert tet_mesh.ele_type != hex_mesh.ele_type
+    return problem
+
+
+class TestProblemInitialization:
+    """Test Problem class initialization"""
     
-    def test_problem_gauss_integration(self):
-        """Test problem Gauss integration setup."""
-        mesh = self.create_simple_tet_mesh()
-        
-        # Test different Gauss orders
-        gauss_orders = [0, 1, 2]
-        
-        for order in gauss_orders:
-            assert order >= 0
-            assert isinstance(order, int)
+    def test_initialization(self, problem_instance):
+        """Test that Problem initializes correctly"""
+        assert problem_instance.num_vars == 1
+        assert problem_instance.num_cells == 1
+        assert problem_instance.num_total_dofs_all_vars == 8
+        assert hasattr(problem_instance, 'custom_init_called')
+        assert problem_instance.custom_init_called is True
     
-    def test_problem_error_handling(self):
-        """Test problem error handling."""
-        # Test invalid mesh
-        try:
-            invalid_points = onp.array([])
-            invalid_cells = onp.array([])
-            invalid_mesh = Mesh(invalid_points, invalid_cells, 'TET4')
-            # This should either work or raise an appropriate error
-        except Exception as e:
-            assert isinstance(e, (ValueError, IndexError, AssertionError))
+    def test_arrays_are_jax_arrays(self, problem_instance):
+        """Test that all arrays are JAX arrays"""
+        assert isinstance(problem_instance.I, jax.Array)
+        assert isinstance(problem_instance.J, jax.Array)
+        assert isinstance(problem_instance.JxW, jax.Array)
+        assert isinstance(problem_instance.shape_grads, jax.Array)
+        assert isinstance(problem_instance.v_grads_JxW, jax.Array)
+
+
+class TestKernelMethods:
+    """Test kernel creation methods"""
     
-    def test_problem_mesh_quality(self):
-        """Test problem mesh quality checks."""
-        mesh = self.create_simple_tet_mesh()
+    def test_laplace_kernel(self, problem_instance):
+        """Test get_laplace_kernel method"""
+        laplace_kernel = problem_instance.get_laplace_kernel(problem_instance.get_tensor_map())
+        assert callable(laplace_kernel)
+    
+    def test_mass_kernel(self, problem_instance):
+        """Test get_mass_kernel method"""
+        mass_kernel = problem_instance.get_mass_kernel(problem_instance.get_mass_map())
+        assert callable(mass_kernel)
+    
+    def test_surface_kernel(self, problem_instance):
+        """Test get_surface_kernel method"""
+        surface_kernel = problem_instance.get_surface_kernel(problem_instance.get_surface_maps()[0])
+        assert callable(surface_kernel)
+
+
+class TestComputationMethods:
+    """Test computation methods"""
+    
+    @pytest.fixture
+    def dummy_solution(self, problem_instance):
+        """Create a dummy solution for testing"""
+        return [np.zeros((problem_instance.fes[0].num_total_nodes, problem_instance.fes[0].vec))]
+    
+    def test_get_res(self, problem_instance, dummy_solution):
+        """Test get_res method"""
+        res_list = problem_instance.get_res(dummy_solution)
+        assert len(res_list) == 1
+        assert res_list[0].shape == (8, 1)
+    
+    def test_get_J(self, problem_instance, dummy_solution):
+        """Test get_J method"""
+        from jax.experimental import sparse
+        J = problem_instance.get_J(dummy_solution)
+        assert isinstance(J, sparse.BCOO)
+        expected_shape = (problem_instance.num_total_dofs_all_vars, problem_instance.num_total_dofs_all_vars)
+        assert J.shape == expected_shape
+        assert len(J.data) > 0
+    
+    def test_set_params(self, problem_instance):
+        """Test set_params method"""
+        params = np.ones((problem_instance.num_cells, problem_instance.fes[0].num_quads))
+        problem_instance.set_params(params)
+        assert hasattr(problem_instance, 'params_set')
+        assert problem_instance.params_set is True
+        assert len(problem_instance.internal_vars) == 1
+
+
+class TestHelperMethods:
+    """Test helper methods"""
+    
+    def test_split_and_compute_cell(self, problem_instance):
+        """Test split_and_compute_cell method"""
+        cells_sol_list = [np.zeros((problem_instance.num_cells, 
+                                   problem_instance.fes[0].num_nodes, 
+                                   problem_instance.fes[0].vec))]
+        cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
         
-        # Test mesh quality metrics
-        assert mesh.points.shape[0] > 0  # At least one point
-        assert mesh.cells.shape[0] > 0   # At least one cell
-        assert mesh.points.shape[1] == 3  # 3D coordinates
+        weak_form = problem_instance.split_and_compute_cell(
+            cells_sol_flat, np, False, problem_instance.internal_vars
+        )
+        assert weak_form is not None
+        assert weak_form.shape == (1, 8)  # (num_cells, num_nodes*vec)
+    
+    def test_compute_face(self, problem_instance):
+        """Test compute_face method"""
+        cells_sol_list = [np.zeros((problem_instance.num_cells, 
+                                   problem_instance.fes[0].num_nodes, 
+                                   problem_instance.fes[0].vec))]
+        cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
         
-        # Test mesh connectivity
-        max_node_index = onp.max(mesh.cells)
-        assert max_node_index < len(mesh.points)  # Valid node indices
+        face_values = problem_instance.compute_face(
+            cells_sol_flat, np, False, problem_instance.internal_vars_surfaces
+        )
+        assert face_values is not None
+        assert isinstance(face_values, list)
+
+
+class TestJAXNumPyIntegration:
+    """Test that JAX numpy is being used correctly"""
+    
+    def test_cumsum_with_jax_array(self, problem_instance):
+        """Test that cumsum works with JAX arrays"""
+        # This was a bug that was fixed - cumsum needs array input
+        assert isinstance(problem_instance.num_nodes_cumsum, jax.Array)
+    
+    def test_array_operations_are_jax(self, problem_instance):
+        """Test that array operations produce JAX arrays"""
+        # Create some test data
+        test_array = np.ones((2, 3))
+        result = np.concatenate([test_array, test_array], axis=0)
+        assert isinstance(result, jax.Array)
+        
+        stacked = np.stack([test_array, test_array])
+        assert isinstance(stacked, jax.Array)
+        
+        transposed = np.transpose(stacked, axes=(1, 0, 2))
+        assert isinstance(transposed, jax.Array)
