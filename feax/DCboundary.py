@@ -180,3 +180,51 @@ def apply_boundary_to_res(bc: DirichletBC, res_vec: np.ndarray, sol_vec: np.ndar
     res_modified = res_modified.at[bc.bc_rows].set(bc_residual_values)
     
     return res_modified
+
+
+@jax.jit
+def update_J(bc, precomputed_J):
+    """Update Jacobian matrix values using new boundary conditions.
+    
+    This function assumes the sparse matrix structure (indices, shape) remains identical
+    to precomputed_J and only updates the data values. This provides maximum optimization
+    by avoiding any structural operations and is JIT-compatible.
+    
+    Parameters
+    ----------
+    bc : DirichletBC
+        Updated boundary condition information
+    precomputed_J : BCOO
+        Pre-computed Jacobian matrix with identical structure to be maintained
+        
+    Returns
+    -------
+    bc_applied_J : BCOO
+        Updated Jacobian matrix with boundary conditions applied
+    """
+    # Reuse exact structure - only update data values
+    data = precomputed_J.data
+    indices = precomputed_J.indices
+    shape = precomputed_J.shape
+    
+    # Apply boundary conditions by modifying values only
+    row_indices = indices[..., 0]
+    col_indices = indices[..., 1]
+    
+    # Simple value updates in data array V - just update specific values
+    def update_bc_row(i, data):
+        bc_row = bc.bc_rows[i]
+        # Zero all entries in this BC row  
+        bc_row_mask = (row_indices == bc_row)
+        data = np.where(bc_row_mask, 0.0, data)
+        # Set diagonal to 1.0 if it exists
+        diagonal_mask = bc_row_mask & (col_indices == bc_row)
+        data = np.where(diagonal_mask, 1.0, data)
+        return data
+    
+    data = jax.lax.fori_loop(0, len(bc.bc_rows), update_bc_row, data)
+    
+    # Create updated matrix with same structure
+    bc_applied_J = BCOO((data, indices), shape=shape)
+    
+    return bc_applied_J

@@ -217,3 +217,47 @@ print(f"Max difference between Feax and JaxFem residual BC: {res_bc_diff}")
 
 if np.allclose(res_bc_feax, res_bc_jaxfem, atol=1e-10):
     print("✓ Residual BC application matches JaxFem (within tolerance)")
+
+print("\n=== Solution Comparison ===")
+
+# Solve using feax with sparse solver
+from feax.solver import newton_solve, SolverOptions
+bc = DirichletBC.from_problem(feax_problem)
+initial_sol = np.zeros(feax_problem.num_total_dofs_all_vars)
+initial_sol = initial_sol.at[bc.bc_rows].set(bc.bc_vals)
+
+@jax.jit
+def solve_feax(initial_sol):
+    def J_func(sol_flat):
+        sol_unflat = feax_problem.unflatten_fn_sol_list(sol_flat)
+        J = get_J(feax_problem, sol_unflat)
+        return apply_boundary_to_J(bc, J)
+    
+    def res_func(sol_flat):
+        sol_unflat = feax_problem.unflatten_fn_sol_list(sol_flat)
+        res = get_res(feax_problem, sol_unflat)
+        res_flat = jax.flatten_util.ravel_pytree(res)[0]
+        return apply_boundary_to_res(bc, res_flat, sol_flat)
+    
+    return newton_solve(J_func, res_func, initial_sol, 
+                       SolverOptions(tol=1e-8, linear_solver="cg"))
+
+# Solve using jaxfem 
+from jax_fem.solver import solver
+def solve_jaxfem():
+    return solver(jaxfem_problem)
+
+solution_feax = solve_feax(initial_sol)
+solution_jaxfem_list = solve_jaxfem()
+solution_jaxfem = jax.flatten_util.ravel_pytree(solution_jaxfem_list)[0]
+
+max_disp_feax = np.max(np.abs(solution_feax))
+max_disp_jaxfem = np.max(np.abs(solution_jaxfem))
+sol_diff = np.max(np.abs(solution_feax - solution_jaxfem))
+
+print(f"Max displacement (Feax): {max_disp_feax:.6f}")
+print(f"Max displacement (JaxFem): {max_disp_jaxfem:.6f}")
+print(f"Max solution difference: {sol_diff:.2e}")
+
+if np.allclose(solution_feax, solution_jaxfem, atol=1e-8):
+    print("✓ Solutions match between Feax and JaxFem")

@@ -29,7 +29,7 @@ class ElasticityProblem(FeaxProblem):
         return [surface_map]
 
 # Create mesh and problem
-meshio_mesh = box_mesh_gmsh(20, 20, 20, 1., 1., 1., data_dir='/tmp', ele_type='HEX8')
+meshio_mesh = box_mesh_gmsh(50, 50, 50, 1., 1., 1., data_dir='/tmp', ele_type='HEX8')
 mesh = Mesh(meshio_mesh.points, meshio_mesh.cells_dict['hexahedron'])
 
 def left(point):
