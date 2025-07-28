@@ -113,6 +113,9 @@ class Problem:
         self.cells_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*self.cells_list) # (num_cells, num_nodes + ...)
 
         dumb_array_dof = [np.zeros((fe.num_nodes, fe.vec)) for fe in self.fes]
+        # TODO: dumb_array_dof is useless?
+        dumb_array_node = [np.zeros(fe.num_nodes) for fe in self.fes]
+        # _, unflatten_fn_node = jax.flatten_util.ravel_pytree(dumb_array_node)
         _, self.unflatten_fn_dof = jax.flatten_util.ravel_pytree(dumb_array_dof)
         
         dumb_sol_list = [np.zeros((fe.num_total_nodes, fe.vec)) for fe in self.fes]
@@ -171,9 +174,81 @@ class Problem:
         self._init_kernels()
 
     def custom_init(self, *args):
-        """Child class should override if more things need to be done in initialization."""
+        """Child class should override if more things need to be done in initialization
+        """
         pass
 
+    def get_laplace_kernel(self, tensor_map):
+
+        def laplace_kernel(cell_sol_flat, cell_shape_grads, cell_v_grads_JxW, *cell_internal_vars):
+            # cell_sol_flat: (num_nodes*vec + ...,)
+            # cell_sol_list: [(num_nodes, vec), ...]
+            # cell_shape_grads: (num_quads, num_nodes + ..., dim)
+            # cell_v_grads_JxW: (num_quads, num_nodes + ..., 1, dim)
+
+            cell_sol_list = self.unflatten_fn_dof(cell_sol_flat)
+            cell_shape_grads = cell_shape_grads[:, :self.fes[0].num_nodes, :]
+            cell_sol = cell_sol_list[0]
+            cell_v_grads_JxW = cell_v_grads_JxW[:, :self.fes[0].num_nodes, :, :]
+            vec = self.fes[0].vec
+
+            # (1, num_nodes, vec, 1) * (num_quads, num_nodes, 1, dim) -> (num_quads, num_nodes, vec, dim)
+            u_grads = cell_sol[None, :, :, None] * cell_shape_grads[:, :, None, :]
+            u_grads = np.sum(u_grads, axis=1)  # (num_quads, vec, dim)
+            u_grads_reshape = u_grads.reshape(-1, vec, self.dim)  # (num_quads, vec, dim)
+            # (num_quads, vec, dim)
+            u_physics = jax.vmap(tensor_map)(u_grads_reshape, *cell_internal_vars).reshape(u_grads.shape)
+            # (num_quads, num_nodes, vec, dim) -> (num_nodes, vec)
+            val = np.sum(u_physics[:, None, :, :] * cell_v_grads_JxW, axis=(0, -1))
+            val = jax.flatten_util.ravel_pytree(val)[0] # (num_nodes*vec + ...,)
+            return val
+
+        return laplace_kernel
+
+    def get_mass_kernel(self, mass_map):
+
+        def mass_kernel(cell_sol_flat, x, cell_JxW, *cell_internal_vars):
+            # cell_sol_flat: (num_nodes*vec + ...,)
+            # cell_sol_list: [(num_nodes, vec), ...]
+            # x: (num_quads, dim)
+            # cell_JxW: (num_vars, num_quads)
+
+            cell_sol_list = self.unflatten_fn_dof(cell_sol_flat)
+            cell_sol = cell_sol_list[0]
+            cell_JxW = cell_JxW[0]
+            vec = self.fes[0].vec
+            # (1, num_nodes, vec) * (num_quads, num_nodes, 1) -> (num_quads, num_nodes, vec) -> (num_quads, vec)
+            u = np.sum(cell_sol[None, :, :] * self.fes[0].shape_vals[:, :, None], axis=1)
+            u_physics = jax.vmap(mass_map)(u, x, *cell_internal_vars)  # (num_quads, vec)
+            # (num_quads, 1, vec) * (num_quads, num_nodes, 1) * (num_quads, 1, 1) -> (num_nodes, vec)
+            val = np.sum(u_physics[:, None, :] * self.fes[0].shape_vals[:, :, None] * cell_JxW[:, None, None], axis=0)
+            val = jax.flatten_util.ravel_pytree(val)[0] # (num_nodes*vec + ...,)
+            return val
+
+        return mass_kernel
+
+    def get_surface_kernel(self, surface_map):
+
+        def surface_kernel(cell_sol_flat, x, face_shape_vals, face_shape_grads, face_nanson_scale, *cell_internal_vars_surface):
+            # face_shape_vals: (num_face_quads, num_nodes + ...)
+            # face_shape_grads: (num_face_quads, num_nodes + ..., dim)
+            # x: (num_face_quads, dim)
+            # face_nanson_scale: (num_vars, num_face_quads)
+
+            cell_sol_list = self.unflatten_fn_dof(cell_sol_flat)
+            cell_sol = cell_sol_list[0]
+            face_shape_vals = face_shape_vals[:, :self.fes[0].num_nodes]
+            face_nanson_scale = face_nanson_scale[0]
+
+            # (1, num_nodes, vec) * (num_face_quads, num_nodes, 1) -> (num_face_quads, vec)
+            u = np.sum(cell_sol[None, :, :] * face_shape_vals[:, :, None], axis=1)
+            u_physics = jax.vmap(surface_map)(u, x, *cell_internal_vars_surface)  # (num_face_quads, vec)
+            # (num_face_quads, 1, vec) * (num_face_quads, num_nodes, 1) * (num_face_quads, 1, 1) -> (num_nodes, vec)
+            val = np.sum(u_physics[:, None, :] * face_shape_vals[:, :, None] * face_nanson_scale[:, None, None], axis=0)
+
+            return jax.flatten_util.ravel_pytree(val)[0]
+
+        return surface_kernel
 
     def _init_kernels(self):
         def value_and_jacfwd(f, x):
@@ -192,15 +267,13 @@ class Problem:
                 # TODO: If there is no kernel map, returning 0. is not a good choice. 
                 # Return a zero array with proper shape will be better.
                 if hasattr(self, 'get_mass_map'):
-                    from feax.assembler import get_mass_kernel
-                    mass_kernel = get_mass_kernel(self, self.get_mass_map())
+                    mass_kernel = self.get_mass_kernel(self.get_mass_map())
                     mass_val = mass_kernel(cell_sol_flat, physical_quad_points, cell_JxW, *cell_internal_vars)
                 else:
                     mass_val = 0.
 
                 if hasattr(self, 'get_tensor_map'):
-                    from feax.assembler import get_laplace_kernel
-                    laplace_kernel = get_laplace_kernel(self, self.get_tensor_map())
+                    laplace_kernel = self.get_laplace_kernel(self.get_tensor_map())
                     laplace_val = laplace_kernel(cell_sol_flat, cell_shape_grads, cell_v_grads_JxW, *cell_internal_vars)
                 else:
                     laplace_val = 0.
@@ -228,8 +301,7 @@ class Problem:
                 surface_kernel is from legacy JAX-FEM. It can still be used, but not mandatory.
                 """
                 if hasattr(self, 'get_surface_maps'):
-                    from feax.assembler import get_surface_kernel
-                    surface_kernel = get_surface_kernel(self, self.get_surface_maps()[ind])
+                    surface_kernel = self.get_surface_kernel(self.get_surface_maps()[ind])
                     surface_val = surface_kernel(cell_sol_flat, physical_surface_quad_points, face_shape_vals,
                         face_shape_grads, face_nanson_scale, *cell_internal_vars_surface)
                 else:
@@ -274,6 +346,26 @@ class Problem:
             kernel_jac_face = jax.jit(jax.vmap(kernel_jac_face))
             self.kernel_face.append(kernel_face)
             self.kernel_jac_face.append(kernel_jac_face)
+
+    # Backwards compatibility methods that delegate to pure functions
+    def get_res(self, sol_list):
+        """Compute residual list (backwards compatibility wrapper).
+        
+        This method delegates to the pure function for backwards compatibility.
+        For new code, use feax.assembler.get_res(problem, sol_list) directly.
+        """
+        from feax.assembler import get_res
+        return get_res(self, sol_list)
+    
+    def get_J(self, sol_list):
+        """Compute Jacobian matrix (backwards compatibility wrapper).
+        
+        This method delegates to the pure function for backwards compatibility.
+        For new code, use feax.assembler.get_J(problem, sol_list) directly.
+        """
+        from feax.assembler import get_J
+        return get_J(self, sol_list)
+
 
     def __jax_tree_flatten__(self):
         """Flatten the Problem into dynamic (differentiable) and static parts."""

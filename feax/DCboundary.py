@@ -1,19 +1,103 @@
 import jax
 import jax.numpy as np
 from jax.experimental.sparse import BCOO
+from dataclasses import dataclass
+from jax.tree_util import register_pytree_node
 
 
-def apply_boundary_to_J(problem, J):
-    """Apply Dirichlet boundary conditions to Jacobian matrix J using row elimination.
+@dataclass(frozen=True)
+class DirichletBC:
+    """JAX-compatible dataclass for Dirichlet boundary conditions.
     
-    This is a pure JAX implementation equivalent to get_A in jax-fem/solver.py.
-    For each Dirichlet boundary condition, this function zeros out the corresponding
-    rows and sets the diagonal elements to 1.
+    This class pre-computes and stores all BC information as static JAX arrays,
+    making it suitable for JIT compilation.
+    """
+    bc_rows: np.ndarray  # All boundary condition row indices
+    bc_mask: np.ndarray  # Boolean mask for BC rows (size: total_dofs)
+    bc_vals: np.ndarray  # Boundary condition values for each BC row
+    total_dofs: int
+    
+    @staticmethod
+    def from_problem(problem):
+        """Create DirichletBC from a problem instance.
+        
+        Extracts boundary condition information from problem.fes and converts
+        it to static JAX arrays.
+        """
+        bc_rows_list = []
+        bc_vals_list = []
+        
+        for ind, fe in enumerate(problem.fes):
+            for i in range(len(fe.node_inds_list)):
+                bc_indices = fe.node_inds_list[i] * fe.vec + fe.vec_inds_list[i] + problem.offset[ind]
+                bc_rows_list.append(bc_indices)
+                # Extract BC values - expand to match the shape of bc_indices
+                bc_values = np.full_like(bc_indices, fe.vals_list[i], dtype=np.float64)
+                bc_vals_list.append(bc_values)
+        
+        if bc_rows_list:
+            bc_rows = np.concatenate(bc_rows_list)
+            bc_vals = np.concatenate(bc_vals_list)
+            
+            # Sort by row indices to maintain consistency
+            sort_idx = np.argsort(bc_rows)
+            bc_rows = bc_rows[sort_idx]
+            bc_vals = bc_vals[sort_idx]
+            
+            # Handle duplicates by keeping first occurrence
+            unique_rows, unique_idx = np.unique(bc_rows, return_index=True)
+            bc_rows = unique_rows
+            bc_vals = bc_vals[unique_idx]
+        else:
+            bc_rows = np.array([], dtype=np.int32)
+            bc_vals = np.array([], dtype=np.float64)
+        
+        # Create a boolean mask for faster lookup
+        # Get total_dofs from problem to ensure consistency
+        total_dofs = problem.num_total_dofs_all_vars
+        bc_mask = np.zeros(total_dofs, dtype=bool)
+        if bc_rows.shape[0] > 0:
+            bc_mask = bc_mask.at[bc_rows].set(True)
+        
+        return DirichletBC(
+            bc_rows=bc_rows,
+            bc_mask=bc_mask,
+            bc_vals=bc_vals,
+            total_dofs=total_dofs
+        )
+
+
+# Register DirichletBC as a JAX pytree
+def _dirichletbc_flatten(bc):
+    """Flatten DirichletBC into a list of arrays and auxiliary data."""
+    # Arrays go in the first return value
+    arrays = (bc.bc_rows, bc.bc_mask, bc.bc_vals)
+    # Static data goes in the second return value
+    aux_data = bc.total_dofs
+    return arrays, aux_data
+
+
+def _dirichletbc_unflatten(aux_data, arrays):
+    """Reconstruct DirichletBC from flattened representation."""
+    bc_rows, bc_mask, bc_vals = arrays
+    total_dofs = aux_data
+    return DirichletBC(bc_rows=bc_rows, bc_mask=bc_mask, bc_vals=bc_vals, total_dofs=total_dofs)
+
+
+# Register the pytree
+register_pytree_node(
+    DirichletBC,
+    _dirichletbc_flatten,
+    _dirichletbc_unflatten
+)
+
+def apply_boundary_to_J(bc: DirichletBC, J: BCOO) -> BCOO:
+    """Apply Dirichlet boundary conditions to Jacobian matrix J using row elimination.
     
     Parameters
     ----------
-    problem : Problem
-        The problem instance containing boundary condition information
+    bc : DirichletBC
+        Pre-computed boundary condition information
     J : jax.experimental.sparse.BCOO
         The sparse Jacobian matrix in BCOO format
         
@@ -27,68 +111,72 @@ def apply_boundary_to_J(problem, J):
     indices = J.indices
     shape = J.shape
     
-    # Collect all boundary condition row indices using vectorized operations
-    bc_rows_list = [
-        fe.node_inds_list[i] * fe.vec + fe.vec_inds_list[i] + problem.offset[ind]
-        for ind, fe in enumerate(problem.fes)
-        for i in range(len(fe.node_inds_list))
-    ]
-    
-    # Handle empty BC case
-    if not bc_rows_list:
-        return J
-        
-    bc_rows = np.concatenate(bc_rows_list)
-    bc_rows_set = np.unique(bc_rows)
-    
     # Get row and column indices from sparse matrix
     row_indices = indices[..., 0]
-    col_indices = indices[..., 1]
     
-    # Create mask for BC rows using vectorized comparison
-    is_bc_row = np.sum(row_indices[:, None] == bc_rows_set[None, :], axis=1) > 0
+    # Create mask for BC rows using pre-computed bc_mask
+    is_bc_row = bc.bc_mask[row_indices]
     
-    # Check diagonal entries
-    is_diagonal = row_indices == col_indices
+    # The algorithm:
+    # 1. Zero out all BC row entries 
+    # 2. Add diagonal entries for ALL BC rows with value 1.0
     
-    # Mask for diagonal entries in BC rows
-    is_bc_diagonal = is_bc_row & is_diagonal
+    # Step 1: Zero out all BC row entries
+    bc_row_mask = is_bc_row
+    data_modified = np.where(bc_row_mask, 0.0, data)
     
-    # Handle duplicate diagonal entries by keeping only first occurrence
-    bc_diag_indices = indices[is_bc_diagonal]
+    # Step 2: Add diagonal entries for ALL BC rows
+    # Simple approach that works with JIT: always add all BC diagonal entries
+    # This may create duplicates, but most JAX sparse solvers handle this correctly
     
-    # Create first occurrence mask
-    is_first_bc_diag = np.zeros_like(is_bc_diagonal)
-    
-    if bc_diag_indices.shape[0] > 0:
-        unique_bc_diag, first_occurrence_idx = np.unique(bc_diag_indices[:, 0], return_index=True)
-        bc_diag_positions = np.where(is_bc_diagonal)[0]
-        is_first_bc_diag = is_first_bc_diag.at[bc_diag_positions[first_occurrence_idx]].set(True)
-    
-    # Create keep mask: non-BC rows or first BC diagonal
-    keep_mask = ~is_bc_row | is_first_bc_diag
-    
-    # Filter indices and data
-    filtered_indices = indices[keep_mask]
-    filtered_data = data[keep_mask]
-    
-    # Update BC diagonal values to 1.0
-    is_bc_diagonal_filtered = is_first_bc_diag[keep_mask]
-    filtered_data = np.where(is_bc_diagonal_filtered, 1.0, filtered_data)
-    
-    # Find missing diagonal entries
-    bc_diag_row_indices = row_indices[is_bc_diagonal]
-    missing_diag_rows = np.setdiff1d(bc_rows_set, np.unique(bc_diag_row_indices))
-    
-    # Create diagonal entries for missing rows
-    missing_diag_indices = np.stack([missing_diag_rows, missing_diag_rows], axis=-1)
-    missing_diag_data = np.ones_like(missing_diag_rows, dtype=data.dtype)
+    bc_diag_indices = np.stack([bc.bc_rows, bc.bc_rows], axis=-1)
+    bc_diag_data = np.ones_like(bc.bc_rows, dtype=data.dtype)
     
     # Concatenate all data
-    all_indices = np.concatenate([filtered_indices, missing_diag_indices], axis=0)
-    all_data = np.concatenate([filtered_data, missing_diag_data], axis=0)
+    all_indices = np.concatenate([indices, bc_diag_indices], axis=0)
+    all_data = np.concatenate([data_modified, bc_diag_data], axis=0)
     
     # Create final BCOO matrix
-    J_bc = BCOO((all_data, all_indices), shape=shape).sort_indices()
+    J_bc = BCOO((all_data, all_indices), shape=shape)
+    
+    # Skip sorting for large matrices to avoid slow compilation
+    # Most JAX sparse solvers can handle unsorted matrices with duplicates
+    # The duplicates will be handled correctly by summing during solve
+    # (BC diagonal entries: 0 + 1 = 1, which is what we want)
     
     return J_bc
+
+def apply_boundary_to_res(bc: DirichletBC, res_vec: np.ndarray, sol_vec: np.ndarray, scale: float = 1.0) -> np.ndarray:
+    """Apply Dirichlet boundary conditions to residual vector using row elimination.
+    
+    This is a JAX-JIT compatible implementation that applies boundary conditions
+    to a residual vector: res[bc_dof] = sol[bc_dof] - bc_val * scale
+    
+    Parameters
+    ----------
+    bc : DirichletBC
+        Pre-computed boundary condition information
+    res_vec : np.ndarray
+        The residual vector (flattened)
+    sol_vec : np.ndarray  
+        The solution vector (flattened)
+    scale : float, optional
+        Scaling factor for boundary condition values, by default 1.0
+        
+    Returns
+    -------
+    np.ndarray
+        The residual vector with boundary conditions applied
+    """
+    # Create a copy of the residual vector to modify
+    res_modified = res_vec.copy()
+    
+    # For each boundary condition row:
+    # res[bc_row] = sol[bc_row] - bc_val * scale
+    # This is equivalent to the reference implementation
+    
+    # Apply BC: set residual at BC nodes to solution minus BC values
+    bc_residual_values = sol_vec[bc.bc_rows] - bc.bc_vals * scale
+    res_modified = res_modified.at[bc.bc_rows].set(bc_residual_values)
+    
+    return res_modified
