@@ -57,11 +57,10 @@ problem = ElasticityProblem(
 )
 
 bc = DirichletBC.from_problem(problem)
+
 initial_sol = np.zeros(problem.num_total_dofs_all_vars)
 initial_sol = initial_sol.at[bc.bc_rows].set(bc.bc_vals)
 
-# JIT-compiled solver
-@jax.jit
 def solve_jit(initial_sol):
     def J_bc_func(sol_flat):
         sol_unflat = problem.unflatten_fn_sol_list(sol_flat)
@@ -77,8 +76,7 @@ def solve_jit(initial_sol):
     solver_options = SolverOptions(
         tol=1e-8,
         linear_solver="cg",
-        x0_strategy="bc_aware",
-        bc_rows=tuple(bc.bc_rows.tolist())
+        x0_strategy="zeros"
     )
     
     return newton_solve(J_bc_func, res_bc_func, initial_sol, solver_options)
@@ -95,5 +93,5 @@ displacement = sol_unflat[0]
 from feax.utils import save_sol
 save_sol(
     mesh=mesh,
-    sol_file="/workspace/solution_correct.vtk",
+    sol_file="/workspace/solution.vtk",
     point_infos=[("displacement", displacement)])

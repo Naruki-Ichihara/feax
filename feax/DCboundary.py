@@ -65,6 +65,110 @@ class DirichletBC:
             bc_vals=bc_vals,
             total_dofs=total_dofs
         )
+    
+    @staticmethod
+    def from_bc_info(problem, bc_info):
+        """Create DirichletBC from boundary condition info directly.
+        
+        This method allows creating BC objects with custom BC information
+        without modifying the problem's dirichlet_bc_info.
+        
+        Parameters
+        ----------
+        problem : Problem
+            The problem instance containing mesh and finite element information
+        bc_info : list
+            Boundary condition information in format [location_fns, vecs, value_fns]
+            - location_fns: list of functions that identify boundary nodes
+            - vecs: list of vector component indices (0, 1, 2 for x, y, z)
+            - value_fns: list of functions that return BC values at each point
+        
+        Returns
+        -------
+        DirichletBC
+            A new DirichletBC instance with the specified boundary conditions
+        
+        Examples
+        --------
+        >>> def left_boundary(point):
+        ...     return np.isclose(point[0], 0.0)
+        >>> def zero_disp(point):
+        ...     return 0.0
+        >>> bc_info = [[left_boundary], [0], [zero_disp]]
+        >>> bc = DirichletBC.from_bc_info(problem, bc_info)
+        """
+        if bc_info is None:
+            return DirichletBC(
+                bc_rows=np.array([], dtype=np.int32),
+                bc_mask=np.zeros(problem.num_total_dofs_all_vars, dtype=bool),
+                bc_vals=np.array([], dtype=np.float64),
+                total_dofs=problem.num_total_dofs_all_vars
+            )
+        
+        location_fns, vecs, value_fns = bc_info
+        assert len(location_fns) == len(value_fns) and len(value_fns) == len(vecs), \
+            "location_fns, vecs, and value_fns must have the same length"
+        
+        bc_rows_list = []
+        bc_vals_list = []
+        
+        for ind, fe in enumerate(problem.fes):
+            for i in range(len(location_fns)):
+                # Handle location functions with 1 or 2 arguments
+                num_args = location_fns[i].__code__.co_argcount
+                if num_args == 1:
+                    location_fn = lambda point, ind_unused: location_fns[i](point)
+                elif num_args == 2:
+                    location_fn = location_fns[i]
+                else:
+                    raise ValueError(f"Wrong number of arguments for location_fn: must be 1 or 2, got {num_args}")
+                
+                # Find nodes that satisfy the boundary condition
+                node_inds = np.argwhere(
+                    jax.vmap(location_fn)(fe.mesh.points, np.arange(fe.num_total_nodes))
+                ).reshape(-1)
+                
+                if len(node_inds) > 0:
+                    # Create vector component indices
+                    vec_inds = np.ones_like(node_inds, dtype=np.int32) * vecs[i]
+                    
+                    # Calculate DOF indices
+                    bc_indices = node_inds * fe.vec + vec_inds + problem.offset[ind]
+                    bc_rows_list.append(bc_indices)
+                    
+                    # Calculate BC values at the nodes
+                    values = jax.vmap(value_fns[i])(fe.mesh.points[node_inds].reshape(-1, fe.dim)).reshape(-1)
+                    bc_vals_list.append(values)
+        
+        if bc_rows_list:
+            bc_rows = np.concatenate(bc_rows_list)
+            bc_vals = np.concatenate(bc_vals_list)
+            
+            # Sort by row indices to maintain consistency
+            sort_idx = np.argsort(bc_rows)
+            bc_rows = bc_rows[sort_idx]
+            bc_vals = bc_vals[sort_idx]
+            
+            # Handle duplicates by keeping first occurrence
+            unique_rows, unique_idx = np.unique(bc_rows, return_index=True)
+            bc_rows = unique_rows
+            bc_vals = bc_vals[unique_idx]
+        else:
+            bc_rows = np.array([], dtype=np.int32)
+            bc_vals = np.array([], dtype=np.float64)
+        
+        # Create a boolean mask for faster lookup
+        total_dofs = problem.num_total_dofs_all_vars
+        bc_mask = np.zeros(total_dofs, dtype=bool)
+        if bc_rows.shape[0] > 0:
+            bc_mask = bc_mask.at[bc_rows].set(True)
+        
+        return DirichletBC(
+            bc_rows=bc_rows,
+            bc_mask=bc_mask,
+            bc_vals=bc_vals,
+            total_dofs=total_dofs
+        )
 
 
 # Register DirichletBC as a JAX pytree
@@ -180,51 +284,3 @@ def apply_boundary_to_res(bc: DirichletBC, res_vec: np.ndarray, sol_vec: np.ndar
     res_modified = res_modified.at[bc.bc_rows].set(bc_residual_values)
     
     return res_modified
-
-
-@jax.jit
-def update_J(bc, precomputed_J):
-    """Update Jacobian matrix values using new boundary conditions.
-    
-    This function assumes the sparse matrix structure (indices, shape) remains identical
-    to precomputed_J and only updates the data values. This provides maximum optimization
-    by avoiding any structural operations and is JIT-compatible.
-    
-    Parameters
-    ----------
-    bc : DirichletBC
-        Updated boundary condition information
-    precomputed_J : BCOO
-        Pre-computed Jacobian matrix with identical structure to be maintained
-        
-    Returns
-    -------
-    bc_applied_J : BCOO
-        Updated Jacobian matrix with boundary conditions applied
-    """
-    # Reuse exact structure - only update data values
-    data = precomputed_J.data
-    indices = precomputed_J.indices
-    shape = precomputed_J.shape
-    
-    # Apply boundary conditions by modifying values only
-    row_indices = indices[..., 0]
-    col_indices = indices[..., 1]
-    
-    # Simple value updates in data array V - just update specific values
-    def update_bc_row(i, data):
-        bc_row = bc.bc_rows[i]
-        # Zero all entries in this BC row  
-        bc_row_mask = (row_indices == bc_row)
-        data = np.where(bc_row_mask, 0.0, data)
-        # Set diagonal to 1.0 if it exists
-        diagonal_mask = bc_row_mask & (col_indices == bc_row)
-        data = np.where(diagonal_mask, 1.0, data)
-        return data
-    
-    data = jax.lax.fori_loop(0, len(bc.bc_rows), update_bc_row, data)
-    
-    # Create updated matrix with same structure
-    bc_applied_J = BCOO((data, indices), shape=shape)
-    
-    return bc_applied_J
