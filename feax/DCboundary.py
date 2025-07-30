@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as np
-from jax.experimental.sparse import BCOO
+from jax.experimental.sparse import BCOO, eye, bcoo_multiply_sparse
 from dataclasses import dataclass
 from jax.tree_util import register_pytree_node
 
@@ -195,6 +195,7 @@ register_pytree_node(
     _dirichletbc_unflatten
 )
 
+
 def apply_boundary_to_J(bc: DirichletBC, J: BCOO) -> BCOO:
     """Apply Dirichlet boundary conditions to Jacobian matrix J using row elimination.
     
@@ -214,9 +215,8 @@ def apply_boundary_to_J(bc: DirichletBC, J: BCOO) -> BCOO:
     data = J.data
     indices = J.indices
     shape = J.shape
-    
     # Get row and column indices from sparse matrix
-    row_indices = indices[..., 0]
+    row_indices = indices[:, 0]
     
     # Create mask for BC rows using pre-computed bc_mask
     is_bc_row = bc.bc_mask[row_indices]
@@ -249,6 +249,82 @@ def apply_boundary_to_J(bc: DirichletBC, J: BCOO) -> BCOO:
     # (BC diagonal entries: 0 + 1 = 1, which is what we want)
     
     return J_bc
+
+
+def create_J_bc_updater(problem, bc: DirichletBC):
+    """Create a function that updates Jacobian values while preserving BC structure.
+    
+    This function generator creates an updater that:
+    1. Pre-computes the BC structure (which rows to zero, where to add diagonals)
+    2. Returns a function that only updates values based on new DOFs
+    3. Avoids reapplying row elimination each time
+    
+    Parameters
+    ----------
+    problem : Problem
+        The problem instance for computing Jacobian
+    bc : DirichletBC
+        Pre-computed boundary condition information
+        
+    Returns
+    -------
+    update_J_bc : function
+        Function that takes DOFs and returns updated Jacobian with BC structure
+    """
+    from feax.assembler import get_J
+    
+    # Pre-compute structure information
+    # Get a reference Jacobian to understand structure
+    zero_sol = np.zeros(problem.num_total_dofs_all_vars)
+    zero_sol_unflat = problem.unflatten_fn_sol_list(zero_sol)
+    J_ref = get_J(problem, zero_sol_unflat)
+    
+    # Store original indices and shape
+    original_indices = J_ref.indices
+    original_shape = J_ref.shape
+    num_original_entries = original_indices.shape[0]
+    
+    # Pre-compute BC diagonal indices to add
+    bc_diag_indices = np.stack([bc.bc_rows, bc.bc_rows], axis=-1)
+    bc_diag_data = np.ones_like(bc.bc_rows, dtype=J_ref.data.dtype)
+    
+    # Concatenate indices (structure remains fixed)
+    all_indices = np.concatenate([original_indices, bc_diag_indices], axis=0)
+    
+    # Pre-compute mask for BC rows in original data
+    row_indices = original_indices[:, 0]
+    is_bc_row = bc.bc_mask[row_indices]
+    
+    def update_J_bc(dofs):
+        """Update Jacobian values based on new DOFs while preserving BC structure.
+        
+        Parameters
+        ----------
+        dofs : np.ndarray
+            Current degrees of freedom vector
+            
+        Returns
+        -------
+        J_bc : BCOO
+            Updated Jacobian with BC structure preserved
+        """
+        # Compute new Jacobian values
+        sol_unflat = problem.unflatten_fn_sol_list(dofs)
+        J_new = get_J(problem, sol_unflat)
+        
+        # Apply BC structure: zero out BC rows
+        data_modified = np.where(is_bc_row, 0.0, J_new.data)
+        
+        # Concatenate with BC diagonal entries
+        all_data = np.concatenate([data_modified, bc_diag_data], axis=0)
+        
+        # Create updated BCOO matrix with pre-computed structure
+        J_bc = BCOO((all_data, all_indices), shape=original_shape)
+        
+        return J_bc
+    
+    return update_J_bc
+
 
 def apply_boundary_to_res(bc: DirichletBC, res_vec: np.ndarray, sol_vec: np.ndarray, scale: float = 1.0) -> np.ndarray:
     """Apply Dirichlet boundary conditions to residual vector using row elimination.
