@@ -207,13 +207,31 @@ FEAX is designed for high performance:
 
 ### Benchmark Results
 
-Performance comparison for linear elasticity problems (3D HEX8 elements, 201,723 DOFs):
+Performance comparison for linear elasticity problems with the following specifications:
 
 ![Linear Elasticity Solver Performance Benchmark](assets/linear_elasticity_benchmark.png)
 
-The benchmark shows FEAX's vectorization capabilities:
+**Problem Setup:**
+- **Element Type**: 3D hexahedral elements (HEX8) 
+- **Mesh Size**: 40×40×40 elements (274,625 nodes)
+- **DOFs**: 823,875 degrees of freedom (3 DOFs per node)
+- **Physics**: Linear elasticity with Young's modulus E = 70 GPa, Poisson's ratio ν = 0.3
+- **Boundary Conditions**: Fixed left face, tension applied to right face
+- **Solver**: BiCGSTAB iterative linear solver with 1e-6 tolerance
+
+**Benchmark Details:**
+- Tests batch processing of 1, 10, 50, and 100 different loading scenarios
+- Compares three execution strategies: sequential loops (no JIT), JIT-compiled loops, and vectorized (vmap)
+- All methods solve identical problems with varying tension loads (0.05 to 0.15)
+
+**Machine Setup:**
+- **CPU**: AMD Ryzen 9 7950X (16 cores)
+- **GPU**: RTX A4000 (16GiB)
+- **OS**: wsl2 on windows
+
+The benchmark demonstrates FEAX's vectorization capabilities:
 - **vmap (batched)**: Up to 4.1x speedup over sequential for loop execution
-- **JIT compilation**: Significant performance improvements with JAX compilation
+- **JIT compilation**: Significant performance improvements over Python loops
 - **Scalability**: Near-linear scaling with batch size for parameter studies
 
 ## License
