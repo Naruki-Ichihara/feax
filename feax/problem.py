@@ -1,3 +1,6 @@
+"""
+Clean Problem class without internal_vars dependencies.
+"""
 
 import jax
 import jax.numpy as np
@@ -5,47 +8,35 @@ import jax.flatten_util
 from dataclasses import dataclass
 import functools
 
- 
 from feax.mesh import Mesh
 from feax.fe import FiniteElement
 
 
 @dataclass
 class Problem:
-    """Problem class to handle one FE variable or multiple coupled FE variables.
+    """Clean Problem class that handles FE structure without internal variables.
     
-    This refactored version contains only state data. Computational methods like
-    get_J() and get_res() have been extracted as pure functions for better
-    JAX compatibility and separation of concerns.
-
+    This version separates finite element structure from material properties,
+    making it more suitable for optimization and parameter studies.
+    
     Attributes
     ----------
     mesh : Mesh
-        :attr:`~jax_fem.fe.FiniteElement.mesh`
+        Finite element mesh
     vec : int
-        :attr:`~jax_fem.fe.FiniteElement.vec`
+        Number of vector components in solution
     dim : int
-        :attr:`~jax_fem.fe.FiniteElement.dim`
+        Spatial dimension of the problem
     ele_type : str
-        :attr:`~jax_fem.fe.FiniteElement.ele_type`
+        Element type (HEX8, TET4, etc.)
     gauss_order : int
-        :attr:`~jax_fem.fe.FiniteElement.gauss_order`
+        Order of Gaussian quadrature
     dirichlet_bc_info : list
-        :attr:`~jax_fem.fe.FiniteElement.dirichlet_bc_info`
+        Boundary condition information
     location_fns : list
-        A list of location functions useful for surface integrals in the weak form.
-        Such surface integral can be related to Neumann boundary condition, or an integral contributing to the stiffness matrix.
-        Each callable takes a point (NumpyArray) and returns a boolean indicating if the point satisfies the location condition.
-        For example, ::
-        
-            [lambda point: np.isclose(point[0], 0., atol=1e-5)]
-
-    additional_info: tuple
-        Any other information that might be useful can be stored here. This is problem dependent.
-    internal_vars : tuple
-        Internal variables for the problem, typically parameters defined on element quadrature points.
-    internal_vars_surfaces : list
-        Internal variables for surface integrals, typically parameters defined on element surface quadrature points.
+        Location functions for surface integrals
+    additional_info : tuple
+        Additional problem-specific information
     """
     mesh: Mesh
     vec: int
@@ -55,8 +46,6 @@ class Problem:
     dirichlet_bc_info: list = None
     location_fns: list = None
     additional_info: tuple = ()
-    internal_vars: tuple = ()
-    internal_vars_surfaces: list = None
 
     def __post_init__(self):
         """Initialize all state data for the finite element problem."""
@@ -162,165 +151,62 @@ class Problem:
             # TODO: assert all vars face quad points be the same
             self.physical_surface_quad_points.append(physical_surface_quad_points)
 
-        # Initialize internal_vars_surfaces if not provided
-        if self.internal_vars_surfaces is None:
-            self.internal_vars_surfaces = [() for _ in range(len(self.boundary_inds_list))]
-        
-        # Initialize JIT-compiled functions
+        # Initialize without internal_vars - kernels will be created separately
         self.custom_init(*self.additional_info)
-        self._init_kernels()
 
     def custom_init(self, *args):
         """Child class should override if more things need to be done in initialization."""
         pass
 
-
-    def _init_kernels(self):
-        def value_and_jacfwd(f, x):
-            pushfwd = functools.partial(jax.jvp, f, (x, ))
-            basis = np.eye(len(x.reshape(-1)), dtype=x.dtype).reshape(-1, *x.shape)
-            y, jac = jax.vmap(pushfwd, out_axes=(None, -1))((basis, ))
-            return y, jac
-
-        def get_kernel_fn_cell():
-            def kernel(cell_sol_flat, physical_quad_points, cell_shape_grads, cell_JxW, cell_v_grads_JxW, *cell_internal_vars):
-                """
-                universal_kernel should be able to cover all situations (including mass_kernel and laplace_kernel).
-                mass_kernel and laplace_kernel are from legacy JAX-FEM. They can still be used, but not mandatory.
-                """
-
-                # TODO: If there is no kernel map, returning 0. is not a good choice. 
-                # Return a zero array with proper shape will be better.
-                if hasattr(self, 'get_mass_map'):
-                    from feax.assembler import get_mass_kernel
-                    mass_kernel = get_mass_kernel(self, self.get_mass_map())
-                    mass_val = mass_kernel(cell_sol_flat, physical_quad_points, cell_JxW, *cell_internal_vars)
-                else:
-                    mass_val = 0.
-
-                if hasattr(self, 'get_tensor_map'):
-                    from feax.assembler import get_laplace_kernel
-                    laplace_kernel = get_laplace_kernel(self, self.get_tensor_map())
-                    laplace_val = laplace_kernel(cell_sol_flat, cell_shape_grads, cell_v_grads_JxW, *cell_internal_vars)
-                else:
-                    laplace_val = 0.
-
-                if hasattr(self, 'get_universal_kernel'):
-                    universal_kernel = self.get_universal_kernel()
-                    universal_val = universal_kernel(cell_sol_flat, physical_quad_points, cell_shape_grads, cell_JxW, 
-                        cell_v_grads_JxW, *cell_internal_vars)
-                else:
-                    universal_val = 0.
-
-                return laplace_val + mass_val + universal_val
-
-
-            def kernel_jac(cell_sol_flat, *args):
-                kernel_partial = lambda cell_sol_flat: kernel(cell_sol_flat, *args)
-                return value_and_jacfwd(kernel_partial, cell_sol_flat)  # kernel(cell_sol_flat, *args), jax.jacfwd(kernel)(cell_sol_flat, *args)
-
-            return kernel, kernel_jac
-
-        def get_kernel_fn_face(ind):
-            def kernel(cell_sol_flat, physical_surface_quad_points, face_shape_vals, face_shape_grads, face_nanson_scale, *cell_internal_vars_surface):
-                """
-                universal_kernel should be able to cover all situations (including surface_kernel).
-                surface_kernel is from legacy JAX-FEM. It can still be used, but not mandatory.
-                """
-                if hasattr(self, 'get_surface_maps'):
-                    from feax.assembler import get_surface_kernel
-                    surface_kernel = get_surface_kernel(self, self.get_surface_maps()[ind])
-                    surface_val = surface_kernel(cell_sol_flat, physical_surface_quad_points, face_shape_vals,
-                        face_shape_grads, face_nanson_scale, *cell_internal_vars_surface)
-                else:
-                    surface_val = 0.
-
-                if hasattr(self, 'get_universal_kernels_surface'):
-                    universal_kernel = self.get_universal_kernels_surface()[ind]
-                    universal_val = universal_kernel(cell_sol_flat, physical_surface_quad_points, face_shape_vals,
-                        face_shape_grads, face_nanson_scale, *cell_internal_vars_surface)
-                else:
-                    universal_val = 0.
-
-                return surface_val + universal_val
-
-            def kernel_jac(cell_sol_flat, *args):
-                # return jax.jacfwd(kernel)(cell_sol_flat, *args)
-                kernel_partial = lambda cell_sol_flat: kernel(cell_sol_flat, *args)
-                return value_and_jacfwd(kernel_partial, cell_sol_flat)  # kernel(cell_sol_flat, *args), jax.jacfwd(kernel)(cell_sol_flat, *args)
-
-            return kernel, kernel_jac
-
-        kernel, kernel_jac = get_kernel_fn_cell()
-        kernel = jax.jit(jax.vmap(kernel))
-        kernel_jac = jax.jit(jax.vmap(kernel_jac))
-        self.kernel = kernel
-        self.kernel_jac = kernel_jac
-
-        num_surfaces = len(self.boundary_inds_list)
-        if hasattr(self, 'get_surface_maps'):
-            assert num_surfaces == len(self.get_surface_maps())
-        elif hasattr(self, 'get_universal_kernels_surface'):
-            assert num_surfaces == len(self.get_universal_kernels_surface()) 
-        else:
-            assert num_surfaces == 0, "Missing definitions for surface integral"
-            
-
-        self.kernel_face = []
-        self.kernel_jac_face = []
-        for i in range(len(self.boundary_inds_list)):
-            kernel_face, kernel_jac_face = get_kernel_fn_face(i)
-            kernel_face = jax.jit(jax.vmap(kernel_face))
-            kernel_jac_face = jax.jit(jax.vmap(kernel_jac_face))
-            self.kernel_face.append(kernel_face)
-            self.kernel_jac_face.append(kernel_jac_face)
-
-    def __jax_tree_flatten__(self):
-        """Flatten the Problem into dynamic (differentiable) and static parts."""
-        # Dynamic parts - things that can be differentiated
-        dynamic = (self.internal_vars, self.internal_vars_surfaces)
-        
-        # Static parts - everything else
-        static = {
-            'mesh': self.mesh,
-            'vec': self.vec,
-            'dim': self.dim,
-            'ele_type': self.ele_type,
-            'gauss_order': self.gauss_order,
-            'dirichlet_bc_info': self.dirichlet_bc_info,
-            'location_fns': self.location_fns,
-            'additional_info': self.additional_info,
-        }
-        return dynamic, static
+    def get_tensor_map(self):
+        """Override in subclass to define volume physics."""
+        raise NotImplementedError("Subclass must implement get_tensor_map")
     
-    @classmethod
-    def __jax_tree_unflatten__(cls, static, dynamic):
-        """Reconstruct the Problem from flattened parts."""
-        internal_vars, internal_vars_surfaces = dynamic
-        
-        # Create a new instance with the original constructor parameters
-        instance = cls(
-            mesh=static['mesh'],
-            vec=static['vec'],
-            dim=static['dim'],
-            ele_type=static['ele_type'],
-            gauss_order=static['gauss_order'],
-            dirichlet_bc_info=static['dirichlet_bc_info'],
-            location_fns=static['location_fns'],
-            additional_info=static['additional_info'],
-            internal_vars=internal_vars,
-            internal_vars_surfaces=internal_vars_surfaces
-        )
-        
-        return instance
+    def get_surface_maps(self):
+        """Override in subclass to define surface physics."""
+        return []
+    
+    def get_mass_map(self):
+        """Override in subclass to define mass matrix physics."""
+        return None
 
 
-# Register as a PyTree
+# Register as JAX PyTree (much simpler without internal_vars)
 def _problem_tree_flatten(obj):
-    return obj.__jax_tree_flatten__()
+    """Flatten the Problem - no dynamic parts since no internal_vars."""
+    # No dynamic parts - everything is static
+    dynamic = ()
+    
+    # All data is static
+    static = {
+        'mesh': obj.mesh,
+        'vec': obj.vec,
+        'dim': obj.dim,
+        'ele_type': obj.ele_type,
+        'gauss_order': obj.gauss_order,
+        'dirichlet_bc_info': obj.dirichlet_bc_info,
+        'location_fns': obj.location_fns,
+        'additional_info': obj.additional_info,
+    }
+    return dynamic, static
+
 
 def _problem_tree_unflatten(static, dynamic):
-    return Problem.__jax_tree_unflatten__(static, dynamic)
+    """Reconstruct the Problem from flattened parts."""
+    # Create a new instance with the original constructor parameters
+    instance = Problem(
+        mesh=static['mesh'],
+        vec=static['vec'],
+        dim=static['dim'],
+        ele_type=static['ele_type'],
+        gauss_order=static['gauss_order'],
+        dirichlet_bc_info=static['dirichlet_bc_info'],
+        location_fns=static['location_fns'],
+        additional_info=static['additional_info'],
+    )
+    
+    return instance
+
 
 jax.tree_util.register_pytree_node(
     Problem,

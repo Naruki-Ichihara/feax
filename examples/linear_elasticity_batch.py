@@ -1,37 +1,36 @@
 """
-Simple example: newton_solve inside @jax.jit
+Batch linear elasticity example using clean feax API
 """
 
 import jax
 import jax.numpy as np
-from feax.problem import Problem as FeaxProblem
-from feax.mesh import Mesh, box_mesh_gmsh
-from feax.assembler import get_J, get_res
-from feax.DCboundary import DirichletBC, apply_boundary_to_J, apply_boundary_to_res
-from feax.solver import linear_solve, SolverOptions
+from feax import Problem, InternalVars, get_J, get_res, apply_boundary_to_res, apply_boundary_to_J
+from feax import Mesh, DirichletBC, linear_solve, SolverOptions
+from feax.mesh import box_mesh_gmsh
 from feax.utils import save_sol
 import os
 
 # Problem setup
 E = 70e3
 nu = 0.3
+batch_size = 10
 
-class ElasticityProblem(FeaxProblem):
+class ElasticityProblem(Problem):
     def get_tensor_map(self):
-        def stress(u_grad, internal_vars=None):
-            mu = E / (2. * (1. + nu))
-            lmbda = E * nu / ((1 + nu) * (1 - 2 * nu))
+        def stress(u_grad, E_quad):
+            mu = E_quad / (2. * (1. + nu))
+            lmbda = E_quad * nu / ((1 + nu) * (1 - 2 * nu))
             epsilon = 0.5 * (u_grad + u_grad.T)
             return lmbda * np.trace(epsilon) * np.eye(self.dim) + 2 * mu * epsilon
         return stress
     
     def get_surface_maps(self):
-        def surface_map(u, x, internal_vars=None):
-            return np.array([0., 0., 1.])
+        def surface_map(u, x, traction_mag):
+            return np.array([0., 0., traction_mag])
         return [surface_map]
 
 # Create mesh and problem
-meshio_mesh = box_mesh_gmsh(30, 30, 30, 1., 1., 1., data_dir='/tmp', ele_type='HEX8')
+meshio_mesh = box_mesh_gmsh(40, 40, 40, 1., 1., 1., data_dir='/tmp', ele_type='HEX8')
 mesh = Mesh(meshio_mesh.points, meshio_mesh.cells_dict['hexahedron'])
 
 def left(point):
@@ -53,15 +52,25 @@ def tension_disp(point):
 dirichlet_bc_info = [[left] * 3 + [right], [0, 1, 2, 0], 
                      [zero_disp, zero_disp, zero_disp, tension_disp]]
 
+# Create clean Problem (NO internal_vars!)
 problem = ElasticityProblem(
     mesh=mesh, vec=3, dim=3, ele_type='HEX8', gauss_order=2,
     dirichlet_bc_info=dirichlet_bc_info, location_fns=[right]
 )
 
+# Create InternalVars separately
+E_array = InternalVars.create_uniform_volume_var(problem, E)
+traction_array = InternalVars.create_uniform_surface_var(problem, 1.0)
+
+internal_vars = InternalVars(
+    volume_vars=(E_array,),
+    surface_vars=[(traction_array,)]
+)
+
 bc = DirichletBC.from_problem(problem)
 
 # Create 10 different boundary conditions with varying tension values using from_bc_info
-tension_values = np.linspace(0.05, 0.15, 100)
+tension_values = np.linspace(0.05, 0.15, batch_size)
 bc_list = []
 initial_sol_batch = []
 
@@ -89,8 +98,8 @@ for tension in tension_values:
 
 # Create batched BC
 bc_batch = DirichletBC(
-    bc_rows=np.tile(bc_list[0].bc_rows, (100, 1)),
-    bc_mask=np.tile(bc_list[0].bc_mask, (100, 1)),
+    bc_rows=np.tile(bc_list[0].bc_rows, (batch_size, 1)),
+    bc_mask=np.tile(bc_list[0].bc_mask, (batch_size, 1)),
     bc_vals=np.stack([bc.bc_vals for bc in bc_list], axis=0),
     total_dofs=bc_list[0].total_dofs
 )
@@ -99,7 +108,7 @@ initial_sol_batch = np.stack(initial_sol_batch, axis=0)
 
 # Static Jacobian computation
 initial_sol_unflat = problem.unflatten_fn_sol_list(initial_sol_batch[0])
-J = get_J(problem, initial_sol_unflat)
+J = get_J(problem, initial_sol_unflat, internal_vars)
 static_J = apply_boundary_to_J(bc, J)
 
 def solve(initial_sol, static_J, bc):
@@ -108,7 +117,7 @@ def solve(initial_sol, static_J, bc):
     
     def res_bc_func(sol_flat):
         sol_unflat = problem.unflatten_fn_sol_list(sol_flat)
-        res = get_res(problem, sol_unflat)
+        res = get_res(problem, sol_unflat, internal_vars)
         res_flat = jax.flatten_util.ravel_pytree(res)[0]
         return apply_boundary_to_res(bc, res_flat, sol_flat)
     

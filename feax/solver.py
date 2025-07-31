@@ -528,6 +528,164 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, solver_options:
     return final_sol, final_res_norm, converged
 
 
+def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, solver_options: SolverOptions):
+    """Newton solver using Python while loop - non-JIT version for debugging.
+    
+    This solver uses regular Python control flow instead of JAX control flow,
+    making it easier to debug and understand. It cannot be JIT compiled but
+    provides the same functionality as newton_solve with better introspection.
+    
+    Parameters
+    ----------
+    J_bc_applied : callable
+        Function that computes the Jacobian with BC applied
+    res_bc_applied : callable
+        Function that computes the residual with BC applied
+    initial_sol : jax.numpy.ndarray
+        Initial solution guess
+    solver_options : SolverOptions
+        Solver configuration options
+        
+    Returns
+    -------
+    sol : jax.numpy.ndarray
+        Solution vector
+    final_res_norm : float
+        Final residual norm
+    converged : bool
+        Whether solution converged
+    num_iters : int
+        Number of iterations performed
+        
+    Example
+    -------
+    >>> sol, res_norm, converged, iters = newton_solve_py(J_fn, res_fn, init_sol, options)
+    >>> print(f"Converged: {converged} in {iters} iterations, residual: {res_norm:.2e}")
+    """
+    
+    # Resolve x0 function based on options
+    if solver_options.linear_solver_x0_fn is not None:
+        x0_fn = solver_options.linear_solver_x0_fn
+    else:
+        x0_fn = create_x0(
+            bc_rows=solver_options.bc_rows,
+            bc_vals=solver_options.bc_vals,
+            strategy=solver_options.x0_strategy
+        )
+    
+    # Define solver functions
+    def solve_cg(A, b, x0):
+        x, info = jax.scipy.sparse.linalg.cg(
+            A, b, x0=x0, 
+            M=solver_options.preconditioner,
+            tol=solver_options.linear_solver_tol,
+            atol=solver_options.linear_solver_atol,
+            maxiter=solver_options.linear_solver_maxiter
+        )
+        return x
+    
+    def solve_bicgstab(A, b, x0):
+        x, info = jax.scipy.sparse.linalg.bicgstab(
+            A, b, x0=x0,
+            M=solver_options.preconditioner,
+            tol=solver_options.linear_solver_tol,
+            atol=solver_options.linear_solver_atol,
+            maxiter=solver_options.linear_solver_maxiter
+        )
+        return x
+    
+    def solve_gmres(A, b, x0):
+        x, info = jax.scipy.sparse.linalg.gmres(
+            A, b, x0=x0,
+            M=solver_options.preconditioner,
+            tol=solver_options.linear_solver_tol,
+            atol=solver_options.linear_solver_atol,
+            maxiter=solver_options.linear_solver_maxiter
+        )
+        return x
+    
+    # Select solver
+    valid_solvers = {"cg", "bicgstab", "gmres"}
+    if solver_options.linear_solver not in valid_solvers:
+        raise ValueError(f"Unknown linear solver: {solver_options.linear_solver}. Choose from {valid_solvers}")
+    
+    if solver_options.linear_solver == "cg":
+        linear_solve_fn = solve_cg
+    elif solver_options.linear_solver == "bicgstab":
+        linear_solve_fn = solve_bicgstab
+    else:
+        linear_solve_fn = solve_gmres
+    
+    def armijo_line_search(sol, delta_sol, res, res_norm):
+        """Python version of Armijo backtracking line search."""
+        grad_merit = -jnp.dot(res, res)  # Directional derivative
+        c1 = 1e-4  # Armijo constant
+        rho = 0.5  # Backtracking factor
+        max_backtracks = 30
+        
+        alpha = 1.0
+        for i in range(max_backtracks):
+            # Try current alpha
+            trial_sol = sol + alpha * delta_sol
+            trial_res = res_bc_applied(trial_sol)
+            trial_norm = jnp.linalg.norm(trial_res)
+            
+            # Check if valid (no NaN) and satisfies Armijo condition
+            is_valid = not jnp.any(jnp.isnan(trial_res))
+            merit_decrease = 0.5 * (trial_norm**2 - res_norm**2)
+            armijo_satisfied = merit_decrease <= c1 * alpha * grad_merit
+            
+            if is_valid and armijo_satisfied:
+                return trial_sol, trial_norm, alpha, True
+            
+            alpha *= rho
+        
+        # If no good step found, use very small step as fallback
+        fallback_sol = sol + 1e-8 * delta_sol
+        fallback_res = res_bc_applied(fallback_sol)
+        fallback_norm = jnp.linalg.norm(fallback_res)
+        return fallback_sol, fallback_norm, 1e-8, False
+    
+    # Initialize
+    sol = initial_sol
+    initial_res = res_bc_applied(sol)
+    initial_res_norm = jnp.linalg.norm(initial_res)
+    res_norm = initial_res_norm
+    iter_count = 0
+    
+    # Main Newton loop
+    while (res_norm > solver_options.tol and 
+           res_norm / initial_res_norm > solver_options.rel_tol and 
+           iter_count < solver_options.max_iter):
+        
+        # Compute residual and Jacobian
+        res = res_bc_applied(sol)
+        J = J_bc_applied(sol)
+        
+        # Compute initial guess for increment
+        x0 = x0_fn(sol)
+        
+        # Solve linear system: J * delta_sol = -res
+        delta_sol = linear_solve_fn(J, -res, x0)
+        
+        # Line search
+        new_sol, new_res_norm, alpha, line_search_success = armijo_line_search(
+            sol, delta_sol, res, res_norm
+        )
+        
+        # Update solution
+        sol = new_sol
+        res_norm = new_res_norm
+        iter_count += 1
+        
+    
+    # Check convergence
+    converged = (res_norm <= solver_options.tol or 
+                res_norm / initial_res_norm <= solver_options.rel_tol)
+    
+    return sol, res_norm, converged, iter_count
+
+
 def linear_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: SolverOptions):
     """Linear solver for problems that converge in one iteration (no while loop).
     
