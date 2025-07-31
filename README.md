@@ -1,8 +1,8 @@
 # FEAX: Finite Element Analysis with JAX
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/release/python-380/)
-[![JAX](https://img.shields.io/badge/JAX-0.4%2B-green.svg)](https://github.com/google/jax)
+[![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![JAX](https://img.shields.io/badge/JAX-0.7%2B-green.svg)](https://github.com/google/jax)
 
 **FEAX** (Finite Element Analysis with JAX) is a high-performance, differentiable finite element library built on JAX. It provides a clean, modern API for solving partial differential equations with automatic differentiation, JIT compilation, and GPU acceleration.
 
@@ -60,11 +60,8 @@ solutions = jax.vmap(solver)(parameter_batch)
 ## Installation
 
 ### Requirements
-- Python 3.8+
-- JAX 0.4+
-- NumPy
-- SciPy
-- Meshio (for mesh I/O)
+- Python 3.10+
+- JAX 0.7+
 
 ### Install from source
 ```bash
@@ -208,56 +205,20 @@ FEAX is designed for high performance:
 - **Memory**: Optimized memory access patterns and minimal allocations
 - **Scaling**: Efficient handling of large meshes and parameter spaces
 
-Typical performance improvements over traditional FE codes:
-- 10-100x speedup for differentiable computations
-- 2-10x speedup for forward simulations
-- Near-linear scaling with batch size for parameter studies
+### Benchmark Results
 
-## Comparison with Other Libraries
+Performance comparison for linear elasticity problems (3D HEX8 elements, 201,723 DOFs):
 
-| Feature | FEAX | FEniCS | JAX-FEM | Deal.II |
-|---------|------|--------|---------|---------|
-| Automatic Differentiation | ✓ | ✗ | ✓ | ✗ |
-| JIT Compilation | ✓ | ✗ | ✓ | ✗ |
-| GPU Support | ✓ | ✗ | ✓ | ✗ |
-| Clean Python API | ✓ | ✓ | ✓ | ✗ |
-| High-Order Elements | ✓ | ✓ | ✗ | ✓ |
-| Nonlinear Solvers | ✓ | ✓ | ✓ | ✓ |
-| Mature Ecosystem | ✗ | ✓ | ✗ | ✓ |
+![Linear Elasticity Solver Performance Benchmark](assets/linear_elasticity_benchmark.png)
 
-## Contributing
-
-We welcome contributions! Please see our [contributing guidelines](CONTRIBUTING.md) for details on:
-
-- Code style and standards
-- Testing requirements
-- Documentation standards
-- Pull request process
-
-### Development Setup
-```bash
-git clone https://github.com/your-repo/feax.git
-cd feax
-pip install -e ".[dev]"
-pytest tests/
-```
-
-## Research & Citations
-
-FEAX is designed for research in computational mechanics, optimization, and machine learning. If you use FEAX in your research, please cite:
-
-```bibtex
-@software{feax2024,
-  title = {FEAX: Finite Element Analysis with JAX},
-  author = {Author Name},
-  year = {2024},
-  url = {https://github.com/your-repo/feax}
-}
-```
+The benchmark shows FEAX's vectorization capabilities:
+- **vmap (batched)**: Up to 4.1x speedup over sequential for loop execution
+- **JIT compilation**: Significant performance improvements with JAX compilation
+- **Scalability**: Near-linear scaling with batch size for parameter studies
 
 ## License
 
-FEAX is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for the full license text.
+FEAX is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for the full license text.
 
 ## Acknowledgments
 
