@@ -62,11 +62,11 @@ def solve_single_E(E_scalar):
     )
     
     # Create functions using the clean API
-    J_bc_func = create_J_bc_function(problem, bc, internal_vars)
-    res_bc_func = create_res_bc_function(problem, bc, internal_vars)
+    J_bc_func = create_J_bc_function(problem, bc)
+    res_bc_func = create_res_bc_function(problem, bc)
     
     solver_options = SolverOptions(tol=1e-8, linear_solver="cg")
-    sol, _, _, _ = newton_solve(J_bc_func, res_bc_func, initial_sol, solver_options)
+    sol, _, _, _ = newton_solve(J_bc_func, res_bc_func, initial_sol, solver_options, internal_vars)
     
     # Return max displacement
     sol_list = problem.unflatten_fn_sol_list(sol)

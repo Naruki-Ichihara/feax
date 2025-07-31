@@ -31,7 +31,7 @@ class ElasticityProblem(Problem):
         return [surface_map]
 
 # Create mesh and problem
-meshio_mesh = box_mesh_gmsh(3, 3, 3, 1., 1., 1., data_dir='/tmp', ele_type='HEX8')
+meshio_mesh = box_mesh_gmsh(40, 40, 40, 1., 1., 1., data_dir='/tmp', ele_type='HEX8')
 mesh = Mesh(meshio_mesh.points, meshio_mesh.cells_dict['hexahedron'])
 
 def left(point):
@@ -177,7 +177,7 @@ def run_benchmark(batch_sizes):
 
 # Run benchmarks
 print("Starting performance benchmark...")
-batch_sizes = [1, 5, 10]
+batch_sizes = [1, 10, 50, 100]
 results = run_benchmark(batch_sizes)
 
 # Plot results

@@ -80,11 +80,11 @@ initial_sol_unflatten = feax_problem.unflatten_fn_sol_list(initial_sol)
 @jax.jit
 def solve_fn(initial_sol):
     # Create functions using the clean API
-    J_bc_func = create_J_bc_function(feax_problem, bc, internal_vars)
-    res_bc_func = create_res_bc_function(feax_problem, bc, internal_vars)
+    J_bc_func = create_J_bc_function(feax_problem, bc)
+    res_bc_func = create_res_bc_function(feax_problem, bc)
     
     sol, res, rel_res, iter = newton_solve(J_bc_func, res_bc_func, initial_sol,
-                        SolverOptions(tol=1e-8, linear_solver="bicgstab", x0_strategy="bc_aware", bc_rows=bc.bc_rows, bc_vals=bc.bc_vals))
+                        SolverOptions(tol=1e-8, linear_solver="bicgstab", x0_strategy="bc_aware", bc_rows=bc.bc_rows, bc_vals=bc.bc_vals), internal_vars)
     return sol
 
 start = time.time()

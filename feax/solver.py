@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Optional, Callable
 from jax.experimental.sparse import BCOO, eye, bcoo_multiply_sparse
 from dataclasses import dataclass
+from .assembler import get_J, get_res
+from .assembler import create_J_bc_function, create_res_bc_function
 
 
 def create_diagonals_fn():
@@ -167,25 +169,31 @@ class SolverOptions:
     bc_vals: Optional[object] = None  # Boundary condition values for x0_strategy="bc_aware"
 
 
-def newton_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: SolverOptions):
+def newton_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: SolverOptions, internal_vars=None):
     """Newton solver using JAX while_loop for JIT compatibility.
     
     Parameters
     ----------
     J_bc_applied : callable
-        Function that computes the Jacobian with BC applied. Takes solution vector and returns sparse matrix.
+        Function that computes the Jacobian with BC applied. Takes solution vector and optionally internal_vars.
     res_bc_applied : callable
-        Function that computes the residual with BC applied. Takes solution vector and returns residual vector.
+        Function that computes the residual with BC applied. Takes solution vector and optionally internal_vars.
     initial_sol : jax.numpy.ndarray
         Initial solution guess
     solver_options : SolverOptions
         Solver configuration options. For advanced usage, set linear_solver_x0_fn to provide
         custom initial guess for linear solver following jax-fem approach.
+    internal_vars : InternalVars, optional
+        Internal variables (e.g., material properties) to pass to J_bc_applied and res_bc_applied.
+        If provided, these functions will be called with (sol, internal_vars).
         
     Returns
     -------
-    sol : jax.numpy.ndarray
-        Solution vector
+    tuple of (sol, res_norm, rel_res_norm, iter_count)
+        sol : jax.numpy.ndarray - Solution vector
+        res_norm : float - Final residual norm
+        rel_res_norm : float - Relative residual norm
+        iter_count : int - Number of iterations performed
     """
     
     # Resolve x0 function based on options (at function definition time, not JAX-traced)
@@ -263,8 +271,12 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: Solv
         sol, res_norm, rel_res_norm, iter_count = state
         
         # Compute residual and Jacobian
-        res = res_bc_applied(sol)
-        J = J_bc_applied(sol)
+        if internal_vars is not None:
+            res = res_bc_applied(sol, internal_vars)
+            J = J_bc_applied(sol, internal_vars)
+        else:
+            res = res_bc_applied(sol)
+            J = J_bc_applied(sol)
         
         # Compute initial guess for increment
         x0 = x0_fn(sol)
@@ -289,7 +301,10 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: Solv
             
             # Try current alpha
             trial_sol = sol + alpha * delta_sol
-            trial_res = res_bc_applied(trial_sol)
+            if internal_vars is not None:
+                trial_res = res_bc_applied(trial_sol, internal_vars)
+            else:
+                trial_res = res_bc_applied(trial_sol)
             trial_norm = jnp.linalg.norm(trial_res)
             
             # Check if valid (no NaN) and satisfies Armijo condition
@@ -321,7 +336,10 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: Solv
         
         # If no good step found, use very small step as fallback
         fallback_sol = sol + 1e-8 * delta_sol
-        fallback_res = res_bc_applied(fallback_sol)
+        if internal_vars is not None:
+            fallback_res = res_bc_applied(fallback_sol, internal_vars)
+        else:
+            fallback_res = res_bc_applied(fallback_sol)
         fallback_norm = jnp.linalg.norm(fallback_res)
         
         sol = jnp.where(found_good, new_sol, fallback_sol)
@@ -333,7 +351,10 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: Solv
         return (sol, res_norm, rel_res_norm, iter_count)
     
     # Initial state
-    initial_res = res_bc_applied(initial_sol)
+    if internal_vars is not None:
+        initial_res = res_bc_applied(initial_sol, internal_vars)
+    else:
+        initial_res = res_bc_applied(initial_sol)
     initial_res_norm = jnp.linalg.norm(initial_res)
     initial_state = (initial_sol, initial_res_norm, 1.0, 0)
     
@@ -342,7 +363,7 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: Solv
     return final_state
 
 
-def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, solver_options: SolverOptions, num_iters: int):
+def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, solver_options: SolverOptions, num_iters: int, internal_vars=None):
     """Newton solver using JAX fori_loop for fixed iterations - optimized for vmap.
     
     This solver is specifically designed for use with vmap where we need:
@@ -353,24 +374,25 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, solver_options:
     Parameters
     ----------
     J_bc_applied : callable
-        Function that computes the Jacobian with BC applied
+        Function that computes the Jacobian with BC applied. Takes solution vector and optionally internal_vars.
     res_bc_applied : callable
-        Function that computes the residual with BC applied
+        Function that computes the residual with BC applied. Takes solution vector and optionally internal_vars.
     initial_sol : jax.numpy.ndarray
         Initial solution guess
     solver_options : SolverOptions
         Solver configuration options
     num_iters : int
         Fixed number of Newton iterations to perform
+    internal_vars : InternalVars, optional
+        Internal variables (e.g., material properties) to pass to J_bc_applied and res_bc_applied.
+        If provided, these functions will be called with (sol, internal_vars).
         
     Returns
     -------
-    sol : jax.numpy.ndarray
-        Solution vector after num_iters iterations
-    final_res_norm : float
-        Final residual norm
-    converged : bool
-        Whether solution converged (res_norm < tol)
+    tuple of (sol, final_res_norm, converged)
+        sol : jax.numpy.ndarray - Solution vector after num_iters iterations
+        final_res_norm : float - Final residual norm
+        converged : bool - Whether solution converged (res_norm < tol)
         
     Example
     -------
@@ -443,8 +465,12 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, solver_options:
         sol, res_norm = state
         
         # Compute residual and Jacobian
-        res = res_bc_applied(sol)
-        J = J_bc_applied(sol)
+        if internal_vars is not None:
+            res = res_bc_applied(sol, internal_vars)
+            J = J_bc_applied(sol, internal_vars)
+        else:
+            res = res_bc_applied(sol)
+            J = J_bc_applied(sol)
         
         # Compute initial guess for increment
         x0 = x0_fn(sol)
@@ -469,7 +495,10 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, solver_options:
             
             # Try current alpha
             trial_sol = sol + alpha * delta_sol
-            trial_res = res_bc_applied(trial_sol)
+            if internal_vars is not None:
+                trial_res = res_bc_applied(trial_sol, internal_vars)
+            else:
+                trial_res = res_bc_applied(trial_sol)
             trial_norm = jnp.linalg.norm(trial_res)
             
             # Check if valid (no NaN) and satisfies Armijo condition
@@ -501,7 +530,10 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, solver_options:
         
         # If no good step found, use very small step as fallback
         fallback_sol = sol + 1e-8 * delta_sol
-        fallback_res = res_bc_applied(fallback_sol)
+        if internal_vars is not None:
+            fallback_res = res_bc_applied(fallback_sol, internal_vars)
+        else:
+            fallback_res = res_bc_applied(fallback_sol)
         fallback_norm = jnp.linalg.norm(fallback_res)
         
         sol = jnp.where(found_good, new_sol, fallback_sol)
@@ -510,7 +542,10 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, solver_options:
         return (sol, res_norm)
     
     # Initial residual norm
-    initial_res = res_bc_applied(initial_sol)
+    if internal_vars is not None:
+        initial_res = res_bc_applied(initial_sol, internal_vars)
+    else:
+        initial_res = res_bc_applied(initial_sol)
     initial_res_norm = jnp.linalg.norm(initial_res)
     
     # Run fixed number of iterations using fori_loop
@@ -528,7 +563,7 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, solver_options:
     return final_sol, final_res_norm, converged
 
 
-def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, solver_options: SolverOptions):
+def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, solver_options: SolverOptions, internal_vars=None):
     """Newton solver using Python while loop - non-JIT version for debugging.
     
     This solver uses regular Python control flow instead of JAX control flow,
@@ -538,24 +573,24 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, solver_options: S
     Parameters
     ----------
     J_bc_applied : callable
-        Function that computes the Jacobian with BC applied
+        Function that computes the Jacobian with BC applied. Takes solution vector and optionally internal_vars.
     res_bc_applied : callable
-        Function that computes the residual with BC applied
+        Function that computes the residual with BC applied. Takes solution vector and optionally internal_vars.
     initial_sol : jax.numpy.ndarray
         Initial solution guess
     solver_options : SolverOptions
         Solver configuration options
+    internal_vars : InternalVars, optional
+        Internal variables (e.g., material properties) to pass to J_bc_applied and res_bc_applied.
+        If provided, these functions will be called with (sol, internal_vars).
         
     Returns
     -------
-    sol : jax.numpy.ndarray
-        Solution vector
-    final_res_norm : float
-        Final residual norm
-    converged : bool
-        Whether solution converged
-    num_iters : int
-        Number of iterations performed
+    tuple of (sol, final_res_norm, converged, num_iters)
+        sol : jax.numpy.ndarray - Solution vector
+        final_res_norm : float - Final residual norm
+        converged : bool - Whether solution converged
+        num_iters : int - Number of iterations performed
         
     Example
     -------
@@ -627,7 +662,10 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, solver_options: S
         for i in range(max_backtracks):
             # Try current alpha
             trial_sol = sol + alpha * delta_sol
-            trial_res = res_bc_applied(trial_sol)
+            if internal_vars is not None:
+                trial_res = res_bc_applied(trial_sol, internal_vars)
+            else:
+                trial_res = res_bc_applied(trial_sol)
             trial_norm = jnp.linalg.norm(trial_res)
             
             # Check if valid (no NaN) and satisfies Armijo condition
@@ -642,13 +680,19 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, solver_options: S
         
         # If no good step found, use very small step as fallback
         fallback_sol = sol + 1e-8 * delta_sol
-        fallback_res = res_bc_applied(fallback_sol)
+        if internal_vars is not None:
+            fallback_res = res_bc_applied(fallback_sol, internal_vars)
+        else:
+            fallback_res = res_bc_applied(fallback_sol)
         fallback_norm = jnp.linalg.norm(fallback_res)
         return fallback_sol, fallback_norm, 1e-8, False
     
     # Initialize
     sol = initial_sol
-    initial_res = res_bc_applied(sol)
+    if internal_vars is not None:
+        initial_res = res_bc_applied(sol, internal_vars)
+    else:
+        initial_res = res_bc_applied(sol)
     initial_res_norm = jnp.linalg.norm(initial_res)
     res_norm = initial_res_norm
     iter_count = 0
@@ -659,8 +703,12 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, solver_options: S
            iter_count < solver_options.max_iter):
         
         # Compute residual and Jacobian
-        res = res_bc_applied(sol)
-        J = J_bc_applied(sol)
+        if internal_vars is not None:
+            res = res_bc_applied(sol, internal_vars)
+            J = J_bc_applied(sol, internal_vars)
+        else:
+            res = res_bc_applied(sol)
+            J = J_bc_applied(sol)
         
         # Compute initial guess for increment
         x0 = x0_fn(sol)
@@ -686,7 +734,7 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, solver_options: S
     return sol, res_norm, converged, iter_count
 
 
-def linear_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: SolverOptions):
+def linear_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: SolverOptions, internal_vars=None):
     """Linear solver for problems that converge in one iteration (no while loop).
     
     This solver is optimized for linear elasticity problems where the solution
@@ -696,13 +744,18 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: Solv
     Parameters
     ----------
     J_bc_applied : callable
-        Function that computes the Jacobian with BC applied. Takes solution vector and returns sparse matrix.
+        Function that computes the Jacobian with BC applied. Takes solution vector and optionally internal_vars,
+        returns sparse matrix.
     res_bc_applied : callable
-        Function that computes the residual with BC applied. Takes solution vector and returns residual vector.
+        Function that computes the residual with BC applied. Takes solution vector and optionally internal_vars,
+        returns residual vector.
     initial_sol : jax.numpy.ndarray
         Initial solution guess (typically zeros with BC values set)
     solver_options : SolverOptions
         Solver configuration options
+    internal_vars : InternalVars, optional
+        Internal variables (e.g., material properties) to pass to J_bc_applied and res_bc_applied.
+        If provided, these functions will be called with (sol, internal_vars).
         
     Returns
     -------
@@ -775,8 +828,12 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: Solv
     
     # Single Newton iteration (no while loop)
     # Step 1: Compute residual and Jacobian
-    res = res_bc_applied(initial_sol)
-    J = J_bc_applied(initial_sol)
+    if internal_vars is not None:
+        res = res_bc_applied(initial_sol, internal_vars)
+        J = J_bc_applied(initial_sol, internal_vars)
+    else:
+        res = res_bc_applied(initial_sol)
+        J = J_bc_applied(initial_sol)
     
     # Step 2: Compute initial guess for increment
     x0 = x0_fn(initial_sol)
@@ -788,3 +845,183 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: Solv
     sol = initial_sol + delta_sol
     
     return sol
+
+def __linear_solve_adjoint(A, b, solver_options: SolverOptions):
+    
+    # Define solver functions
+    def solve_cg(A, b, x0):
+        x, info = jax.scipy.sparse.linalg.cg(
+            A, b, x0=x0, 
+            M=solver_options.preconditioner,
+            tol=solver_options.linear_solver_tol,
+            atol=solver_options.linear_solver_atol,
+            maxiter=solver_options.linear_solver_maxiter
+        )
+        return x
+    
+    def solve_bicgstab(A, b, x0):
+        x, info = jax.scipy.sparse.linalg.bicgstab(
+            A, b, x0=x0,
+            M=solver_options.preconditioner,
+            tol=solver_options.linear_solver_tol,
+            atol=solver_options.linear_solver_atol,
+            maxiter=solver_options.linear_solver_maxiter
+        )
+        return x
+    
+    def solve_gmres(A, b, x0):
+        x, info = jax.scipy.sparse.linalg.gmres(
+            A, b, x0=x0,
+            M=solver_options.preconditioner,
+            tol=solver_options.linear_solver_tol,
+            atol=solver_options.linear_solver_atol,
+            maxiter=solver_options.linear_solver_maxiter
+        )
+        return x
+    
+    # Validate and select solver
+    valid_solvers = {"cg", "bicgstab", "gmres"}
+    if solver_options.linear_solver not in valid_solvers:
+        raise ValueError(f"Unknown linear solver: {solver_options.linear_solver}. Choose from {valid_solvers}")
+    
+    if solver_options.linear_solver == "cg":
+        linear_solve_fn = solve_cg
+    elif solver_options.linear_solver == "bicgstab":
+        linear_solve_fn = solve_bicgstab
+    else:
+        linear_solve_fn = solve_gmres
+    
+    x0 = None
+    sol = linear_solve_fn(A, b, x0)
+    
+    return sol
+
+def create_differentiable_solver(problem, bc, solver_options=None, adjoint_solver_options=None):
+    """Create a differentiable solver that returns gradients w.r.t. internal_vars using custom VJP.
+    
+    This solver uses the self-adjoint approach for efficient gradient computation:
+    - Forward mode: standard Newton solve
+    - Backward mode: solve adjoint system to compute gradients
+    
+    Parameters
+    ----------
+    problem : Problem
+        The feax Problem instance (clean API - no internal_vars in constructor)
+    bc : DirichletBC  
+        Boundary conditions
+    solver_options : SolverOptions, optional
+        Options for forward solve (defaults to SolverOptions())
+    adjoint_solver_options : dict, optional
+        Options for adjoint solve (defaults to same as forward solve)
+        
+    Returns
+    -------
+    differentiable_solve : callable
+        Function that takes internal_vars and returns solution with gradient support
+        
+    Notes
+    -----
+    The returned function has signature: differentiable_solve(internal_vars) -> solution
+    where gradients flow through internal_vars (material properties, loadings, etc.)
+    
+    Based on the self-adjoint approach from the reference implementation in ref_solver.py.
+    The adjoint method is more efficient than forward-mode AD for optimization problems
+    where we need gradients w.r.t. many parameters but few outputs.
+    
+    Examples
+    --------
+    >>> # Create differentiable solver
+    >>> diff_solve = create_differentiable_solver(problem, bc)
+    >>> 
+    >>> # Define loss function
+    >>> def loss_fn(internal_vars):
+    ...     sol = diff_solve(internal_vars)
+    ...     return jnp.sum(sol**2)  # Example loss
+    >>> 
+    >>> # Compute gradients w.r.t. internal_vars
+    >>> grad_fn = jax.grad(loss_fn)
+    >>> gradients = grad_fn(internal_vars)
+    """
+    
+    # Set default options
+    if solver_options is None:
+        solver_options = SolverOptions()
+    if adjoint_solver_options is None:
+        adjoint_solver_options = SolverOptions(
+            linear_solver="bicgstab",  # More robust than CG
+            tol=1e-10  # Tighter tolerance prevents NaN gradients
+        )
+
+    J_bc_func = create_J_bc_function(problem, bc)
+    res_bc_func = create_res_bc_function(problem, bc)
+
+    @jax.custom_vjp
+    def differentiable_solve(internal_vars):
+        """Forward solve: standard Newton iteration.
+        
+        Parameters
+        ----------
+        internal_vars : InternalVars
+            Material properties, loadings, etc.
+            
+        Returns
+        -------
+        sol : jax.numpy.ndarray
+            Solution vector
+        """
+        # Create BC functions with current internal_vars
+        
+        # Initial solution
+        initial_sol = jnp.zeros(problem.num_total_dofs_all_vars)
+        initial_sol = initial_sol.at[bc.bc_rows].set(bc.bc_vals)
+        
+        # Solve using Newton method
+        sol, _, _, _ = newton_solve(J_bc_func, res_bc_func, initial_sol, solver_options, internal_vars)
+        return sol
+    
+    def f_fwd(internal_vars):
+        """Forward function for custom VJP.
+        
+        Returns solution and residuals needed for backward pass.
+        """
+        sol = differentiable_solve(internal_vars)
+        return sol, (internal_vars, sol)
+    
+    def f_bwd(res, v):
+        internal_vars, sol = res
+        
+        def constraint_fn(dofs, internal_vars):
+            return res_bc_func(dofs, internal_vars)
+        
+        def constraint_fn_sol_to_sol(sol_list, internal_vars):
+            dofs = jax.flatten_util.ravel_pytree(sol_list)[0]
+            con_vec = constraint_fn(dofs, internal_vars)
+            return problem.unflatten_fn_sol_list(con_vec)
+        
+        def get_partial_params_c_fn(sol_list):
+
+            def partial_params_c_fn(internal_vars):
+                return constraint_fn_sol_to_sol(sol_list, internal_vars)
+            
+            return partial_params_c_fn
+
+        def get_vjp_contraint_fn_params(internal_vars, sol_list):
+            partial_c_fn = get_partial_params_c_fn(sol_list)
+            def vjp_linear_fn(v_list):
+                primals_output, f_vjp = jax.vjp(partial_c_fn, internal_vars)
+                val, = f_vjp(v_list)
+                return val
+            return vjp_linear_fn
+        
+        J = J_bc_func(sol, internal_vars)
+        v_vec = jax.flatten_util.ravel_pytree(v)[0]
+        adjoint_vec = __linear_solve_adjoint(J.transpose(), v_vec, adjoint_solver_options)
+        sol_list = problem.unflatten_fn_sol_list(sol)
+        vjp_linear_fn = get_vjp_contraint_fn_params(internal_vars, sol_list)
+        vjp_result = vjp_linear_fn(problem.unflatten_fn_sol_list(adjoint_vec))
+        vjp_result = jax.tree_util.tree_map(lambda x: -x, vjp_result)
+
+        return (vjp_result,)
+    
+    differentiable_solve.defvjp(f_fwd, f_bwd)
+    return differentiable_solve

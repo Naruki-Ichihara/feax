@@ -12,8 +12,8 @@ from feax import logger
 from feax.internal_vars import InternalVars
 
 
-def get_laplace_kernel_clean(problem, tensor_map):
-    """Create laplace kernel function for clean problem (without internal_vars in problem)."""
+def get_laplace_kernel(problem, tensor_map):
+    """Create laplace kernel function for problem (without internal_vars in problem)."""
     
     def laplace_kernel(cell_sol_flat, cell_shape_grads, cell_v_grads_JxW, *cell_internal_vars):
         cell_sol_list = problem.unflatten_fn_dof(cell_sol_flat)
@@ -38,8 +38,8 @@ def get_laplace_kernel_clean(problem, tensor_map):
     return laplace_kernel
 
 
-def get_mass_kernel_clean(problem, mass_map):
-    """Create mass kernel function for clean problem."""
+def get_mass_kernel(problem, mass_map):
+    """Create mass kernel function for problem."""
     
     def mass_kernel(cell_sol_flat, x, cell_JxW, *cell_internal_vars):
         cell_sol_list = problem.unflatten_fn_dof(cell_sol_flat)
@@ -59,8 +59,8 @@ def get_mass_kernel_clean(problem, mass_map):
     return mass_kernel
 
 
-def get_surface_kernel_clean(problem, surface_map):
-    """Create surface kernel function for clean problem."""
+def get_surface_kernel(problem, surface_map):
+    """Create surface kernel function for problem."""
     
     def surface_kernel(cell_sol_flat, x, face_shape_vals, face_shape_grads, face_nanson_scale, *cell_internal_vars_surface):
         cell_sol_list = problem.unflatten_fn_dof(cell_sol_flat)
@@ -86,12 +86,12 @@ def create_volume_kernel(problem):
     def kernel(cell_sol_flat, physical_quad_points, cell_shape_grads, cell_JxW, cell_v_grads_JxW, *cell_internal_vars):
         mass_val = 0.
         if hasattr(problem, 'get_mass_map') and problem.get_mass_map() is not None:
-            mass_kernel = get_mass_kernel_clean(problem, problem.get_mass_map())
+            mass_kernel = get_mass_kernel(problem, problem.get_mass_map())
             mass_val = mass_kernel(cell_sol_flat, physical_quad_points, cell_JxW, *cell_internal_vars)
 
         laplace_val = 0.
         if hasattr(problem, 'get_tensor_map'):
-            laplace_kernel = get_laplace_kernel_clean(problem, problem.get_tensor_map())
+            laplace_kernel = get_laplace_kernel(problem, problem.get_tensor_map())
             laplace_val = laplace_kernel(cell_sol_flat, cell_shape_grads, cell_v_grads_JxW, *cell_internal_vars)
 
         universal_val = 0.
@@ -111,7 +111,7 @@ def create_surface_kernel(problem, surface_index):
     def kernel(cell_sol_flat, physical_surface_quad_points, face_shape_vals, face_shape_grads, face_nanson_scale, *cell_internal_vars_surface):
         surface_val = 0.
         if hasattr(problem, 'get_surface_maps') and len(problem.get_surface_maps()) > surface_index:
-            surface_kernel = get_surface_kernel_clean(problem, problem.get_surface_maps()[surface_index])
+            surface_kernel = get_surface_kernel(problem, problem.get_surface_maps()[surface_index])
             surface_val = surface_kernel(cell_sol_flat, physical_surface_quad_points, face_shape_vals,
                 face_shape_grads, face_nanson_scale, *cell_internal_vars_surface)
 
@@ -126,8 +126,8 @@ def create_surface_kernel(problem, surface_index):
     return kernel
 
 
-def split_and_compute_cell_clean(problem, cells_sol_flat, jac_flag, internal_vars_volume):
-    """Volume integral computation with clean problem and internal_vars."""
+def split_and_compute_cell(problem, cells_sol_flat, jac_flag, internal_vars_volume):
+    """Volume integral computation with problem and internal_vars."""
     
     def value_and_jacfwd(f, x):
         pushfwd = functools.partial(jax.jvp, f, (x, ))
@@ -182,8 +182,8 @@ def split_and_compute_cell_clean(problem, cells_sol_flat, jac_flag, internal_var
         return values
 
 
-def compute_face_clean(problem, cells_sol_flat, jac_flag, internal_vars_surfaces):
-    """Surface integral computation with clean problem and internal_vars."""
+def compute_face(problem, cells_sol_flat, jac_flag, internal_vars_surfaces):
+    """Surface integral computation with problem and internal_vars."""
     
     def value_and_jacfwd(f, x):
         pushfwd = functools.partial(jax.jvp, f, (x, ))
@@ -202,9 +202,13 @@ def compute_face_clean(problem, cells_sol_flat, jac_flag, internal_vars_surfaces
             vmap_fn = jax.vmap(kernel_jac)
             
             selected_cell_sols_flat = cells_sol_flat[boundary_inds[:, 0]]
+            
+            # Handle case where internal_vars_surfaces might be empty or insufficient
+            surface_vars_for_boundary = internal_vars_surfaces[i] if i < len(internal_vars_surfaces) else ()
+            
             input_collection = [selected_cell_sols_flat, problem.physical_surface_quad_points[i], 
                               problem.selected_face_shape_vals[i], problem.selected_face_shape_grads[i], 
-                              problem.nanson_scale[i], *internal_vars_surfaces[i]]
+                              problem.nanson_scale[i], *surface_vars_for_boundary]
 
             val, jac = vmap_fn(*input_collection)
             values.append(val)
@@ -217,16 +221,20 @@ def compute_face_clean(problem, cells_sol_flat, jac_flag, internal_vars_surfaces
             vmap_fn = jax.vmap(kernel)
             
             selected_cell_sols_flat = cells_sol_flat[boundary_inds[:, 0]]
+            
+            # Handle case where internal_vars_surfaces might be empty or insufficient
+            surface_vars_for_boundary = internal_vars_surfaces[i] if i < len(internal_vars_surfaces) else ()
+            
             input_collection = [selected_cell_sols_flat, problem.physical_surface_quad_points[i], 
                               problem.selected_face_shape_vals[i], problem.selected_face_shape_grads[i], 
-                              problem.nanson_scale[i], *internal_vars_surfaces[i]]
+                              problem.nanson_scale[i], *surface_vars_for_boundary]
             val = vmap_fn(*input_collection)
             values.append(val)
         return values
 
 
-def compute_residual_vars_helper_clean(problem, weak_form_flat, weak_form_face_flat):
-    """Same as original but with clean problem."""
+def compute_residual_vars_helper(problem, weak_form_flat, weak_form_face_flat):
+    """Compute residual variables helper function."""
     res_list = [np.zeros((fe.num_total_nodes, fe.vec)) for fe in problem.fes]
     weak_form_list = jax.vmap(lambda x: problem.unflatten_fn_dof(x))(weak_form_flat) # [(num_cells, num_nodes, vec), ...]
     res_list = [res_list[i].at[problem.cells_list[i].reshape(-1)].add(weak_form_list[i].reshape(-1, problem.fes[i].vec)) for i in range(len(res_list))]
@@ -245,11 +253,11 @@ def get_J(problem, sol_list, internal_vars: InternalVars):
     cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
     
     # Compute Jacobian values from volume integrals
-    _, cells_jac_flat = split_and_compute_cell_clean(problem, cells_sol_flat, True, internal_vars.volume_vars)
+    _, cells_jac_flat = split_and_compute_cell(problem, cells_sol_flat, True, internal_vars.volume_vars)
     V = np.array(cells_jac_flat.reshape(-1))
 
     # Add Jacobian values from surface integrals
-    _, cells_jac_face_flat = compute_face_clean(problem, cells_sol_flat, True, internal_vars.surface_vars)
+    _, cells_jac_face_flat = compute_face(problem, cells_sol_flat, True, internal_vars.surface_vars)
     for cells_jac_f_flat in cells_jac_face_flat:
         V = np.hstack((V, np.array(cells_jac_f_flat.reshape(-1))))
 
@@ -267,19 +275,19 @@ def get_res(problem, sol_list, internal_vars: InternalVars):
     cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
     
     # Compute weak form values from volume integrals
-    weak_form_flat = split_and_compute_cell_clean(problem, cells_sol_flat, False, internal_vars.volume_vars)
+    weak_form_flat = split_and_compute_cell(problem, cells_sol_flat, False, internal_vars.volume_vars)
     
     # Add weak form values from surface integrals
-    weak_form_face_flat = compute_face_clean(problem, cells_sol_flat, False, internal_vars.surface_vars)
+    weak_form_face_flat = compute_face(problem, cells_sol_flat, False, internal_vars.surface_vars)
     
-    return compute_residual_vars_helper_clean(problem, weak_form_flat, weak_form_face_flat)
+    return compute_residual_vars_helper(problem, weak_form_flat, weak_form_face_flat)
 
 
-def create_J_bc_function(problem, bc, internal_vars: InternalVars):
+def create_J_bc_function(problem, bc):
     """Create Jacobian function with BC applied."""
     from feax.DCboundary import apply_boundary_to_J
     
-    def J_bc_func(sol_flat):
+    def J_bc_func(sol_flat, internal_vars: InternalVars):
         sol_list = problem.unflatten_fn_sol_list(sol_flat)
         J = get_J(problem, sol_list, internal_vars)
         return apply_boundary_to_J(bc, J)
@@ -287,11 +295,11 @@ def create_J_bc_function(problem, bc, internal_vars: InternalVars):
     return J_bc_func
 
 
-def create_res_bc_function(problem, bc, internal_vars: InternalVars):
+def create_res_bc_function(problem, bc):
     """Create residual function with BC applied."""
     from feax.DCboundary import apply_boundary_to_res
     
-    def res_bc_func(sol_flat):
+    def res_bc_func(sol_flat, internal_vars: InternalVars):
         sol_list = problem.unflatten_fn_sol_list(sol_flat)
         res = get_res(problem, sol_list, internal_vars)
         res_flat = jax.flatten_util.ravel_pytree(res)[0]
