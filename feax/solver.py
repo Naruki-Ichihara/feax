@@ -6,49 +6,10 @@ from jax.experimental.sparse import BCOO, eye, bcoo_multiply_sparse
 from dataclasses import dataclass
 from .assembler import get_J, get_res
 from .assembler import create_J_bc_function, create_res_bc_function
+from .DCboundary import DirichletBC
 
 
-def create_diagonals_fn():
-    """Create a function that returns vector of diagonals of BCOO matrix.
-        
-    Returns
-    -------
-    diagonals_fn : callable
-        Function that takes a BCOO matrix and returns the diagonal elements as a vector
-        
-    Notes
-    -----
-    For a BCOO matrix, the diagonal elements are extracted by finding
-    entries where row index equals column index.
-    """
-    def diagonals_fn(A):
-        """Extract diagonal elements from BCOO matrix.
-        
-        Parameters
-        ----------
-        A : jax.experimental.sparse.BCOO
-            BCOO sparse matrix
-        """
-        # Get indices and data from BCOO matrix
-        indices = A.indices  # Shape: (nnz, 2) - [row, col] pairs
-        data = A.data       # Shape: (nnz,) - values
-        
-        # Find diagonal entries where row == col
-        diagonal_mask = indices[:, 0] == indices[:, 1]
-        diagonal_indices = indices[diagonal_mask, 0]  # Row indices of diagonal elements
-        diagonal_values = data[diagonal_mask]         # Values of diagonal elements
-        
-        # Create full diagonal vector (zeros for missing diagonal entries)
-        n = A.shape[0]  # Matrix size
-        diagonals = jnp.zeros(n)
-        diagonals = diagonals.at[diagonal_indices].set(diagonal_values)
-        
-        return diagonals
-    
-    return diagonals_fn
-
-
-def create_x0(bc_rows=None, bc_vals=None, strategy="zeros"):
+def create_x0(bc_rows=None, bc_vals=None):
     """Create initial guess function for linear solver following JAX-FEM approach.
     
     Parameters
@@ -56,11 +17,7 @@ def create_x0(bc_rows=None, bc_vals=None, strategy="zeros"):
     bc_rows : array-like, optional
         Row indices of boundary condition locations
     bc_vals : array-like, optional  
-        Boundary condition values, required for x0_strategy="bc_aware"
-    strategy : str, default "zeros"
-        Strategy for creating initial guess:
-        - "zeros": Return zeros (good default for increments)
-        - "bc_aware": Correct x0 method from row elimination solver (x0_1 - x0_2)
+        Boundary condition values
         
     Returns
     -------
@@ -69,54 +26,41 @@ def create_x0(bc_rows=None, bc_vals=None, strategy="zeros"):
         
     Notes
     -----
-    The bc_aware strategy implements the exact x0 computation from the row elimination solver:
+    Implements the exact x0 computation from the row elimination solver:
     x0_1 = assign_bc(zeros, problem) - sets BC values at BC locations, 0 elsewhere
     x0_2 = copy_bc(current_sol, problem) - copies current solution values at BC locations, 0 elsewhere  
     x0 = x0_1 - x0_2 - the correct initial guess computation
     
     Examples
     --------
-    >>> # Basic usage (zeros everywhere)
-    >>> x0_fn = create_x0()
-    >>> solver_options = SolverOptions(linear_solver_x0_fn=x0_fn)
-    
-    >>> # Advanced usage with BC information
-    >>> x0_fn = create_x0(bc_rows=[0, 1, 2], bc_vals=[1.0, 0.0, 2.0], strategy="bc_aware") 
+    >>> # Usage with BC information
+    >>> x0_fn = create_x0(bc_rows=[0, 1, 2], bc_vals=[1.0, 0.0, 2.0]) 
     >>> solver_options = SolverOptions(linear_solver_x0_fn=x0_fn)
     """
     
-    if strategy == "zeros":
-        def x0_fn(current_sol):
-            """Default strategy: zeros everywhere (good for increments)."""
+    def x0_fn(current_sol):
+        """BC-aware strategy: correct x0 method from row elimination solver."""
+        if bc_rows is None or bc_vals is None:
+            # Fallback to zeros if BC info not provided
             return jnp.zeros_like(current_sol)
             
-    elif strategy == "bc_aware":
-        def x0_fn(current_sol):
-            """BC-aware strategy: correct x0 method from row elimination solver."""
-            if bc_rows is None or bc_vals is None:
-                # Fallback to zeros if BC info not provided
-                return jnp.zeros_like(current_sol)
-                
-            # Convert to JAX arrays if needed (for JIT compatibility)
-            bc_rows_array = jnp.array(bc_rows) if isinstance(bc_rows, (tuple, list)) else bc_rows
-            bc_vals_array = jnp.array(bc_vals) if isinstance(bc_vals, (tuple, list)) else bc_vals
-            
-            # Implement the exact logic from the old row elimination solver:
-            # x0_1 = assign_bc(zeros, problem) - sets BC values at BC locations, 0 elsewhere
-            x0_1 = jnp.zeros_like(current_sol)
-            x0_1 = x0_1.at[bc_rows_array].set(bc_vals_array)
-            
-            # x0_2 = copy_bc(current_sol, problem) - copies current solution values at BC locations, 0 elsewhere
-            x0_2 = jnp.zeros_like(current_sol)
-            x0_2 = x0_2.at[bc_rows_array].set(current_sol[bc_rows_array])
-            
-            # x0 = x0_1 - x0_2 (the original correct implementation)
-            x0 = x0_1 - x0_2
-            
-            return x0
-            
-    else:
-        raise ValueError(f"Unknown strategy: {strategy}. Use 'zeros' or 'bc_aware'.")
+        # Convert to JAX arrays if needed (for JIT compatibility)
+        bc_rows_array = jnp.array(bc_rows) if isinstance(bc_rows, (tuple, list)) else bc_rows
+        bc_vals_array = jnp.array(bc_vals) if isinstance(bc_vals, (tuple, list)) else bc_vals
+        
+        # Implement the exact logic from the old row elimination solver:
+        # x0_1 = assign_bc(zeros, problem) - sets BC values at BC locations, 0 elsewhere
+        x0_1 = jnp.zeros_like(current_sol)
+        x0_1 = x0_1.at[bc_rows_array].set(bc_vals_array)
+        
+        # x0_2 = copy_bc(current_sol, problem) - copies current solution values at BC locations, 0 elsewhere
+        x0_2 = jnp.zeros_like(current_sol)
+        x0_2 = x0_2.at[bc_rows_array].set(current_sol[bc_rows_array])
+        
+        # x0 = x0_1 - x0_2 (the original correct implementation)
+        x0 = x0_1 - x0_2
+        
+        return x0
         
     return x0_fn
 
@@ -145,14 +89,8 @@ class SolverOptions:
         Maximum iterations for linear solver
     linear_solver_x0_fn : callable, optional
         Custom function to compute initial guess: f(current_sol) -> x0
-        If provided, overrides x0_strategy
-    x0_strategy : str, default "zeros"
-        Strategy for initial guess. Options: "zeros", "bc_aware"
-        Used only if linear_solver_x0_fn is None
-    bc_rows : array-like, optional
-        Boundary condition row indices, required for x0_strategy="bc_aware"
-    bc_vals : array-like, optional
-        Boundary condition values, required for x0_strategy="bc_aware"
+    initial_guess : array-like, optional
+        Initial guess for the solution vector in newton solver. If None, uses zeros with BC values set.
     """
     
     tol: float = 1e-6
@@ -164,12 +102,10 @@ class SolverOptions:
     linear_solver_atol: float = 1e-10
     linear_solver_maxiter: int = 10000
     linear_solver_x0_fn: Optional[Callable] = None  # Function to compute initial guess: f(current_sol) -> x0
-    x0_strategy: str = "zeros"  # Options: "zeros", "bc_aware" - used if linear_solver_x0_fn is None
-    bc_rows: Optional[object] = None  # Boundary condition row indices for x0_strategy="bc_aware"
-    bc_vals: Optional[object] = None  # Boundary condition values for x0_strategy="bc_aware"
+    initial_guess: Optional[object] = None  # Initial guess for the solution vector in newton solver
 
 
-def newton_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: SolverOptions, internal_vars=None):
+def newton_solve(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None):
     """Newton solver using JAX while_loop for JIT compatibility.
     
     Parameters
@@ -180,6 +116,8 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: Solv
         Function that computes the residual with BC applied. Takes solution vector and optionally internal_vars.
     initial_sol : jax.numpy.ndarray
         Initial solution guess
+    bc : DirichletBC
+        Boundary conditions
     solver_options : SolverOptions
         Solver configuration options. For advanced usage, set linear_solver_x0_fn to provide
         custom initial guess for linear solver following jax-fem approach.
@@ -201,11 +139,10 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: Solv
         # User provided custom function
         x0_fn = solver_options.linear_solver_x0_fn
     else:
-        # Use x0_strategy to create function automatically
+        # Create bc_aware x0 function
         x0_fn = create_x0(
-            bc_rows=solver_options.bc_rows,
-            bc_vals=solver_options.bc_vals,
-            strategy=solver_options.x0_strategy
+            bc_rows=bc.bc_rows,
+            bc_vals=bc.bc_vals
         )
     
     # Define solver functions for JAX compatibility (no conditionals inside JAX-traced code)
@@ -363,7 +300,7 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: Solv
     return final_state
 
 
-def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, solver_options: SolverOptions, num_iters: int, internal_vars=None):
+def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, solver_options: SolverOptions, num_iters: int, internal_vars=None):
     """Newton solver using JAX fori_loop for fixed iterations - optimized for vmap.
     
     This solver is specifically designed for use with vmap where we need:
@@ -379,6 +316,8 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, solver_options:
         Function that computes the residual with BC applied. Takes solution vector and optionally internal_vars.
     initial_sol : jax.numpy.ndarray
         Initial solution guess
+    bc : DirichletBC
+        Boundary conditions
     solver_options : SolverOptions
         Solver configuration options
     num_iters : int
@@ -412,9 +351,8 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, solver_options:
         x0_fn = solver_options.linear_solver_x0_fn
     else:
         x0_fn = create_x0(
-            bc_rows=solver_options.bc_rows,
-            bc_vals=solver_options.bc_vals,
-            strategy=solver_options.x0_strategy
+            bc_rows=bc.bc_rows,
+            bc_vals=bc.bc_vals
         )
     
     # Define solver functions
@@ -563,7 +501,7 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, solver_options:
     return final_sol, final_res_norm, converged
 
 
-def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, solver_options: SolverOptions, internal_vars=None):
+def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None):
     """Newton solver using Python while loop - non-JIT version for debugging.
     
     This solver uses regular Python control flow instead of JAX control flow,
@@ -578,6 +516,8 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, solver_options: S
         Function that computes the residual with BC applied. Takes solution vector and optionally internal_vars.
     initial_sol : jax.numpy.ndarray
         Initial solution guess
+    bc : DirichletBC
+        Boundary conditions
     solver_options : SolverOptions
         Solver configuration options
     internal_vars : InternalVars, optional
@@ -603,9 +543,8 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, solver_options: S
         x0_fn = solver_options.linear_solver_x0_fn
     else:
         x0_fn = create_x0(
-            bc_rows=solver_options.bc_rows,
-            bc_vals=solver_options.bc_vals,
-            strategy=solver_options.x0_strategy
+            bc_rows=bc.bc_rows,
+            bc_vals=bc.bc_vals
         )
     
     # Define solver functions
@@ -734,7 +673,7 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, solver_options: S
     return sol, res_norm, converged, iter_count
 
 
-def linear_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: SolverOptions, internal_vars=None):
+def linear_solve(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None):
     """Linear solver for problems that converge in one iteration (no while loop).
     
     This solver is optimized for linear elasticity problems where the solution
@@ -751,6 +690,8 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: Solv
         returns residual vector.
     initial_sol : jax.numpy.ndarray
         Initial solution guess (typically zeros with BC values set)
+    bc : DirichletBC
+        Boundary conditions
     solver_options : SolverOptions
         Solver configuration options
     internal_vars : InternalVars, optional
@@ -778,9 +719,8 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_sol, solver_options: Solv
         x0_fn = solver_options.linear_solver_x0_fn
     else:
         x0_fn = create_x0(
-            bc_rows=solver_options.bc_rows,
-            bc_vals=solver_options.bc_vals,
-            strategy=solver_options.x0_strategy
+            bc_rows=bc.bc_rows,
+            bc_vals=bc.bc_vals
         )
     
     # Define solver functions
@@ -896,7 +836,7 @@ def __linear_solve_adjoint(A, b, solver_options: SolverOptions):
     
     return sol
 
-def create_differentiable_solver(problem, bc, solver_options=None, adjoint_solver_options=None):
+def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None, iter_num=None):
     """Create a differentiable solver that returns gradients w.r.t. internal_vars using custom VJP.
     
     This solver uses the self-adjoint approach for efficient gradient computation:
@@ -907,12 +847,20 @@ def create_differentiable_solver(problem, bc, solver_options=None, adjoint_solve
     ----------
     problem : Problem
         The feax Problem instance (clean API - no internal_vars in constructor)
-    bc : DirichletBC  
+    bc : DirichletBC
         Boundary conditions
     solver_options : SolverOptions, optional
-        Options for forward solve (defaults to SolverOptions())
+        Options for forward solve (defaults to SolverOptions()). Can include initial_guess
+        to provide a custom initial solution vector instead of zeros with BC values
     adjoint_solver_options : dict, optional
         Options for adjoint solve (defaults to same as forward solve)
+    iter_num : int, optional
+        Number of iterations to perform. Controls which solver is used:
+        - None: Use while loop newton_solve (adaptive iterations, NOT vmappable)
+        - 1: Use linear_solve (single iteration for linear problems, vmappable)
+        - >1: Use newton_solve_fori with fixed number of iterations (vmappable)
+        Note: When iter_num is not None, the solver is vmappable since it uses fixed iterations.
+        Recommended: Use iter_num=1 for linear problems for optimal performance.
         
     Returns
     -------
@@ -928,10 +876,25 @@ def create_differentiable_solver(problem, bc, solver_options=None, adjoint_solve
     The adjoint method is more efficient than forward-mode AD for optimization problems
     where we need gradients w.r.t. many parameters but few outputs.
     
+    When iter_num is specified (not None), the solver becomes vmappable as it uses fixed
+    iterations without dynamic control flow. This is essential for parallel solving of
+    multiple parameter sets using jax.vmap.
+    
     Examples
     --------
     >>> # Create differentiable solver
-    >>> diff_solve = create_differentiable_solver(problem, bc)
+    >>> diff_solve = create_solver(problem, bc)
+    >>> 
+    >>> # Create differentiable solver with custom initial guess
+    >>> solver_opts = SolverOptions(initial_guess=my_initial_solution)
+    >>> diff_solve = create_solver(problem, bc, solver_opts)
+    >>> 
+    >>> # For linear problems (e.g., linear elasticity), use single iteration for best performance
+    >>> # This is both faster and vmappable
+    >>> diff_solve_linear = create_solver(problem, bc, iter_num=1)
+    >>> 
+    >>> # For fixed iteration count (e.g., for vmap)
+    >>> diff_solve_fixed = create_solver(problem, bc, iter_num=10)
     >>> 
     >>> # Define loss function
     >>> def loss_fn(internal_vars):
@@ -949,11 +912,32 @@ def create_differentiable_solver(problem, bc, solver_options=None, adjoint_solve
     if adjoint_solver_options is None:
         adjoint_solver_options = SolverOptions(
             linear_solver="bicgstab",  # More robust than CG
-            tol=1e-10  # Tighter tolerance prevents NaN gradients
+            tol=1e-10
         )
 
-    J_bc_func = create_J_bc_function(problem, bc)
-    res_bc_func = create_res_bc_function(problem, bc)
+    J_bc_func = jax.jit(create_J_bc_function(problem, bc))
+    res_bc_func = jax.jit(create_res_bc_function(problem, bc))
+
+    # Initial solution
+    if solver_options.initial_guess is not None:
+        initial_sol = solver_options.initial_guess
+    else:
+        initial_sol = jnp.zeros(problem.num_total_dofs_all_vars)
+        initial_sol = initial_sol.at[bc.bc_rows].set(bc.bc_vals)
+        
+    # Solve using appropriate method based on iter_num
+    if iter_num is None:
+        solve_fn = lambda internal_vars: newton_solve(
+            J_bc_func, res_bc_func, initial_sol, bc, solver_options, internal_vars
+        )
+    elif iter_num == 1:
+        solve_fn = lambda internal_vars: linear_solve(
+            J_bc_func, res_bc_func, initial_sol, bc, solver_options, internal_vars
+        )
+    else:
+        solve_fn = lambda internal_vars: newton_solve_fori(
+            J_bc_func, res_bc_func, initial_sol, bc, solver_options, iter_num, internal_vars
+        )
 
     @jax.custom_vjp
     def differentiable_solve(internal_vars):
@@ -969,15 +953,7 @@ def create_differentiable_solver(problem, bc, solver_options=None, adjoint_solve
         sol : jax.numpy.ndarray
             Solution vector
         """
-        # Create BC functions with current internal_vars
-        
-        # Initial solution
-        initial_sol = jnp.zeros(problem.num_total_dofs_all_vars)
-        initial_sol = initial_sol.at[bc.bc_rows].set(bc.bc_vals)
-        
-        # Solve using Newton method
-        sol, _, _, _ = newton_solve(J_bc_func, res_bc_func, initial_sol, solver_options, internal_vars)
-        return sol
+        return solve_fn(internal_vars)[0]
     
     def f_fwd(internal_vars):
         """Forward function for custom VJP.

@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![JAX](https://img.shields.io/badge/JAX-0.7%2B-green.svg)](https://github.com/google/jax)
 
-**FEAX** (Finite Element Analysis with JAX) is a high-performance, differentiable finite element library built on JAX. It provides a clean, modern API for solving partial differential equations with automatic differentiation, JIT compilation, and GPU acceleration.
+**FEAX** (Finite Element Analysis with JAX) is a compact, high-performance finite element analysis engine built on JAX. It provides an API for solving partial differential equations with automatic differentiation, JIT compilation, and GPU acceleration.
 
 ## What is FEAX?
 
@@ -12,7 +12,7 @@ FEAX combines the power of modern automatic differentiation with classical finit
 
 - **Differentiable Physics**: Compute gradients through entire FE simulations for optimization, inverse problems, and machine learning
 - **High Performance**: JIT compilation and vectorization through JAX for maximum computational efficiency
-- **Clean API**: Intuitive separation between problem definition and solution parameters
+- **Modular API**: Separation between problem definition and solution parameters
 - **Extensibility**: Easy to extend with custom physics, elements, and solvers
 
 ## Key Features
@@ -20,7 +20,7 @@ FEAX combines the power of modern automatic differentiation with classical finit
 ### Differentiable Solvers
 ```python
 import jax
-from feax import Problem, InternalVars, create_differentiable_solver
+from feax import Problem, InternalVars, create_solver
 
 # Define your physics problem
 class Elasticity(Problem):
@@ -31,7 +31,7 @@ class Elasticity(Problem):
         return stress
 
 # Create differentiable solver
-solver = create_differentiable_solver(problem, boundary_conditions, options)
+solver = create_solver(problem, boundary_conditions, options)
 
 # Compute gradients with respect to material properties
 grad_fn = jax.grad(lambda params: objective(solver(params)))
@@ -44,7 +44,7 @@ gradients = grad_fn(material_parameters)
 - **Vectorization**: Efficient batch processing of multiple scenarios
 - **Memory Efficient**: Optimized memory usage for large-scale problems
 
-### Clean Architecture
+### Architecture
 ```python
 # Separate problem definition from parameters
 problem = ElasticityProblem(mesh, vec=3, dim=3)
@@ -77,7 +77,7 @@ Here's a simple linear elasticity example:
 ```python
 import jax.numpy as np
 from feax import Problem, InternalVars, DirichletBC, SolverOptions
-from feax import create_differentiable_solver
+from feax import create_solver
 from feax.mesh import box_mesh_gmsh, Mesh
 
 # Define the physics
@@ -119,7 +119,7 @@ internal_vars = InternalVars(volume_vars=(E_field,))
 
 # Create solver
 solver_options = SolverOptions(tol=1e-8, linear_solver="bicgstab")
-solver = create_differentiable_solver(problem, bc, solver_options)
+solver = create_solver(problem, bc, solver_options)
 
 # Solve
 solution = solver(internal_vars)
@@ -192,7 +192,7 @@ solution = newton_solve(J_func, res_func, initial_guess, options)
 solution = linear_solve(J_func, res_func, initial_guess, options)
 
 # Differentiable solver for optimization
-solver = create_differentiable_solver(problem, bc, options)
+solver = create_solver(problem, bc, options)
 solution = solver(internal_vars)
 ```
 

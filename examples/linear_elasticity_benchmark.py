@@ -24,11 +24,6 @@ class ElasticityProblem(Problem):
             epsilon = 0.5 * (u_grad + u_grad.T)
             return lmbda * np.trace(epsilon) * np.eye(self.dim) + 2 * mu * epsilon
         return stress
-    
-    def get_surface_maps(self):
-        def surface_map(u, x, traction_mag):
-            return np.array([0., 0., traction_mag])
-        return [surface_map]
 
 # Create mesh and problem
 meshio_mesh = box_mesh_gmsh(40, 40, 40, 1., 1., 1., data_dir='/tmp', ele_type='HEX8')
@@ -46,50 +41,47 @@ def zero_disp(point):
 def tension_disp(point):
     return 0.1
 
-# Create problem
+# Create problem - simpler BC without surface forces
 dirichlet_bc_info = [[left] * 3 + [right], [0, 1, 2, 0], 
                      [zero_disp, zero_disp, zero_disp, tension_disp]]
 
 # Create clean Problem (NO internal_vars!)
 problem = ElasticityProblem(
     mesh=mesh, vec=3, dim=3, ele_type='HEX8', gauss_order=2,
-    dirichlet_bc_info=dirichlet_bc_info, location_fns=[right]
+    dirichlet_bc_info=dirichlet_bc_info
 )
 
 # Create InternalVars separately
 E_array = InternalVars.create_uniform_volume_var(problem, E)
-traction_array = InternalVars.create_uniform_surface_var(problem, 1.0)
 
 internal_vars = InternalVars(
-    volume_vars=(E_array,),
-    surface_vars=[(traction_array,)]
+    volume_vars=(E_array,)
 )
 
 # Single solve function
 def solve_single(initial_sol, static_J, bc):
-    def J_bc_func(sol_flat):
+    def J_bc_func(sol_flat, internal_vars_param):
         return static_J
     
-    def res_bc_func(sol_flat):
+    def res_bc_func(sol_flat, internal_vars_param):
         sol_unflat = problem.unflatten_fn_sol_list(sol_flat)
-        res = get_res(problem, sol_unflat, internal_vars)
+        res = get_res(problem, sol_unflat, internal_vars_param)
         res_flat = jax.flatten_util.ravel_pytree(res)[0]
         return apply_boundary_to_res(bc, res_flat, sol_flat)
     
     solver_options = SolverOptions(
         tol=1e-8,
-        linear_solver="cg",
-        x0_strategy="zeros"
+        linear_solver="cg"
     )
     
-    sol = linear_solve(J_bc_func, res_bc_func, initial_sol, solver_options)
+    sol = linear_solve(J_bc_func, res_bc_func, initial_sol, bc, solver_options, internal_vars)
     return sol
 
 # JIT compiled version of single solve
 solve_single_jit = jax.jit(solve_single)
 
 # Vmap version
-solve_vmap = jax.vmap(solve_single, in_axes=(0, None, 0))
+solve_vmap = jax.jit(jax.vmap(solve_single, in_axes=(0, None, 0)))
 
 # Benchmark function
 def run_benchmark(batch_sizes):

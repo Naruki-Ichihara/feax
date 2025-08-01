@@ -20,10 +20,10 @@ from .internal_vars import InternalVars
 from .assembler import get_J, get_res, create_J_bc_function, create_res_bc_function
 from .mesh import Mesh
 from .DCboundary import DirichletBC, apply_boundary_to_J, apply_boundary_to_res
-from .solver import newton_solve, SolverOptions, create_differentiable_solver, linear_solve, newton_solve_fori, newton_solve_py
+from .solver import newton_solve, SolverOptions, create_solver, linear_solve, newton_solve_fori, newton_solve_py
 
 __all__ = [
     'Problem', 'InternalVars', 
     'get_J', 'get_res', 'create_J_bc_function', 'create_res_bc_function',
-    'Mesh', 'DirichletBC', 'newton_solve', 'SolverOptions', 'create_differentiable_solver'
+    'Mesh', 'DirichletBC', 'newton_solve', 'SolverOptions', 'create_solver'
 ]
