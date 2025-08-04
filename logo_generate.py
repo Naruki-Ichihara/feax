@@ -15,8 +15,8 @@ FACE_SEPARATION = 0.02  # Gap between faces
 ACCENT_COLOR = "#B22222"  # Dark red accent color (FireBrick)
 GRAY_COLOR = "#C0C0C0"    # Light gray color for other faces (Silver)
 ACCENT_FACE = 2          # Which face to highlight (0-3)
-FIGURE_SIZE = (8, 8)     # Figure dimensions
-DPI = 500               # Output resolution
+FIGURE_SIZE = (12, 12)     # Figure dimensions
+DPI = 600               # Output resolution
 FACE_ALPHA = 0.8        # Face transparency
 
 def create_tetrahedron():
