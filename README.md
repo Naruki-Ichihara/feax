@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="assets/logo.svg" alt="FEAX Logo" width="150" height="150">
+</div>
+
 # FEAX
 
 [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)

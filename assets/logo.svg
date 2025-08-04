@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="568.8pt" height="568.8pt" viewBox="0 0 568.8 568.8" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2025-08-04T07:37:14.608640</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.10.5, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 568.8 
+L 568.8 568.8 
+L 568.8 0 
+L 0 0 
+L 0 568.8 
+z
+" style="fill: none"/>
+  </g>
+  <g id="patch_2">
+   <path d="M 7.2 561.6 
+L 561.6 561.6 
+L 561.6 7.2 
+L 7.2 7.2 
+L 7.2 561.6 
+z
+" style="fill: none"/>
+  </g>
+  <g id="axes_1">
+   <g id="Poly3DCollection_1">
+    <path d="M 110.360786 369.164826 
+L 490.395064 471.250374 
+L 402.118254 60.484619 
+z
+" clip-path="url(#pc8ef364261)" style="fill: #c0c0c0; fill-opacity: 0.8"/>
+   </g>
+   <g id="Poly3DCollection_2">
+    <path d="M 165.618105 205.657283 
+L 104.320398 364.500046 
+L 396.35351 55.315878 
+z
+" clip-path="url(#pc8ef364261)" style="fill: #c0c0c0; fill-opacity: 0.8"/>
+   </g>
+   <g id="Poly3DCollection_3">
+    <path d="M 167.274984 214.667792 
+L 105.705887 372.481742 
+L 486.324727 475.038055 
+z
+" clip-path="url(#pc8ef364261)" style="fill: #c0c0c0; fill-opacity: 0.8"/>
+   </g>
+   <g id="Poly3DCollection_4">
+    <path d="M 173.899494 207.618137 
+L 492.611071 468.590203 
+L 403.997277 56.857086 
+z
+" clip-path="url(#pc8ef364261)" style="fill: #b22222; fill-opacity: 0.8"/>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="pc8ef364261">
+   <rect x="7.2" y="7.2" width="554.4" height="554.4"/>
+  </clipPath>
+ </defs>
+</svg>
