@@ -165,6 +165,118 @@ class MyProblem(Problem):
         pass
 ```
 
+### Kernels for Weak Form Construction
+
+FEAX uses kernels to construct weak forms for finite element analysis. These kernels implement the integral terms that arise from applying the Galerkin method to partial differential equations.
+
+#### Supported Kernels
+
+##### 1. Laplace Kernel (Diffusion/Elasticity)
+The Laplace kernel handles gradient-based physics like heat conduction, diffusion, and elasticity:
+
+$$\int_{\Omega} \sigma(\nabla u) : \nabla v \, d\Omega$$
+
+where:
+- $\sigma(\nabla u)$ is the stress/flux tensor computed from the gradient
+- $v$ is the test function
+- $:$ denotes tensor contraction
+
+**Implementation**: Define `get_tensor_map()` returning a function that maps gradients to stress/flux tensors.
+
+```python
+def get_tensor_map(self):
+    def stress_tensor(u_grad, material_param):
+        # u_grad: (vec, dim) gradient tensor
+        # Returns: (vec, dim) stress/flux tensor
+        return compute_stress(u_grad, material_param)
+    return stress_tensor
+```
+
+##### 2. Mass Kernel (Inertia/Reaction)
+The mass kernel handles terms without derivatives, used for inertia, reaction, or body forces:
+
+$$\int_{\Omega} m(u, x) \cdot v \, d\Omega$$
+
+where:
+- $m(u, x)$ is a mass-like term (can depend on solution and position)
+- $v$ is the test function
+
+**Implementation**: Define `get_mass_map()` returning a function for the mass term.
+
+```python
+def get_mass_map(self):
+    def mass_map(u, x, density):
+        # u: (vec,) solution at quadrature point
+        # x: (dim,) physical coordinates
+        # Returns: (vec,) mass term
+        return density * acceleration_term(u)
+    return mass_map
+```
+
+##### 3. Surface Kernel (Boundary Loads)
+Surface kernels handle boundary integrals for surface tractions, pressures, or fluxes:
+
+$$\int_{\Gamma} t(u, x) \cdot v \, d\Gamma$$
+
+where:
+- $t(u, x)$ is the surface traction/flux
+- $\Gamma$ is the boundary surface
+
+**Implementation**: Define `get_surface_maps()` returning a list of surface functions.
+
+```python
+def get_surface_maps(self):
+    def surface_traction(u, x, traction_magnitude):
+        # u: (vec,) solution at surface quadrature point
+        # x: (dim,) surface coordinates
+        # Returns: (vec,) traction vector
+        return np.array([0., 0., traction_magnitude])
+    return [surface_traction]  # List for multiple boundaries
+```
+
+##### 4. Universal Kernel (Custom Terms)
+For complex physics that don't fit the above patterns, use universal kernels with full access to shape functions and quadrature data:
+
+$$\int_{\Omega} f(u, \nabla u, x, N, \nabla N) \, d\Omega$$
+
+**Implementation**: Define `get_universal_kernel()` for volume integrals or `get_universal_kernels_surface()` for surface integrals.
+
+```python
+def get_universal_kernel(self):
+    def universal_kernel(cell_sol_flat, x, shape_grads, JxW, v_grads_JxW, *params):
+        # Full access to FE data for custom weak forms
+        # cell_sol_flat: flattened solution on element
+        # x: quadrature points
+        # shape_grads: shape function gradients
+        # JxW: Jacobian times quadrature weights
+        # v_grads_JxW: test function gradients times JxW
+        return custom_weak_form_contribution
+    return universal_kernel
+```
+
+#### Kernel Composition
+
+The total weak form is the sum of all kernel contributions:
+
+$$R(u) = \int_{\Omega} \left[ \sigma(\nabla u) : \nabla v + m(u) \cdot v \right] d\Omega + \sum_i \int_{\Gamma_i} t_i(u) \cdot v \, d\Gamma_i$$
+
+FEAX automatically:
+1. Evaluates each kernel at quadrature points
+2. Applies quadrature weights and Jacobians
+3. Assembles contributions into the global residual
+4. Computes the Jacobian matrix via automatic differentiation
+
+#### Implementation Requirements
+
+When implementing a Problem subclass:
+
+1. **Laplace kernel** (`get_tensor_map`): Required for gradient-based physics
+2. **Mass kernel** (`get_mass_map`): Optional, for mass/reaction terms
+3. **Surface kernels** (`get_surface_maps`): Optional, returns list of boundary functions
+4. **Universal kernels**: Optional, for complex custom physics
+
+The kernels receive internal variables (material properties, loads) as additional arguments, enabling parameterization and differentiation.
+
 #### Internal Variables
 ```python
 # Material properties and loading parameters
