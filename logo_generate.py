@@ -12,9 +12,13 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 ELEVATION = 25          # Viewing angle elevation
 AZIMUTH = 75           # Viewing angle azimuth
 FACE_SEPARATION = 0.02  # Gap between faces
-ACCENT_COLOR = "#B22222"  # Dark red accent color (FireBrick)
-GRAY_COLOR = "#C0C0C0"    # Light gray color for other faces (Silver)
-ACCENT_FACE = 2          # Which face to highlight (0-3)
+# JAX-inspired color palette
+FACE_COLORS = [
+    "#4285F4",  # Blue
+    "#9E9E9E",  # Gray
+    "#00A693",  # Teal
+    "#9C27B0"   # Purple
+]
 FIGURE_SIZE = (12, 12)     # Figure dimensions
 DPI = 600               # Output resolution
 FACE_ALPHA = 0.8        # Face transparency
@@ -70,9 +74,8 @@ def generate_logo(output_file='assets/logo.svg'):
     # Explode faces for separated view
     exploded_faces = explode_faces(faces, separation=FACE_SEPARATION)
     
-    # Set up face colors with accent color
-    face_colors = [GRAY_COLOR] * 4
-    face_colors[ACCENT_FACE] = ACCENT_COLOR
+    # Set up face colors with JAX-inspired palette
+    face_colors = FACE_COLORS
     
     # Create individual faces with different shading
     for i, face in enumerate(exploded_faces):

@@ -6,7 +6,7 @@
   <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
    <cc:Work>
     <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
-    <dc:date>2025-08-04T07:38:42.464038</dc:date>
+    <dc:date>2025-08-04T07:50:33.596858</dc:date>
     <dc:format>image/svg+xml</dc:format>
     <dc:creator>
      <cc:Agent>
@@ -44,33 +44,33 @@ z
 L 741.405487 712.315503 
 L 607.270593 88.164941 
 z
-" clip-path="url(#p13e2c92f1c)" style="fill: #c0c0c0; fill-opacity: 0.8"/>
+" clip-path="url(#p59ad1a816a)" style="fill: #9c27b0; fill-opacity: 0.8"/>
    </g>
    <g id="Poly3DCollection_2">
     <path d="M 247.913224 308.751975 
 L 154.772553 550.11046 
 L 598.511177 80.311139 
 z
-" clip-path="url(#p13e2c92f1c)" style="fill: #c0c0c0; fill-opacity: 0.8"/>
+" clip-path="url(#p59ad1a816a)" style="fill: #9e9e9e; fill-opacity: 0.8"/>
    </g>
    <g id="Poly3DCollection_3">
     <path d="M 250.43082 322.443269 
 L 156.877777 562.238491 
 L 735.220689 718.070812 
 z
-" clip-path="url(#p13e2c92f1c)" style="fill: #c0c0c0; fill-opacity: 0.8"/>
+" clip-path="url(#p59ad1a816a)" style="fill: #4285f4; fill-opacity: 0.8"/>
    </g>
    <g id="Poly3DCollection_4">
     <path d="M 260.496633 311.731455 
 L 744.772666 708.273425 
 L 610.125733 82.652974 
 z
-" clip-path="url(#p13e2c92f1c)" style="fill: #b22222; fill-opacity: 0.8"/>
+" clip-path="url(#p59ad1a816a)" style="fill: #00a693; fill-opacity: 0.8"/>
    </g>
   </g>
  </g>
  <defs>
-  <clipPath id="p13e2c92f1c">
+  <clipPath id="p59ad1a816a">
    <rect x="7.2" y="7.2" width="842.4" height="842.4"/>
   </clipPath>
  </defs>
