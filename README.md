@@ -329,8 +329,8 @@ Performance comparison for linear elasticity problems with the following specifi
 
 **Problem Setup:**
 - **Element Type**: 3D hexahedral elements (HEX8) 
-- **Mesh Size**: 40×40×40 elements (274,625 nodes)
-- **DOFs**: 823,875 degrees of freedom (3 DOFs per node)
+- **Mesh Size**: 40×40×40 elements (68921 nodes)
+- **DOFs**: 206763 degrees of freedom (3 DOFs per node)
 - **Physics**: Linear elasticity with Young's modulus E = 70 GPa, Poisson's ratio ν = 0.3
 - **Boundary Conditions**: Fixed left face, tension applied to right face
 - **Solver**: BiCGSTAB iterative linear solver with 1e-6 tolerance
