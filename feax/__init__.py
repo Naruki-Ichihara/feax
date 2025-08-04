@@ -1,6 +1,6 @@
-"""feax - Finite Element Analysis with JAX (Clean API)
+"""feax - Finite Element Analysis with JAX
 
-This is the main feax API with clean separation between:
+This is the main feax API with modular separation between:
 - Problem: FE structure (mesh, elements, quadrature)  
 - InternalVars: Material properties and loading parameters
 
@@ -14,7 +14,7 @@ import logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# Main clean API
+# Main API
 from .problem import Problem
 from .internal_vars import InternalVars
 from .assembler import get_J, get_res, create_J_bc_function, create_res_bc_function

@@ -1,3 +1,8 @@
+"""
+Comparison between JAX-FEM and FEAX implementations.
+Demonstrates equivalent hyperelasticity solver implementations using both frameworks.
+"""
+
 # Import some useful modules.
 import numpy as onp
 import jax
@@ -115,7 +120,7 @@ print(f"\ndrho[0, 0] = {drho[0][0, 0]}, drho_fd_00 = {drho_fd_00}")
 
 from feax import Problem as feaxProblem
 from feax import InternalVars, DirichletBC, SolverOptions
-from feax import create_differentiable_solver
+from feax import create_solver
 
 class HyperElasticityFeax(feaxProblem):
     def get_tensor_map(self):
@@ -148,8 +153,8 @@ bc = DirichletBC.from_bc_info(problem_feax, dirichlet_bc_info)
 rho_array = InternalVars.create_uniform_volume_var(problem_feax, 0.5)
 internal_vars = InternalVars(volume_vars=(rho_array,))
 
-solver_option = SolverOptions(tol=1e-8, linear_solver="bicgstab", x0_strategy="bc_aware", bc_rows=bc.bc_rows, bc_vals=bc.bc_vals)
-solver_fn = create_differentiable_solver(problem_feax, bc, solver_option)
+solver_option = SolverOptions(tol=1e-8, linear_solver="bicgstab")
+solver_fn = create_solver(problem_feax, bc, solver_option)
 
 sol_list_feax = solver_fn(internal_vars)
 sol_unflat = problem_feax.unflatten_fn_sol_list(sol_list_feax)

@@ -1,5 +1,7 @@
+
 """
-Batch linear elasticity example using clean feax API
+Batched linear elasticity solver example.
+Demonstrates solving multiple linear elasticity problems with different material properties in parallel.
 """
 
 import jax
@@ -23,11 +25,6 @@ class ElasticityProblem(Problem):
             epsilon = 0.5 * (u_grad + u_grad.T)
             return lmbda * np.trace(epsilon) * np.eye(self.dim) + 2 * mu * epsilon
         return stress
-    
-    def get_surface_maps(self):
-        def surface_map(u, x, traction_mag):
-            return np.array([0., 0., traction_mag])
-        return [surface_map]
 
 # Create mesh and problem
 meshio_mesh = box_mesh_gmsh(40, 40, 40, 1., 1., 1., data_dir='/tmp', ele_type='HEX8')
@@ -60,11 +57,9 @@ problem = ElasticityProblem(
 
 # Create InternalVars separately
 E_array = InternalVars.create_uniform_volume_var(problem, E)
-traction_array = InternalVars.create_uniform_surface_var(problem, 1.0)
 
 internal_vars = InternalVars(
-    volume_vars=(E_array,),
-    surface_vars=[(traction_array,)]
+    volume_vars=(E_array,)
 )
 
 bc = DirichletBC.from_problem(problem)
@@ -123,8 +118,7 @@ def solve(initial_sol, static_J, bc):
     
     solver_options = SolverOptions(
         tol=1e-8,
-        linear_solver="cg",
-        x0_strategy="zeros"
+        linear_solver="cg"
     )
     
     sol = linear_solve(J_bc_func, res_bc_func, initial_sol, solver_options)

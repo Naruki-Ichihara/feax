@@ -1,5 +1,5 @@
 """
-Clean assembler functions that work with Problem and InternalVars.
+Assembler functions that work with Problem and InternalVars.
 This is the main assembler API with separated internal variables.
 """
 

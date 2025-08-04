@@ -1,3 +1,8 @@
+"""
+Linear elasticity example with SIMP-based material interpolation.
+Demonstrates density-dependent material properties using the SIMP (Solid Isotropic Material with Penalization) method.
+"""
+
 import jax
 import jax.numpy as np
 from feax import Problem, InternalVars, create_solver

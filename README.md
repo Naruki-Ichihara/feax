@@ -1,4 +1,4 @@
-# FEAX: Finite Element Analysis with JAX
+# FEAX
 
 [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
@@ -12,8 +12,6 @@ FEAX combines the power of modern automatic differentiation with classical finit
 
 - **Differentiable Physics**: Compute gradients through entire FE simulations for optimization, inverse problems, and machine learning
 - **High Performance**: JIT compilation and vectorization through JAX for maximum computational efficiency
-- **Modular API**: Separation between problem definition and solution parameters
-- **Extensibility**: Easy to extend with custom physics, elements, and solvers
 
 ## Key Features
 
@@ -137,17 +135,19 @@ print(f"Gradient computed: {grad_compliance.volume_vars[0].shape}")
 ## Examples
 
 ### Linear Elasticity
-- [Basic linear elasticity](examples/linear_elasticity.py): Static analysis with Dirichlet boundary conditions
-- [Batch processing](examples/linear_elasticity_batch.py): Vectorized computation over parameter sets
-- [Benchmarking](examples/linear_elasticity_benchmark.py): Performance comparison and scaling
+- [**linear_elasticity.py**](examples/linear_elasticity.py): Linear elasticity with SIMP-based material interpolation
+- [**linear_elasticity_batch.py**](examples/linear_elasticity_batch.py): Batched linear elasticity solver for parallel problems  
+- [**linear_elasticity_benchmark.py**](examples/linear_elasticity_benchmark.py): Performance benchmark comparing different implementation approaches
 
-### Nonlinear Problems
-- [Hyperelasticity](examples/hyper_elasticity.py): Finite strain elasticity with Newton solver
-- [Differentiable hyperelasticity](examples/hyperelasticity_diffrentable.py): Gradient-based optimization
+### Nonlinear Problems  
+- [**hyper_elasticity_solve_fn.py**](examples/hyper_elasticity_solve_fn.py): Hyperelastic solver with Neo-Hookean material model
 
-### Advanced Features
-- [Internal variables](examples/using_internal_vars.py): Custom material properties and loading
-- [Surface loads](examples/using_internal_vars_surfaces.py): Complex boundary conditions
+### Other Physics
+- [**poisson_2d.py**](examples/poisson_2d.py): 2D Poisson equation solver equivalent to JAX-FEM reference
+
+### Performance & Comparison
+- [**batched_traction_benchmark.py**](examples/batched_traction_benchmark.py): Performance benchmark for batched traction forces
+- [**comparison_work_of_jf_vs_feax.py**](examples/archieve/comparison_work_of_jf_vs_feax.py): Comparison between JAX-FEM and FEAX frameworks
 
 ## API Overview
 
@@ -345,6 +345,28 @@ The benchmark demonstrates FEAX's vectorization capabilities:
 - **vmap (batched)**: Up to 4.1x speedup over sequential for loop execution
 - **JIT compilation**: Significant performance improvements over Python loops
 - **Scalability**: Near-linear scaling with batch size for parameter studies
+
+## Documentation
+
+Full API documentation is available online and is automatically updated with each release:
+
+**📚 [View API Documentation](https://Naruki-Ichihara.github.io/feax/)**
+
+### Building Documentation Locally
+
+```bash
+# Generate documentation
+python generate_docs.py
+
+# Serve documentation locally
+python docs_serve.py
+```
+
+The documentation includes:
+- Complete API reference for all modules
+- Mathematical formulas with LaTeX support
+- Interactive search functionality
+- Code examples and usage patterns
 
 ## License
 

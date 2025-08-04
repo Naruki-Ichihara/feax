@@ -1,5 +1,5 @@
 """
-Dataclass for managing internal variables in a clean, JAX-compatible way.
+Dataclass for managing internal variables in a JAX-compatible way.
 """
 
 import jax

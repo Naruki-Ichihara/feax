@@ -1,5 +1,5 @@
 """
-Clean Problem class without internal_vars dependencies.
+Problem class with modular design separating FE structure from material parameters.
 """
 
 import jax
@@ -14,10 +14,10 @@ from feax.fe import FiniteElement
 
 @dataclass
 class Problem:
-    """Clean Problem class that handles FE structure without internal variables.
+    """Problem class that handles FE structure with separated material parameters.
     
-    This version separates finite element structure from material properties,
-    making it more suitable for optimization and parameter studies.
+    This design separates finite element structure from material properties,
+    making it suitable for optimization and parameter studies.
     
     Attributes
     ----------
@@ -155,7 +155,7 @@ class Problem:
         self.custom_init(*self.additional_info)
 
     def custom_init(self, *args):
-        """Child class should override if more things need to be done in initialization."""
+        """Child class should override if additional initialization is required."""
         pass
 
     def get_tensor_map(self):
@@ -171,7 +171,7 @@ class Problem:
         return None
 
 
-# Register as JAX PyTree (much simpler without internal_vars)
+# Register as JAX PyTree (straightforward without internal_vars)
 def _problem_tree_flatten(obj):
     """Flatten the Problem - no dynamic parts since no internal_vars."""
     # No dynamic parts - everything is static

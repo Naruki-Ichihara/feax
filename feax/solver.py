@@ -181,7 +181,7 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, sol
     if solver_options.linear_solver not in valid_solvers:
         raise ValueError(f"Unknown linear solver: {solver_options.linear_solver}. Choose from {valid_solvers}")
     
-    # Select solver function - since we validated, we can use simple conditionals here
+    # Select solver function - since we validated, we can use conditionals here
     # This happens at function definition time, not inside JAX-traced code
     if solver_options.linear_solver == "cg":
         linear_solve_fn = solve_cg
@@ -784,7 +784,7 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, sol
     # Step 4: Update solution
     sol = initial_sol + delta_sol
     
-    return sol
+    return sol, None
 
 def __linear_solve_adjoint(A, b, solver_options: SolverOptions):
     
@@ -846,7 +846,7 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
     Parameters
     ----------
     problem : Problem
-        The feax Problem instance (clean API - no internal_vars in constructor)
+        The feax Problem instance (modular API - no internal_vars in constructor)
     bc : DirichletBC
         Boundary conditions
     solver_options : SolverOptions, optional

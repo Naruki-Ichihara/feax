@@ -1,12 +1,17 @@
+"""
+Hyperelastic solver example using automatic differentiation.
+Demonstrates solving nonlinear hyperelasticity problems with Neo-Hookean material model.
+"""
+
 import jax
 import jax.numpy as np
-from feax import Problem, InternalVars, get_J, get_res, create_J_bc_function, create_res_bc_function
-from feax import Mesh, DirichletBC, newton_solve, SolverOptions, create_differentiable_solver
+from feax import Problem, InternalVars
+from feax import Mesh, DirichletBC, SolverOptions, create_solver
 from feax.mesh import box_mesh_gmsh
 import time
 
 class HyperElasticityFeax(Problem):
-    # The function 'get_tensor_map' overrides base class method. Generally, JAX-FEM 
+    # The function 'get_tensor_map' overrides base class method. Generally, feax 
     # solves -div(f(u_grad)) = b. Here, we define f(u_grad) = P. Notice how we first 
     # define 'psi' (representing W), and then use automatic differentiation (jax.grad) 
     # to obtain the 'P_fn' function.
@@ -23,7 +28,7 @@ class HyperElasticityFeax(Problem):
             return energy
 
         P_fn = jax.grad(psi)
-        def first_PK_stress(u_grad, E_quad):
+        def first_PK_stress(u_grad):
             I = np.eye(self.dim)
             F = u_grad + I
             P = P_fn(F)
@@ -67,15 +72,12 @@ feax_problem = HyperElasticityFeax(mesh,
                           dim=3,
                           dirichlet_bc_info=dirichlet_bc_info)
 
-# Create InternalVars separately (even though not used in this hyperelastic formulation)
-E_array = InternalVars.create_uniform_volume_var(feax_problem, 100.0)
-internal_vars = InternalVars(volume_vars=(E_array,))
+internal_vars = InternalVars()
 
 bc = DirichletBC.from_bc_info(feax_problem, dirichlet_bc_info)
 
-
-solver_options = SolverOptions(tol=1e-8, linear_solver="bicgstab", x0_strategy="bc_aware", bc_rows=bc.bc_rows, bc_vals=bc.bc_vals)
-solver = create_differentiable_solver(feax_problem, bc, solver_options)
+solver_options = SolverOptions(tol=1e-8, linear_solver="bicgstab")
+solver = create_solver(feax_problem, bc, solver_options)
 
 @jax.jit
 def solve_fn(internal_vars):

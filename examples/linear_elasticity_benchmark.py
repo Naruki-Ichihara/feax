@@ -1,6 +1,6 @@
 """
-Performance benchmark for linear elasticity solver using clean feax API
-Compares for loop (no jit), for loop (jit), and vmap implementations
+Performance benchmark for linear elasticity solver using clean FEAX API.
+Compares different implementation approaches: for loop (no jit), for loop (jit), and vmap implementations.
 """
 
 import jax

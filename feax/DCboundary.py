@@ -230,7 +230,7 @@ def apply_boundary_to_J(bc: DirichletBC, J: BCOO) -> BCOO:
     data_modified = np.where(bc_row_mask, 0.0, data)
     
     # Step 2: Add diagonal entries for ALL BC rows
-    # Simple approach that works with JIT: always add all BC diagonal entries
+    # Direct approach that works with JIT: always add all BC diagonal entries
     # This may create duplicates, but most JAX sparse solvers handle this correctly
     
     bc_diag_indices = np.stack([bc.bc_rows, bc.bc_rows], axis=-1)

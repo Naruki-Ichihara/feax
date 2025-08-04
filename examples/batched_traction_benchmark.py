@@ -1,6 +1,6 @@
 """
-Performance benchmark for batched traction forces using create_solver
-Compares different approaches to solving multiple problems with varying traction loads
+Performance benchmark for batched traction forces using create_solver.
+Compares different approaches to solving multiple problems with varying traction loads in parallel.
 """
 
 import jax
