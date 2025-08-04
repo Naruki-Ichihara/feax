@@ -1,4 +1,6 @@
-<img src="assets/logo.svg" alt="FEAX Logo" width="200" height="200" align="left"> 
+<div align="center">
+<img src="assets/logo.svg" alt="logo" width=300></img>
+</div>
 
 # FEAX
 
