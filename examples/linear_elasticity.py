@@ -20,8 +20,6 @@ T = 1e2
 nu = 0.3
 p = 3
 
-from feax import Problem
-
 class ElasticityProblem(Problem):
     def get_tensor_map(self):
         def stress(u_grad, rho):

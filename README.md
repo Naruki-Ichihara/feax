@@ -51,7 +51,7 @@ gradients = grad_fn(material_parameters)
 # Separate problem definition from parameters
 problem = ElasticityProblem(mesh, vec=3, dim=3)
 internal_vars = InternalVars(
-    volume_vars=(young_modulus, poisson_ratio),
+    volume_vars=(young_modulus, density),
     surface_vars=(surface_traction,)
 )
 
@@ -77,10 +77,12 @@ pip install -e .
 Here's a simple linear elasticity example:
 
 ```python
+import jax
 import jax.numpy as np
-from feax import Problem, InternalVars, DirichletBC, SolverOptions
-from feax import create_solver
-from feax.mesh import box_mesh_gmsh, Mesh
+from feax import Problem, InternalVars, create_solver
+from feax import Mesh, SolverOptions, zero_like_initial_guess
+from feax import DirichletBCSpec, DirichletBCConfig
+from feax.mesh import box_mesh_gmsh
 
 # Define the physics
 class LinearElasticity(Problem):
@@ -94,26 +96,30 @@ class LinearElasticity(Problem):
         return stress_tensor
 
 # Create mesh
-meshio_mesh = box_mesh_gmsh(10, 10, 10, 1.0, 1.0, 1.0)
+meshio_mesh = box_mesh_gmsh(40, 20, 20, 2.0, 1.0, 1.0, data_dir='/tmp', ele_type='HEX8')
 mesh = Mesh(meshio_mesh.points, meshio_mesh.cells_dict['hexahedron'])
 
 # Set up problem
 problem = LinearElasticity(mesh, vec=3, dim=3)
 
-# Define boundary conditions
+# Define boundary conditions using new API
 def left_boundary(point):
     return np.isclose(point[0], 0.0, atol=1e-5)
 
 def right_boundary(point):
-    return np.isclose(point[0], 1.0, atol=1e-5)
+    return np.isclose(point[0], 2.0, atol=1e-5)
 
-dirichlet_bc_info = [
-    [left_boundary] * 3 + [right_boundary],  # boundary functions
-    [0, 1, 2, 0],                           # DOF indices
-    [lambda p: 0.0, lambda p: 0.0, lambda p: 0.0, lambda p: 0.1]  # values
-]
+bc_config = DirichletBCConfig([
+    # Fix left boundary completely (all components to zero)
+    DirichletBCSpec(left_boundary, 0, lambda p: 0.0),
+    DirichletBCSpec(left_boundary, 1, lambda p: 0.0), 
+    DirichletBCSpec(left_boundary, 2, lambda p: 0.0),
+    # Apply tension on right boundary
+    DirichletBCSpec(right_boundary, 0, lambda p: 0.1)
+])
 
-bc = DirichletBC.from_bc_info(problem, dirichlet_bc_info)
+# Create boundary conditions from config
+bc = bc_config.create_bc(problem)
 
 # Set up material properties
 E_field = InternalVars.create_uniform_volume_var(problem, 70e3)  # Young's modulus
@@ -140,18 +146,11 @@ print(f"Gradient computed: {grad_compliance.volume_vars[0].shape}")
 
 ### Linear Elasticity
 - [**linear_elasticity.py**](examples/linear_elasticity.py): Linear elasticity with SIMP-based material interpolation
-- [**linear_elasticity_batch.py**](examples/linear_elasticity_batch.py): Batched linear elasticity solver for parallel problems  
-- [**linear_elasticity_benchmark.py**](examples/linear_elasticity_benchmark.py): Performance benchmark comparing different implementation approaches
-
-### Nonlinear Problems  
-- [**hyper_elasticity_solve_fn.py**](examples/hyper_elasticity_solve_fn.py): Hyperelastic solver with Neo-Hookean material model
+- [**linear_elasticity_vmap_density.py**](examples/linear_elasticity_vmap_density.py): Vectorized density-based material optimization
+- [**linear_elasticity_vmap_traction.py**](examples/linear_elasticity_vmap_traction.py): Vectorized traction loading scenarios
 
 ### Other Physics
 - [**poisson_2d.py**](examples/poisson_2d.py): 2D Poisson equation solver equivalent to JAX-FEM reference
-
-### Performance & Comparison
-- [**batched_traction_benchmark.py**](examples/batched_traction_benchmark.py): Performance benchmark for batched traction forces
-- [**comparison_work_of_jf_vs_feax.py**](examples/archieve/comparison_work_of_jf_vs_feax.py): Comparison between JAX-FEM and FEAX frameworks
 
 ## API Overview
 
@@ -292,6 +291,13 @@ internal_vars = InternalVars(
 
 #### Boundary Conditions
 ```python
+# New boundary condition API using dataclasses
+bc_config = DirichletBCConfig([
+    DirichletBCSpec(boundary_function, dof_index, value_function),
+    # Multiple boundary conditions
+])
+
+# Legacy API still available via DirichletBC.from_bc_info
 bc = DirichletBC.from_bc_info(problem, [
     [boundary_function],  # Where to apply
     [dof_index],         # Which DOF
@@ -307,8 +313,8 @@ solution = newton_solve(J_func, res_func, initial_guess, options)
 # Linear solver for linear problems
 solution = linear_solve(J_func, res_func, initial_guess, options)
 
-# Differentiable solver for optimization
-solver = create_solver(problem, bc, options)
+# Differentiable solver for optimization (recommended)
+solver = create_solver(problem, bc, solver_options)
 solution = solver(internal_vars)
 ```
 
