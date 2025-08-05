@@ -20,7 +20,7 @@ FEAX combines the power of modern automatic differentiation with classical finit
 ## JAX Transformations in FEAX
 
 <div align="center">
-<img src="assets/feax_jax_transformations.png" alt="JAX Transformations" width="800">
+<img src="assets/feax_jax_transformations.svg" alt="JAX Transformations" width="800">
 </div>
 
 FEAX leverages JAX's powerful transformation system to enable:
