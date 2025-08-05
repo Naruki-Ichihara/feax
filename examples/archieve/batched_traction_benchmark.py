@@ -6,7 +6,8 @@ Compares different approaches to solving multiple problems with varying traction
 import jax
 import jax.numpy as np
 from feax import Problem, InternalVars, create_solver
-from feax import Mesh, DirichletBC, SolverOptions
+from feax import Mesh, DirichletBC, SolverOptions, zero_like_initial_guess
+from feax import DirichletBCSpec, DirichletBCConfig
 from feax.mesh import box_mesh_gmsh
 import time
 import matplotlib.pyplot as plt
@@ -42,16 +43,19 @@ def right(point):
 def zero_disp(point):
     return 0.0
 
-# Fixed left face
-dirichlet_bc_info = [[left] * 3, [0, 1, 2], [zero_disp, zero_disp, zero_disp]]
+# Create boundary conditions using dataclass approach
+bc_config = DirichletBCConfig([
+    # Fixed left face - all components to zero
+    DirichletBCSpec(location=left, component='all', value=0.0)
+])
 
 problem = ElasticityProblem(
     mesh=mesh, vec=3, dim=3, ele_type='HEX8', gauss_order=2,
-    dirichlet_bc_info=dirichlet_bc_info, location_fns=[right]
+    location_fns=[right]
 )
 
 # Create solver
-bc = DirichletBC.from_problem(problem)
+bc = bc_config.create_bc(problem)
 solver_options = SolverOptions(tol=1e-8, linear_solver="cg")
 solver = create_solver(problem, bc, solver_options, iter_num=1)
 
@@ -68,17 +72,21 @@ def solve_single_traction(traction_values):
         internal_vars = InternalVars(
             surface_vars=[(traction_x, traction_y, traction_z)]
         )
-        sol = solver(internal_vars)
+        sol = solver(internal_vars, zero_like_initial_guess(problem, bc))
         solutions.append(sol)
     return solutions
 
 # Method 2: JIT compiled single solve
+# Prepare initial guess outside
+initial_guess_default = zero_like_initial_guess(problem, bc)
+
 solve_single_jit = jax.jit(lambda tx, ty, tz: solver(
     InternalVars(surface_vars=[(
         InternalVars.create_uniform_surface_var(problem, tx),
         InternalVars.create_uniform_surface_var(problem, ty),
         InternalVars.create_uniform_surface_var(problem, tz)
-    )])
+    )]),
+    initial_guess_default
 ))
 
 def solve_single_traction_jit(traction_values):
@@ -106,7 +114,10 @@ def solve_batched_traction_vmap(traction_values):
                 InternalVars.create_uniform_surface_var(problem, tz)
             )]
         )
-        return solver(internal_vars)
+        # Create initial guess: zeros with BC values
+        initial_guess = np.zeros(problem.num_total_dofs_all_vars)
+        initial_guess = initial_guess.at[bc.bc_rows].set(bc.bc_vals)
+        return solver(internal_vars, initial_guess)
     
     solve_vmap = jax.jit(jax.vmap(single_solve))
     return solve_vmap(tx_values, ty_values, tz_values)

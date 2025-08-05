@@ -18,55 +18,6 @@ class DirichletBC:
     total_dofs: int
     
     @staticmethod
-    def from_problem(problem):
-        """Create DirichletBC from a problem instance.
-        
-        Extracts boundary condition information from problem.fes and converts
-        it to static JAX arrays.
-        """
-        bc_rows_list = []
-        bc_vals_list = []
-        
-        for ind, fe in enumerate(problem.fes):
-            for i in range(len(fe.node_inds_list)):
-                bc_indices = fe.node_inds_list[i] * fe.vec + fe.vec_inds_list[i] + problem.offset[ind]
-                bc_rows_list.append(bc_indices)
-                # Extract BC values - expand to match the shape of bc_indices
-                bc_values = np.full_like(bc_indices, fe.vals_list[i], dtype=np.float64)
-                bc_vals_list.append(bc_values)
-        
-        if bc_rows_list:
-            bc_rows = np.concatenate(bc_rows_list)
-            bc_vals = np.concatenate(bc_vals_list)
-            
-            # Sort by row indices to maintain consistency
-            sort_idx = np.argsort(bc_rows)
-            bc_rows = bc_rows[sort_idx]
-            bc_vals = bc_vals[sort_idx]
-            
-            # Handle duplicates by keeping first occurrence
-            unique_rows, unique_idx = np.unique(bc_rows, return_index=True)
-            bc_rows = unique_rows
-            bc_vals = bc_vals[unique_idx]
-        else:
-            bc_rows = np.array([], dtype=np.int32)
-            bc_vals = np.array([], dtype=np.float64)
-        
-        # Create a boolean mask for faster lookup
-        # Get total_dofs from problem to ensure consistency
-        total_dofs = problem.num_total_dofs_all_vars
-        bc_mask = np.zeros(total_dofs, dtype=bool)
-        if bc_rows.shape[0] > 0:
-            bc_mask = bc_mask.at[bc_rows].set(True)
-        
-        return DirichletBC(
-            bc_rows=bc_rows,
-            bc_mask=bc_mask,
-            bc_vals=bc_vals,
-            total_dofs=total_dofs
-        )
-    
-    @staticmethod
     def from_bc_info(problem, bc_info):
         """Create DirichletBC from boundary condition info directly.
         

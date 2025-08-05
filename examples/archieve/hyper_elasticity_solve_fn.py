@@ -6,7 +6,8 @@ Demonstrates solving nonlinear hyperelasticity problems with Neo-Hookean materia
 import jax
 import jax.numpy as np
 from feax import Problem, InternalVars
-from feax import Mesh, DirichletBC, SolverOptions, create_solver
+from feax import Mesh, DirichletBC, SolverOptions, create_solver, zero_like_initial_guess
+from feax import DirichletBCSpec, DirichletBCConfig
 from feax.mesh import box_mesh_gmsh
 import time
 
@@ -62,26 +63,31 @@ def dirichlet_val_x3(point):
             (point[2] - 0.5) * np.cos(np.pi / 3.) - point[2]) / 2.
 
 
-dirichlet_bc_info = [[left] * 3 + [right] * 3, [0, 1, 2] * 2,
-                     [zero_dirichlet_val, dirichlet_val_x2, dirichlet_val_x3] +
-                     [zero_dirichlet_val] * 3]
+# Create boundary conditions using dataclass approach
+bc_config = DirichletBCConfig([
+    # Left boundary - fix all components to zero
+    DirichletBCSpec(location=left, component='x', value=zero_dirichlet_val),
+    DirichletBCSpec(location=left, component='y', value=dirichlet_val_x2),
+    DirichletBCSpec(location=left, component='z', value=dirichlet_val_x3),
+    # Right boundary - fix all components to zero  
+    DirichletBCSpec(location=right, component='all', value=zero_dirichlet_val)
+])
 
 # Create clean Problem (NO internal_vars!)
 feax_problem = HyperElasticityFeax(mesh,
                           vec=3,
-                          dim=3,
-                          dirichlet_bc_info=dirichlet_bc_info)
+                          dim=3)
 
 internal_vars = InternalVars()
 
-bc = DirichletBC.from_bc_info(feax_problem, dirichlet_bc_info)
+bc = bc_config.create_bc(feax_problem)
 
 solver_options = SolverOptions(tol=1e-8, linear_solver="bicgstab")
 solver = create_solver(feax_problem, bc, solver_options)
 
 @jax.jit
 def solve_fn(internal_vars):
-    sol = solver(internal_vars)
+    sol = solver(internal_vars, zero_like_initial_guess(feax_problem, bc))
     return sol
 
 start = time.time()

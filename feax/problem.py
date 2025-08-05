@@ -31,8 +31,6 @@ class Problem:
         Element type (HEX8, TET4, etc.)
     gauss_order : int
         Order of Gaussian quadrature
-    dirichlet_bc_info : list
-        Boundary condition information
     location_fns : list
         Location functions for surface integrals
     additional_info : tuple
@@ -43,7 +41,6 @@ class Problem:
     dim: int
     ele_type: str = 'HEX8'
     gauss_order: int = None
-    dirichlet_bc_info: list = None
     location_fns: list = None
     additional_info: tuple = ()
 
@@ -54,7 +51,6 @@ class Problem:
             self.vec = [self.vec]
             self.ele_type = [self.ele_type]
             self.gauss_order = [self.gauss_order]
-            self.dirichlet_bc_info = [self.dirichlet_bc_info]
 
         self.num_vars = len(self.mesh)
 
@@ -62,8 +58,7 @@ class Problem:
                                   vec=self.vec[i], 
                                   dim=self.dim, 
                                   ele_type=self.ele_type[i], 
-                                  gauss_order=self.gauss_order[i] if type(self.gauss_order) == type([]) else self.gauss_order,
-                                  dirichlet_bc_info=self.dirichlet_bc_info[i] if type(self.dirichlet_bc_info) == type([]) else self.dirichlet_bc_info) \
+                                  gauss_order=self.gauss_order[i] if type(self.gauss_order) == type([]) else self.gauss_order) \
                     for i in range(self.num_vars)] 
 
         self.cells_list = [fe.cells for fe in self.fes]

@@ -5,6 +5,7 @@ import meshio
 import os
 
 from feax.mesh import get_meshio_cell_type, Mesh
+from feax.DCboundary import DirichletBC
 from typing import Optional, List, Tuple, Union
 
 
@@ -109,3 +110,41 @@ def save_sol(
     
     # Write the mesh
     out_mesh.write(sol_file)
+
+
+def zero_like_initial_guess(problem, bc: DirichletBC) -> np.ndarray:
+    """Create a zero initial guess with boundary condition values set.
+    
+    This is the standard initial guess for FE problems: zeros everywhere
+    except at Dirichlet boundary condition locations where the prescribed
+    values are set.
+    
+    Parameters
+    ----------
+    problem : Problem
+        The FE problem instance containing DOF information
+    bc : DirichletBC
+        Boundary conditions with rows and values to set
+        
+    Returns
+    -------
+    initial_guess : jax.numpy.ndarray
+        Initial guess vector of shape (num_total_dofs,) with zeros
+        everywhere except BC locations which have prescribed values
+        
+    Examples
+    --------
+    >>> from feax.utils import zero_like_initial_guess
+    >>> initial_guess = zero_like_initial_guess(problem, bc)
+    >>> solution = solver(internal_vars, initial_guess)
+    
+    For time-dependent problems:
+    >>> # First timestep
+    >>> solution = solver(internal_vars_t0, zero_like_initial_guess(problem, bc))
+    >>> # Subsequent timesteps use previous solution
+    >>> for t in timesteps[1:]:
+    >>>     solution = solver(internal_vars_t, solution)
+    """
+    initial_guess = np.zeros(problem.num_total_dofs_all_vars)
+    initial_guess = initial_guess.at[bc.bc_rows].set(bc.bc_vals)
+    return initial_guess

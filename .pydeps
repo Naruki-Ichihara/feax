@@ -1,0 +1,6 @@
+[pydeps]
+max_bacon = 2
+show_deps = True
+cluster = True
+rankdir = TB
+start_color = 1

@@ -48,25 +48,12 @@ class FiniteElement:
         - 'TET10'
     gauss_order : int
         Order of Gaussian quadrature. 
-
-    dirichlet_bc_info : list
-        A list for Dirichlet boundary condition information, whose elements are structured as:
-        
-        - **location_fns**: list of callables
-          Each callable takes a point (NumpyArray) and returns a boolean indicating 
-          if the point satisfies the location condition
-        - **vecs**: list of integers
-          Each integer must be in the range of 0 to vec - 1, specifying which 
-          component of the (vector) variable to apply Dirichlet condition to
-        - **value_fns**: list of callables
-          Each callable takes a point and returns the Dirichlet value
     """
     mesh: Mesh
     vec: int
     dim: int
     ele_type: str
     gauss_order: int
-    dirichlet_bc_info: list
 
     def __post_init__(self):
         self.points = self.mesh.points
@@ -85,7 +72,10 @@ class FiniteElement:
         self.num_nodes = self.shape_vals.shape[1]
         self.num_faces = self.face_shape_vals.shape[0]
         self.shape_grads, self.JxW = self.get_shape_grads()
-        self.node_inds_list, self.vec_inds_list, self.vals_list = self.Dirichlet_boundary_conditions(self.dirichlet_bc_info)
+        # Initialize empty BC lists - these are no longer used since BC is handled separately
+        self.node_inds_list = []
+        self.vec_inds_list = []
+        self.vals_list = []
         
         # (num_cells, num_quads, num_nodes, 1, dim)
         self.v_grads_JxW = self.shape_grads[:, :, :, None, :] * self.JxW[:, :, None, None, None]

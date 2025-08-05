@@ -89,8 +89,6 @@ class SolverOptions:
         Maximum iterations for linear solver
     linear_solver_x0_fn : callable, optional
         Custom function to compute initial guess: f(current_sol) -> x0
-    initial_guess : array-like, optional
-        Initial guess for the solution vector in newton solver. If None, uses zeros with BC values set.
     """
     
     tol: float = 1e-6
@@ -102,10 +100,9 @@ class SolverOptions:
     linear_solver_atol: float = 1e-10
     linear_solver_maxiter: int = 10000
     linear_solver_x0_fn: Optional[Callable] = None  # Function to compute initial guess: f(current_sol) -> x0
-    initial_guess: Optional[object] = None  # Initial guess for the solution vector in newton solver
 
 
-def newton_solve(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None):
+def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None):
     """Newton solver using JAX while_loop for JIT compatibility.
     
     Parameters
@@ -114,8 +111,9 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, sol
         Function that computes the Jacobian with BC applied. Takes solution vector and optionally internal_vars.
     res_bc_applied : callable
         Function that computes the residual with BC applied. Takes solution vector and optionally internal_vars.
-    initial_sol : jax.numpy.ndarray
-        Initial solution guess
+    initial_guess : jax.numpy.ndarray
+        Initial solution guess for the Newton solver. For time-dependent problems, this can be
+        updated with the solution from the previous time step.
     bc : DirichletBC
         Boundary conditions
     solver_options : SolverOptions
@@ -289,18 +287,18 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, sol
     
     # Initial state
     if internal_vars is not None:
-        initial_res = res_bc_applied(initial_sol, internal_vars)
+        initial_res = res_bc_applied(initial_guess, internal_vars)
     else:
-        initial_res = res_bc_applied(initial_sol)
+        initial_res = res_bc_applied(initial_guess)
     initial_res_norm = jnp.linalg.norm(initial_res)
-    initial_state = (initial_sol, initial_res_norm, 1.0, 0)
+    initial_state = (initial_guess, initial_res_norm, 1.0, 0)
     
     # Run Newton iterations using while_loop
     final_state = jax.lax.while_loop(cond_fun, body_fun, initial_state)
     return final_state
 
 
-def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, solver_options: SolverOptions, num_iters: int, internal_vars=None):
+def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, num_iters: int, internal_vars=None):
     """Newton solver using JAX fori_loop for fixed iterations - optimized for vmap.
     
     This solver is specifically designed for use with vmap where we need:
@@ -314,8 +312,9 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC
         Function that computes the Jacobian with BC applied. Takes solution vector and optionally internal_vars.
     res_bc_applied : callable
         Function that computes the residual with BC applied. Takes solution vector and optionally internal_vars.
-    initial_sol : jax.numpy.ndarray
-        Initial solution guess
+    initial_guess : jax.numpy.ndarray
+        Initial solution guess for the Newton solver. For time-dependent problems, this can be
+        updated with the solution from the previous time step.
     bc : DirichletBC
         Boundary conditions
     solver_options : SolverOptions
@@ -336,14 +335,14 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC
     Example
     -------
     >>> # Solve multiple problems in parallel
-    >>> def solve_single(params):
+    >>> def solve_single(params, init_guess):
     >>>     J_fn = lambda sol: create_jacobian(sol, params)
     >>>     res_fn = lambda sol: create_residual(sol, params)
-    >>>     sol, norm, converged = newton_solve_fori(J_fn, res_fn, init_sol, options, 10)
+    >>>     sol, norm, converged = newton_solve_fori(J_fn, res_fn, init_guess, bc, options, 10)
     >>>     return sol
     >>> 
     >>> # Vectorize over multiple parameter sets
-    >>> all_solutions = jax.vmap(solve_single)(parameter_array)
+    >>> all_solutions = jax.vmap(solve_single)(parameter_array, initial_guesses)
     """
     
     # Resolve x0 function based on options
@@ -481,16 +480,16 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC
     
     # Initial residual norm
     if internal_vars is not None:
-        initial_res = res_bc_applied(initial_sol, internal_vars)
+        initial_res = res_bc_applied(initial_guess, internal_vars)
     else:
-        initial_res = res_bc_applied(initial_sol)
+        initial_res = res_bc_applied(initial_guess)
     initial_res_norm = jnp.linalg.norm(initial_res)
     
     # Run fixed number of iterations using fori_loop
     final_state = jax.lax.fori_loop(
         0, num_iters,
         newton_iteration,
-        (initial_sol, initial_res_norm)
+        (initial_guess, initial_res_norm)
     )
     
     final_sol, final_res_norm = final_state
@@ -501,7 +500,7 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC
     return final_sol, final_res_norm, converged
 
 
-def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None):
+def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None):
     """Newton solver using Python while loop - non-JIT version for debugging.
     
     This solver uses regular Python control flow instead of JAX control flow,
@@ -514,8 +513,9 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, 
         Function that computes the Jacobian with BC applied. Takes solution vector and optionally internal_vars.
     res_bc_applied : callable
         Function that computes the residual with BC applied. Takes solution vector and optionally internal_vars.
-    initial_sol : jax.numpy.ndarray
-        Initial solution guess
+    initial_guess : jax.numpy.ndarray
+        Initial solution guess for the Newton solver. For time-dependent problems, this can be
+        updated with the solution from the previous time step.
     bc : DirichletBC
         Boundary conditions
     solver_options : SolverOptions
@@ -534,7 +534,7 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, 
         
     Example
     -------
-    >>> sol, res_norm, converged, iters = newton_solve_py(J_fn, res_fn, init_sol, options)
+    >>> sol, res_norm, converged, iters = newton_solve_py(J_fn, res_fn, init_guess, bc, options)
     >>> print(f"Converged: {converged} in {iters} iterations, residual: {res_norm:.2e}")
     """
     
@@ -627,7 +627,7 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, 
         return fallback_sol, fallback_norm, 1e-8, False
     
     # Initialize
-    sol = initial_sol
+    sol = initial_guess
     if internal_vars is not None:
         initial_res = res_bc_applied(sol, internal_vars)
     else:
@@ -673,7 +673,7 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, 
     return sol, res_norm, converged, iter_count
 
 
-def linear_solve(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None):
+def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None):
     """Linear solver for problems that converge in one iteration (no while loop).
     
     This solver is optimized for linear elasticity problems where the solution
@@ -688,8 +688,9 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, sol
     res_bc_applied : callable
         Function that computes the residual with BC applied. Takes solution vector and optionally internal_vars,
         returns residual vector.
-    initial_sol : jax.numpy.ndarray
-        Initial solution guess (typically zeros with BC values set)
+    initial_guess : jax.numpy.ndarray
+        Initial solution guess (typically zeros with BC values set). For time-dependent problems,
+        this can be the solution from the previous time step.
     bc : DirichletBC
         Boundary conditions
     solver_options : SolverOptions
@@ -700,16 +701,17 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, sol
         
     Returns
     -------
-    sol : jax.numpy.ndarray
-        Solution vector
+    tuple of (sol, None)
+        sol : jax.numpy.ndarray - Solution vector
+        None : placeholder for compatibility with other solver returns
         
     Notes
     -----
     This solver performs exactly one Newton iteration:
-    1. Compute residual: res = res_bc_applied(initial_sol)
-    2. Compute Jacobian: J = J_bc_applied(initial_sol)
+    1. Compute residual: res = res_bc_applied(initial_guess)
+    2. Compute Jacobian: J = J_bc_applied(initial_guess)
     3. Solve: J * delta_sol = -res
-    4. Update: sol = initial_sol + delta_sol
+    4. Update: sol = initial_guess + delta_sol
     
     For linear problems, this single iteration achieves the exact solution.
     """
@@ -769,20 +771,20 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_sol, bc: DirichletBC, sol
     # Single Newton iteration (no while loop)
     # Step 1: Compute residual and Jacobian
     if internal_vars is not None:
-        res = res_bc_applied(initial_sol, internal_vars)
-        J = J_bc_applied(initial_sol, internal_vars)
+        res = res_bc_applied(initial_guess, internal_vars)
+        J = J_bc_applied(initial_guess, internal_vars)
     else:
-        res = res_bc_applied(initial_sol)
-        J = J_bc_applied(initial_sol)
+        res = res_bc_applied(initial_guess)
+        J = J_bc_applied(initial_guess)
     
     # Step 2: Compute initial guess for increment
-    x0 = x0_fn(initial_sol)
+    x0 = x0_fn(initial_guess)
     
     # Step 3: Solve linear system: J * delta_sol = -res
     delta_sol = linear_solve_fn(J, -res, x0)
     
     # Step 4: Update solution
-    sol = initial_sol + delta_sol
+    sol = initial_guess + delta_sol
     
     return sol, None
 
@@ -850,8 +852,7 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
     bc : DirichletBC
         Boundary conditions
     solver_options : SolverOptions, optional
-        Options for forward solve (defaults to SolverOptions()). Can include initial_guess
-        to provide a custom initial solution vector instead of zeros with BC values
+        Options for forward solve (defaults to SolverOptions())
     adjoint_solver_options : dict, optional
         Options for adjoint solve (defaults to same as forward solve)
     iter_num : int, optional
@@ -865,12 +866,17 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
     Returns
     -------
     differentiable_solve : callable
-        Function that takes internal_vars and returns solution with gradient support
+        Function that takes (internal_vars, initial_guess) and returns solution with gradient support
         
     Notes
     -----
-    The returned function has signature: differentiable_solve(internal_vars) -> solution
+    The returned function has signature: differentiable_solve(internal_vars, initial_guess) -> solution
     where gradients flow through internal_vars (material properties, loadings, etc.)
+    
+    The initial_guess parameter is required to avoid conditionals that slow down JAX compilation.
+    For the first solve, you can pass zeros with BC values set:
+        initial_guess = jnp.zeros(problem.num_total_dofs_all_vars)
+        initial_guess = initial_guess.at[bc.bc_rows].set(bc.bc_vals)
     
     Based on the self-adjoint approach from the reference implementation in ref_solver.py.
     The adjoint method is more efficient than forward-mode AD for optimization problems
@@ -885,9 +891,16 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
     >>> # Create differentiable solver
     >>> diff_solve = create_solver(problem, bc)
     >>> 
-    >>> # Create differentiable solver with custom initial guess
-    >>> solver_opts = SolverOptions(initial_guess=my_initial_solution)
-    >>> diff_solve = create_solver(problem, bc, solver_opts)
+    >>> # Prepare initial guess
+    >>> initial_guess = jnp.zeros(problem.num_total_dofs_all_vars)
+    >>> initial_guess = initial_guess.at[bc.bc_rows].set(bc.bc_vals)
+    >>> 
+    >>> # First solve
+    >>> solution = diff_solve(internal_vars, initial_guess)
+    >>> 
+    >>> # For time-dependent problems, update initial guess each timestep
+    >>> for t in timesteps:
+    >>>     solution = diff_solve(internal_vars_at_t, solution)  # Use previous solution
     >>> 
     >>> # For linear problems (e.g., linear elasticity), use single iteration for best performance
     >>> # This is both faster and vmappable
@@ -898,7 +911,9 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
     >>> 
     >>> # Define loss function
     >>> def loss_fn(internal_vars):
-    ...     sol = diff_solve(internal_vars)
+    ...     initial_guess = jnp.zeros(problem.num_total_dofs_all_vars)
+    ...     initial_guess = initial_guess.at[bc.bc_rows].set(bc.bc_vals)
+    ...     sol = diff_solve(internal_vars, initial_guess)
     ...     return jnp.sum(sol**2)  # Example loss
     >>> 
     >>> # Compute gradients w.r.t. internal_vars
@@ -917,50 +932,46 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
 
     J_bc_func = jax.jit(create_J_bc_function(problem, bc))
     res_bc_func = jax.jit(create_res_bc_function(problem, bc))
-
-    # Initial solution
-    if solver_options.initial_guess is not None:
-        initial_sol = solver_options.initial_guess
-    else:
-        initial_sol = jnp.zeros(problem.num_total_dofs_all_vars)
-        initial_sol = initial_sol.at[bc.bc_rows].set(bc.bc_vals)
         
     # Solve using appropriate method based on iter_num
     if iter_num is None:
-        solve_fn = lambda internal_vars: newton_solve(
+        solve_fn = lambda internal_vars, initial_sol: newton_solve(
             J_bc_func, res_bc_func, initial_sol, bc, solver_options, internal_vars
         )
     elif iter_num == 1:
-        solve_fn = lambda internal_vars: linear_solve(
+        solve_fn = lambda internal_vars, initial_sol: linear_solve(
             J_bc_func, res_bc_func, initial_sol, bc, solver_options, internal_vars
         )
     else:
-        solve_fn = lambda internal_vars: newton_solve_fori(
+        solve_fn = lambda internal_vars, initial_sol: newton_solve_fori(
             J_bc_func, res_bc_func, initial_sol, bc, solver_options, iter_num, internal_vars
         )
 
     @jax.custom_vjp
-    def differentiable_solve(internal_vars):
+    def differentiable_solve(internal_vars, initial_guess):
         """Forward solve: standard Newton iteration.
         
         Parameters
         ----------
         internal_vars : InternalVars
             Material properties, loadings, etc.
+        initial_guess : jax.numpy.ndarray
+            Initial guess for the solution vector. For time-dependent problems,
+            this should be the solution from the previous time step.
             
         Returns
         -------
         sol : jax.numpy.ndarray
             Solution vector
         """
-        return solve_fn(internal_vars)[0]
+        return solve_fn(internal_vars, initial_guess)[0]
     
-    def f_fwd(internal_vars):
+    def f_fwd(internal_vars, initial_guess):
         """Forward function for custom VJP.
         
         Returns solution and residuals needed for backward pass.
         """
-        sol = differentiable_solve(internal_vars)
+        sol = differentiable_solve(internal_vars, initial_guess)
         return sol, (internal_vars, sol)
     
     def f_bwd(res, v):
@@ -997,7 +1008,7 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
         vjp_result = vjp_linear_fn(problem.unflatten_fn_sol_list(adjoint_vec))
         vjp_result = jax.tree_util.tree_map(lambda x: -x, vjp_result)
 
-        return (vjp_result,)
+        return (vjp_result, None)  # No gradient w.r.t. initial_guess
     
     differentiable_solve.defvjp(f_fwd, f_bwd)
     return differentiable_solve
