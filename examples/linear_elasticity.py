@@ -79,9 +79,17 @@ def solve_forward(rho_array):
     )
     return solver(internal_vars, initial_guess)
 
-# Solve
-print("solve..")
 sol = solve_forward(rho_array_0)
+
+# Solve
+import time
+print("solve..")
+start = time.time()
+sol = solve_forward(rho_array_0)
+end = time.time()
+sol_time = end - start
+numdofs = problem.num_total_dofs_all_vars
+print(f"sol time {sol_time}, dofs {numdofs}")
 sol_unflat = problem.unflatten_fn_sol_list(sol)
 
 displacement = sol_unflat[0]

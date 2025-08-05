@@ -27,7 +27,7 @@ p = 3  # SIMP penalization parameter
 T = 1e2  # Traction magnitude (fixed)
 
 # Batch sizes for benchmarking
-batch_sizes = [1, 10, 20, 30, 40, 50, 60]
+batch_sizes = [1, 20, 40, 60]
 
 class DensityElasticityProblem(Problem):
     def get_tensor_map(self):

@@ -17,6 +17,18 @@ FEAX combines the power of modern automatic differentiation with classical finit
 - **Differentiable Physics**: Compute gradients through entire FE simulations for optimization, inverse problems, and machine learning
 - **High Performance**: JIT compilation and vectorization through JAX for maximum computational efficiency
 
+## JAX Transformations in FEAX
+
+<div align="center">
+<img src="assets/feax_jax_transformations.png" alt="JAX Transformations" width="800">
+</div>
+
+FEAX leverages JAX's powerful transformation system to enable:
+- **Automatic Differentiation**: Compute exact gradients through finite element solvers
+- **JIT Compilation**: Compile to optimized machine code for maximum performance  
+- **Vectorization**: Efficiently process multiple scenarios in parallel with `vmap`
+- **Parallelization**: Scale across multiple devices with `pmap`
+
 ## Key Features
 
 ### Differentiable Solvers

@@ -1,0 +1,20 @@
+The user provided an image showing FEAX's JAX transformation capabilities. This would be saved as a PNG file showing:
+
+Forward function:
+```python
+def solve_forward(rho_array):
+    internal_vars = InternalVars(
+        volume_vars=(rho_array,),
+        surface_vars=[(traction_array,)]
+    )
+    sol = solver(internal_vars, initial_guess)
+    val = np.sum(sol**2)
+    return val
+```
+
+With JAX transformations showing:
+- JIT compiled forward function: jit_solve_forward = jax.jit(solve_forward)
+- Backward function: solve_backward = jax.grad(solve_forward) 
+- Vectorized function: vectorized_solve = jax.vmap(solve_forward)
+
+The diagram shows val = f(ρ) transforming to df/dρ = f'(ρ) via GRAD, JIT compilation, and VMAP/PMAP for vectorization.
