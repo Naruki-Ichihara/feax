@@ -52,12 +52,6 @@ grad_fn = jax.grad(lambda params: objective(solver(params)))
 gradients = grad_fn(material_parameters)
 ```
 
-### High-Performance Computing
-- **JIT Compilation**: All computations compile to efficient machine code
-- **GPU Acceleration**: Seamless GPU execution with JAX
-- **Vectorization**: Efficient batch processing of multiple scenarios
-- **Memory Efficient**: Optimized memory usage for large-scale problems
-
 ### Architecture
 ```python
 # Separate problem definition from parameters
@@ -330,66 +324,6 @@ solver = create_solver(problem, bc, solver_options)
 solution = solver(internal_vars)
 ```
 
-## Performance
-
-FEAX is designed for high performance:
-
-- **Compilation**: Problems compile to efficient XLA code via JAX
-- **Parallelization**: Natural parallelization over elements and quadrature points
-- **Memory**: Optimized memory access patterns and minimal allocations
-- **Scaling**: Efficient handling of large meshes and parameter spaces
-
-### Benchmark Results
-
-Performance comparison for linear elasticity problems with the following specifications:
-
-![Linear Elasticity Solver Performance Benchmark](assets/linear_elasticity_benchmark.png)
-
-**Problem Setup:**
-- **Element Type**: 3D hexahedral elements (HEX8) 
-- **Mesh Size**: 40×40×40 elements (68921 nodes)
-- **DOFs**: 206763 degrees of freedom (3 DOFs per node)
-- **Physics**: Linear elasticity with Young's modulus E = 70 GPa, Poisson's ratio ν = 0.3
-- **Boundary Conditions**: Fixed left face, tension applied to right face
-- **Solver**: BiCGSTAB iterative linear solver with 1e-6 tolerance
-
-**Benchmark Details:**
-- Tests batch processing of 1, 10, 50, and 100 different loading scenarios
-- Compares three execution strategies: sequential loops (no JIT), JIT-compiled loops, and vectorized (vmap)
-- All methods solve identical problems with varying tension loads (0.05 to 0.15)
-
-**Machine Setup:**
-- **CPU**: AMD Ryzen 9 7950X (16 cores)
-- **GPU**: RTX A4000 (16GiB)
-- **OS**: wsl2 on windows
-
-The benchmark demonstrates FEAX's vectorization capabilities:
-- **vmap (batched)**: Up to 4.1x speedup over sequential for loop execution
-- **JIT compilation**: Significant performance improvements over Python loops
-- **Scalability**: Near-linear scaling with batch size for parameter studies
-
-## Documentation
-
-Full API documentation is available online and is automatically updated with each release:
-
-**📚 [View API Documentation](https://Naruki-Ichihara.github.io/feax/)**
-
-### Building Documentation Locally
-
-```bash
-# Generate documentation
-python generate_docs.py
-
-# Serve documentation locally
-python docs_serve.py
-```
-
-The documentation includes:
-- Complete API reference for all modules
-- Mathematical formulas with LaTeX support
-- Interactive search functionality
-- Code examples and usage patterns
-
 ## License
 
 FEAX is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for the full license text.
@@ -399,7 +333,6 @@ FEAX is licensed under the GNU General Public License v3.0. See [LICENSE](LICENS
 FEAX builds upon the excellent work of:
 - [JAX](https://github.com/google/jax) for automatic differentiation and compilation
 - [JAX-FEM](https://github.com/tianjuxue/jax_fem) for inspiration and reference implementations
-- The broader scientific computing community
 
 ---
 

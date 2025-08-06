@@ -30,3 +30,6 @@ __all__ = [
     'Mesh', 'DirichletBC', 'newton_solve', 'SolverOptions', 'create_solver',
     'zero_like_initial_guess', 'DirichletBCSpec', 'DirichletBCConfig', 'dirichlet_bc_config'
 ]
+
+# MDMM moved to topopt_toolkit for better organization
+# from feax.topopt_toolkit import mdmm
