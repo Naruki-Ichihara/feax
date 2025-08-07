@@ -23,7 +23,7 @@ import time
 
 # Problem setup
 E0 = 70e3
-E_eps = 1e-3
+E_eps = 1e-1
 x_init = 0.0
 target = 0.3
 T = 1e3
@@ -76,13 +76,33 @@ problem = ElasticityProblem(
     mesh=mesh, vec=3, dim=3, ele_type='HEX8', gauss_order=2,
     location_fns=[right_corner])
 
-# Create design variables at quadrature points (more natural for FE)
+# Create cell-based design variables (one per element instead of per quadrature point)
 # For sigmoid transformation, we work with unconstrained variables
 # Initialize x such that sigmoid(x) = rho_0
 # sigmoid(x) = 1/(1 + exp(-scale*x)) = rho_0
 # => x = log(rho_0/(1-rho_0)) / scale
-scale = 5.0
-x_quad_0 = InternalVars.create_uniform_volume_var(problem, x_init)
+scale = 0.2
+num_elements = mesh.cells.shape[0]
+x_cell_0 = np.full(num_elements, x_init)
+
+# Function to expand cell-based design variables to volume format for FEAX
+def expand_cell_to_volume(x_cell):
+    """Expand cell-based design variables to volume format expected by FEAX"""
+    # Get the number of quadrature points per element from the problem
+    num_quads = problem.fes[0].num_quads
+    num_cells = len(x_cell)
+    
+    # Expand each cell value to all quadrature points within that cell
+    x_expanded = np.repeat(x_cell[:, None], num_quads, axis=1)
+    
+    # Return in the format expected by FEAX (num_cells, num_quads)
+    return x_expanded
+
+# Convert to volume format for initial use
+x_quad_0 = expand_cell_to_volume(x_cell_0)
+
+print(f"Number of elements: {num_elements}")
+print(f"Design variables reduced from quadrature points to: {num_elements} (one per element)")
 
 # Helper functions for sigmoid transformation
 def sigmoid(x):
@@ -92,7 +112,7 @@ def sigmoid(x):
 traction_array = InternalVars.create_uniform_surface_var(problem, T)
 
 bc = bc_config.create_bc(problem)
-solver_option = SolverOptions(tol=1e-8, linear_solver="cg")
+solver_option = SolverOptions(tol=1e-8, linear_solver="cg", use_jacobi_preconditioner=True)
 solver = create_solver(problem, bc, solver_option, iter_num=1)
 initial_guess = zero_like_initial_guess(problem, bc)
 
@@ -125,20 +145,31 @@ def volume_constraint(x_quad):
     rho_filtered = helmholtz_filter(rho_quad)
     return target - compute_volume(rho_filtered)
 
-# Create MDMM inequality constraint
-volume_ineq = mdmm.ineq(volume_constraint, damping=5, weight=5)
-design_vars = {'x': x_quad_0}
+# Modified objective and constraint functions to work with cell-based variables
+def objective_cell(x_cell):
+    """Objective function that works with cell-based design variables"""
+    x_quad = expand_cell_to_volume(x_cell)
+    return objective(x_quad)
+
+def volume_constraint_cell(x_cell):
+    """Volume constraint function that works with cell-based design variables"""
+    x_quad = expand_cell_to_volume(x_cell)
+    return volume_constraint(x_quad)
+
+# Create MDMM inequality constraint using cell-based functions
+volume_ineq = mdmm.ineq(volume_constraint_cell, damping=10, weight=5)
+design_vars = {'x': x_cell_0}  # Use cell-based variables
 constraint_params = volume_ineq.init(design_vars['x'])
 
 @jax.jit
 def mdmm_loss(design_vars, constraint_params):
     x = design_vars['x']
-    obj = objective(x)
+    obj = objective_cell(x)
     constraint_loss, constraint_val = volume_ineq.loss(constraint_params, x)
     total_loss = obj + constraint_loss
     return total_loss, (obj, constraint_val)
 
-learning_rate = 0.02
+learning_rate = 0.1
 optimizer = optax.chain(
     optax.adam(learning_rate),
     mdmm.optax_prepare_update()
@@ -148,7 +179,7 @@ optimizer = optax.chain(
 opt_state = optimizer.init({'design': design_vars, 'constraint': constraint_params})
 
 # Create data directory
-data_dir = os.path.join(os.path.dirname(__file__), 'data')
+data_dir = os.path.join(os.path.dirname(__file__), 'data2')
 os.makedirs(os.path.join(data_dir, 'vtk'), exist_ok=True)
 vtk_path = os.path.join(data_dir, 'vtk/topopt_result.vtu')
 
@@ -195,7 +226,8 @@ for iteration in range(num_iterations):
     
     # Record history
     history_start_time = time.time()
-    current_x_quad = design_vars['x']
+    current_x_cell = design_vars['x']
+    current_x_quad = expand_cell_to_volume(current_x_cell)
     current_rho_quad = sigmoid(current_x_quad)
     current_rho_filtered = helmholtz_filter(current_rho_quad)
     current_volume = compute_volume(current_rho_filtered)
@@ -216,7 +248,8 @@ for iteration in range(num_iterations):
     
     # Save solution every 20 iterations
     if iteration % 2 == 0:
-        current_x_quad = design_vars['x']
+        current_x_cell = design_vars['x']
+        current_x_quad = expand_cell_to_volume(current_x_cell)
         current_rho_quad = sigmoid(current_x_quad)
         current_rho_filtered = helmholtz_filter(current_rho_quad)
         internal_vars = InternalVars(
@@ -291,7 +324,8 @@ plt.savefig(os.path.join(data_dir, 'topopt_growth_curves.png'), dpi=150, bbox_in
 print(f"\nGrowth curve plot saved to {os.path.join(data_dir, 'topopt_growth_curves.png')}")
 
 # Save final solution
-final_x_quad = design_vars['x']
+final_x_cell = design_vars['x']
+final_x_quad = expand_cell_to_volume(final_x_cell)
 final_rho_quad = sigmoid(final_x_quad)
 final_rho_filtered = helmholtz_filter(final_rho_quad)
 internal_vars = InternalVars(

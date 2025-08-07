@@ -9,6 +9,63 @@ from .assembler import create_J_bc_function, create_res_bc_function
 from .DCboundary import DirichletBC
 
 
+def create_jacobi_preconditioner(A, shift=1e-12):
+    """Create Jacobi (diagonal) preconditioner from sparse matrix.
+    
+    Parameters
+    ----------
+    A : BCOO sparse matrix
+        The system matrix to precondition
+    shift : float, default 1e-12
+        Small value added to diagonal for numerical stability
+        
+    Returns
+    -------
+    M : LinearOperator
+        Jacobi preconditioner as diagonal inverse matrix
+        
+    Notes
+    -----
+    This creates a diagonal preconditioner M = diag(A)^{-1} with regularization.
+    The preconditioner is JAX-compatible and avoids dynamic indexing.
+    For elasticity problems with extreme material contrasts, this helps
+    condition number significantly.
+    """
+    
+    @jax.jit
+    def extract_diagonal(A):
+        """Extract diagonal from BCOO sparse matrix avoiding dynamic indexing."""
+        # Get matrix dimensions
+        n = A.shape[0]
+        
+        # Find diagonal entries by checking where row == col
+        diagonal_mask = A.indices[:, 0] == A.indices[:, 1]
+        
+        # Extract diagonal values - use scatter_add to handle duplicates
+        diag = jnp.zeros(n)
+        diagonal_indices = jnp.where(diagonal_mask, A.indices[:, 0], n)  # Use n as dummy index
+        diagonal_values = jnp.where(diagonal_mask, A.data, 0.0)
+        diag = diag.at[diagonal_indices].add(diagonal_values)  # Handles out-of-bounds gracefully
+        
+        return diag
+    
+    @jax.jit  
+    def jacobi_matvec(diag_inv, x):
+        """Apply Jacobi preconditioner: M @ x = diag_inv * x"""
+        return diag_inv * x
+    
+    # Extract diagonal and compute inverse with regularization
+    diagonal = extract_diagonal(A)
+    diagonal_regularized = diagonal + shift
+    diagonal_inv = 1.0 / diagonal_regularized
+    
+    # Create LinearOperator-like function
+    def M_matvec(x):
+        return jacobi_matvec(diagonal_inv, x)
+    
+    return M_matvec
+
+
 def create_x0(bc_rows=None, bc_vals=None):
     """Create initial guess function for linear solver following JAX-FEM approach.
     
@@ -81,6 +138,10 @@ class SolverOptions:
         Linear solver type. Options: "cg", "bicgstab", "gmres"
     preconditioner : callable, optional
         Preconditioner function for linear solver
+    use_jacobi_preconditioner : bool, default False
+        Whether to use Jacobi (diagonal) preconditioner automatically
+    jacobi_shift : float, default 1e-12
+        Regularization parameter for Jacobi preconditioner
     linear_solver_tol : float, default 1e-10
         Tolerance for linear solver
     linear_solver_atol : float, default 1e-10
@@ -96,6 +157,8 @@ class SolverOptions:
     max_iter: int = 100
     linear_solver: str = "cg"  # Options: "cg", "bicgstab", "gmres"
     preconditioner: Optional[Callable] = None
+    use_jacobi_preconditioner: bool = False
+    jacobi_shift: float = 1e-12
     linear_solver_tol: float = 1e-10
     linear_solver_atol: float = 1e-10
     linear_solver_maxiter: int = 10000
@@ -145,9 +208,15 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
     
     # Define solver functions for JAX compatibility (no conditionals inside JAX-traced code)
     def solve_cg(A, b, x0):
+        # Determine preconditioner
+        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
+            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+        else:
+            M = solver_options.preconditioner
+            
         x, info = jax.scipy.sparse.linalg.cg(
             A, b, x0=x0, 
-            M=solver_options.preconditioner,
+            M=M,
             tol=solver_options.linear_solver_tol,
             atol=solver_options.linear_solver_atol,
             maxiter=solver_options.linear_solver_maxiter
@@ -155,9 +224,15 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         return x
     
     def solve_bicgstab(A, b, x0):
+        # Determine preconditioner
+        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
+            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+        else:
+            M = solver_options.preconditioner
+            
         x, info = jax.scipy.sparse.linalg.bicgstab(
             A, b, x0=x0,
-            M=solver_options.preconditioner,
+            M=M,
             tol=solver_options.linear_solver_tol,
             atol=solver_options.linear_solver_atol,
             maxiter=solver_options.linear_solver_maxiter
@@ -165,9 +240,15 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         return x
     
     def solve_gmres(A, b, x0):
+        # Determine preconditioner
+        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
+            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+        else:
+            M = solver_options.preconditioner
+            
         x, info = jax.scipy.sparse.linalg.gmres(
             A, b, x0=x0,
-            M=solver_options.preconditioner,
+            M=M,
             tol=solver_options.linear_solver_tol,
             atol=solver_options.linear_solver_atol,
             maxiter=solver_options.linear_solver_maxiter
@@ -927,7 +1008,8 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
     if adjoint_solver_options is None:
         adjoint_solver_options = SolverOptions(
             linear_solver="bicgstab",  # More robust than CG
-            tol=1e-10
+            tol=1e-10,
+            use_jacobi_preconditioner=True
         )
 
     J_bc_func = jax.jit(create_J_bc_function(problem, bc))
