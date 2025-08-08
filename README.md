@@ -29,6 +29,17 @@ FEAX leverages JAX's powerful transformation system to enable:
 - **Vectorization**: Efficiently process multiple scenarios in parallel with `vmap`
 - **Parallelization**: Scale across multiple devices with `pmap`
 
+## Installation
+Use pip to install:
+```bash
+pip install feax
+```
+
+To install the latest commit from the main branch:
+```bash
+pip install git+https://github.com/Naruki-Ichihara/feax.git@main
+```
+
 ## Key Features
 
 ### Differentiable Solvers
