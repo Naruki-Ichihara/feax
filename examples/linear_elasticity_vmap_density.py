@@ -18,6 +18,7 @@ from feax.mesh import box_mesh_gmsh
 from feax.utils import save_sol
 import os
 import matplotlib.pyplot as plt
+jax.config.update("jax_enable_x64", True)  # Use 64-bit precision for better accuracy
 
 # Problem setup
 E0 = 70e3

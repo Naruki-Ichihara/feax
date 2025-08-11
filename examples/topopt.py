@@ -20,6 +20,7 @@ from feax.topopt_toolkit import create_compliance_fn, create_volume_fn, mdmm
 import optax
 import os
 import time
+jax.config.update("jax_enable_x64", True)  # Use 64-bit precision for better accuracy
 
 # Problem setup
 E0 = 70e3

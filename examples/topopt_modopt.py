@@ -19,6 +19,7 @@ from feax.utils import save_sol
 from feax.topopt_toolkit import create_compliance_fn, create_volume_fn
 import os
 import modopt as mo
+jax.config.update("jax_enable_x64", True)  # Use 64-bit precision for better accuracy
 
 # Problem setup
 E0 = 70e3

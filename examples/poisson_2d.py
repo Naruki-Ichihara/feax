@@ -12,6 +12,7 @@ Boundary conditions:
     ∂u/∂n = sin(5x) on bottom and top boundaries (Neumann)
 """
 
+import jax
 import jax.numpy as np
 from feax import Problem, InternalVars, create_solver
 from feax import Mesh, SolverOptions, zero_like_initial_guess
@@ -19,7 +20,7 @@ from feax import DirichletBCSpec, DirichletBCConfig
 from feax.mesh import rectangle_mesh
 from feax.utils import save_sol
 import os
-
+jax.config.update("jax_enable_x64", True)  # Use 64-bit precision for better accuracy
 
 class Poisson(Problem):
     """2D Poisson problem implementation matching JAX-FEM example."""
