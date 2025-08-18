@@ -79,10 +79,7 @@ Nx, Ny = 32, 32
     
 # Create mesh
 print("Creating 2D mesh...")
-meshio_mesh = rectangle_mesh(Nx=Nx, Ny=Ny, domain_x=Lx, domain_y=Ly)
-mesh = Mesh(meshio_mesh.points, meshio_mesh.cells_dict['quad'])
-    
-print(f"Mesh info: {mesh.points.shape[0]} nodes, {mesh.cells.shape[0]} elements")
+mesh = rectangle_mesh(Nx=Nx, Ny=Ny, domain_x=Lx, domain_y=Ly)
     
 # Create boundary conditions using dataclass approach
 bc_config = DirichletBCConfig([

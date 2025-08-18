@@ -2,9 +2,7 @@ import jax
 import jax.numpy as jnp
 from dataclasses import dataclass
 from typing import Optional, Callable
-from jax.experimental.sparse import BCOO, eye, bcoo_multiply_sparse
 from dataclasses import dataclass
-from .assembler import get_J, get_res
 from .assembler import create_J_bc_function, create_res_bc_function
 from .DCboundary import DirichletBC
 

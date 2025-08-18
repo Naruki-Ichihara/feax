@@ -8,7 +8,6 @@ import jax.numpy as np
 from jax.experimental import sparse
 import jax.flatten_util
 import functools
-from feax import logger
 from feax.internal_vars import InternalVars
 
 
@@ -248,7 +247,6 @@ def compute_residual_vars_helper(problem, weak_form_flat, weak_form_face_flat):
 
 def get_J(problem, sol_list, internal_vars: InternalVars):
     """Compute Jacobian matrix with separated internal variables."""
-    logger.debug(f"Computing Jacobian matrix...")
     cells_sol_list = [sol[cells] for cells, sol in zip(problem.cells_list, sol_list)]
     cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
     

@@ -6,7 +6,6 @@ import jax
 import jax.numpy as np
 import jax.flatten_util
 from dataclasses import dataclass
-import functools
 
 from feax.mesh import Mesh
 from feax.fe import FiniteElement

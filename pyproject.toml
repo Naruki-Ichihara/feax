@@ -15,3 +15,12 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 version = "0.0.3"
+
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "meshio",
+    "pytest",
+    "fenics-basix"
+]

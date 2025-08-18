@@ -14,7 +14,7 @@ import jax.numpy as np
 from feax import Problem, InternalVars, create_solver
 from feax import Mesh, SolverOptions, zero_like_initial_guess
 from feax import DirichletBCSpec, DirichletBCConfig
-from feax.mesh import box_mesh_gmsh
+from feax.mesh import box_mesh
 from feax.utils import save_sol
 from feax.topopt_toolkit import create_compliance_fn, create_volume_fn, mdmm
 import optax
@@ -50,8 +50,7 @@ class ElasticityProblem(Problem):
         # The universal compliance function will handle all surfaces automatically
 
 # Create mesh and problem
-meshio_mesh = box_mesh_gmsh(40, 20, 20, 2., 1., 1., data_dir='/tmp', ele_type='HEX8')
-mesh = Mesh(meshio_mesh.points, meshio_mesh.cells_dict['hexahedron'])
+mesh = box_mesh_gmsh(40, 20, 20, 2., 1., 1.)
 
 def left(point):
     return np.isclose(point[0], 0., atol=1e-5)

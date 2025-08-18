@@ -13,7 +13,7 @@ import time
 from feax import Problem, InternalVars, create_solver
 from feax import Mesh, SolverOptions, zero_like_initial_guess
 from feax import DirichletBCSpec, DirichletBCConfig
-from feax.mesh import box_mesh_gmsh
+from feax.mesh import box_mesh
 from feax.utils import save_sol
 import os
 import matplotlib.pyplot as plt
@@ -41,9 +41,7 @@ class ElasticityProblem(Problem):
 
 # Create mesh (small for demo)
 print("Creating mesh...")
-meshio_mesh = box_mesh_gmsh(40, 20, 20, 2., 1., 1., data_dir='/tmp', ele_type='HEX8')
-mesh = Mesh(meshio_mesh.points, meshio_mesh.cells_dict['hexahedron'])
-print(f"Mesh: {mesh.points.shape[0]} nodes, {mesh.cells.shape[0]} elements")
+meshio_mesh = box_mesh(40, 20, 20, 2., 1., 1.)
 
 # Boundary locations
 def left(point):

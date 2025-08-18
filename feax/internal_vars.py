@@ -5,7 +5,7 @@ Dataclass for managing internal variables in a JAX-compatible way.
 import jax
 import jax.numpy as np
 from dataclasses import dataclass
-from typing import Tuple, List, Optional
+from typing import Tuple, List
 
 
 @dataclass(frozen=True)
