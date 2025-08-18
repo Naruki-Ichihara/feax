@@ -14,10 +14,4 @@ keywords = ["JAX", "CUDA", "Simulation", "PINN"]
 classifiers = [
     "Programming Language :: Python :: 3",
 ]
-dynamic = ["version"]
-
-[tool.setuptools.packages.find]
-include = ["my_package"]
-
-[tool.setuptools.dynamic]
-version = {attr = "feax.__version__"}
+version = "0.0.3"
