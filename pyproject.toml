@@ -14,7 +14,7 @@ keywords = ["JAX", "CUDA", "Simulation", "PINN"]
 classifiers = [
     "Programming Language :: Python :: 3",
 ]
-version = "0.0.3"
+version = "0.0.5"
 
 dependencies = [
     "numpy",

@@ -304,3 +304,31 @@ def create_res_bc_function(problem, bc):
         return apply_boundary_to_res(bc, res_flat, sol_flat)
     
     return res_bc_func
+
+def create_J_bc_function_reduced(problem, bc, P):
+    """Create Jacobian function with BC applied."""
+    from feax.DCboundary import apply_boundary_to_J
+    
+    def J_bc_func(sol_flat, internal_vars: InternalVars):
+        sol_list = problem.unflatten_fn_sol_list(sol_flat)
+        J = get_J(problem, sol_list, internal_vars)
+        J_bc = apply_boundary_to_J(bc, J)
+        J_temp = P.T @ J_bc
+        J_red = J_temp @ P
+        return J_red
+    
+    return J_bc_func
+
+def create_res_bc_function_reduced(problem, bc, P):
+    """Create residual function with BC applied."""
+    from feax.DCboundary import apply_boundary_to_res
+    
+    def res_bc_func(sol_flat, internal_vars: InternalVars):
+        sol_list = problem.unflatten_fn_sol_list(sol_flat)
+        res = get_res(problem, sol_list, internal_vars)
+        res_flat = jax.flatten_util.ravel_pytree(res)[0]
+        res_bc = apply_boundary_to_res(bc, res_flat, sol_flat)
+        res_red = P.T @ res_bc
+        return res_red
+
+    return res_bc_func

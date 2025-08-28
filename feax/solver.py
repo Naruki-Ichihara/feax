@@ -2,7 +2,6 @@ import jax
 import jax.numpy as jnp
 from dataclasses import dataclass
 from typing import Optional, Callable
-from dataclasses import dataclass
 from .assembler import create_J_bc_function, create_res_bc_function
 from .DCboundary import DirichletBC
 
@@ -30,7 +29,6 @@ def create_jacobi_preconditioner(A, shift=1e-12):
     condition number significantly.
     """
     
-    @jax.jit
     def extract_diagonal(A):
         """Extract diagonal from BCOO sparse matrix avoiding dynamic indexing."""
         # Get matrix dimensions
@@ -47,7 +45,6 @@ def create_jacobi_preconditioner(A, shift=1e-12):
         
         return diag
     
-    @jax.jit  
     def jacobi_matvec(diag_inv, x):
         """Apply Jacobi preconditioner: M @ x = diag_inv * x"""
         return diag_inv * x
@@ -64,7 +61,7 @@ def create_jacobi_preconditioner(A, shift=1e-12):
     return M_matvec
 
 
-def create_x0(bc_rows=None, bc_vals=None):
+def create_x0(bc_rows=None, bc_vals=None, P_mat=None):
     """Create initial guess function for linear solver following JAX-FEM approach.
     
     Parameters
@@ -73,6 +70,8 @@ def create_x0(bc_rows=None, bc_vals=None):
         Row indices of boundary condition locations
     bc_vals : array-like, optional  
         Boundary condition values
+    P_mat : BCOO matrix, optional
+        Prolongation matrix for reduced problems (maps reduced to full DOFs)
         
     Returns
     -------
@@ -86,11 +85,18 @@ def create_x0(bc_rows=None, bc_vals=None):
     x0_2 = copy_bc(current_sol, problem) - copies current solution values at BC locations, 0 elsewhere  
     x0 = x0_1 - x0_2 - the correct initial guess computation
     
+    For reduced problems (when P_mat is provided):
+    x0_2 = copy_bc(P @ current_sol_reduced, problem) - expand reduced sol and copy BC
+    x0 = P.T @ (x0_1 - x0_2) - transform back to reduced space
+    
     Examples
     --------
     >>> # Usage with BC information
     >>> x0_fn = create_x0(bc_rows=[0, 1, 2], bc_vals=[1.0, 0.0, 2.0]) 
     >>> solver_options = SolverOptions(linear_solver_x0_fn=x0_fn)
+    
+    >>> # Usage with reduced problem
+    >>> x0_fn = create_x0(bc_rows, bc_vals, P_mat=P)
     """
     
     def x0_fn(current_sol):
@@ -103,17 +109,31 @@ def create_x0(bc_rows=None, bc_vals=None):
         bc_rows_array = jnp.array(bc_rows) if isinstance(bc_rows, (tuple, list)) else bc_rows
         bc_vals_array = jnp.array(bc_vals) if isinstance(bc_vals, (tuple, list)) else bc_vals
         
-        # Implement the exact logic from the old row elimination solver:
-        # x0_1 = assign_bc(zeros, problem) - sets BC values at BC locations, 0 elsewhere
-        x0_1 = jnp.zeros_like(current_sol)
-        x0_1 = x0_1.at[bc_rows_array].set(bc_vals_array)
-        
-        # x0_2 = copy_bc(current_sol, problem) - copies current solution values at BC locations, 0 elsewhere
-        x0_2 = jnp.zeros_like(current_sol)
-        x0_2 = x0_2.at[bc_rows_array].set(current_sol[bc_rows_array])
-        
-        # x0 = x0_1 - x0_2 (the original correct implementation)
-        x0 = x0_1 - x0_2
+        if P_mat is not None:
+            # Reduced problem case - following ref.py logic
+            # x0_1 = assign_bc(zeros_full, problem)
+            x0_1 = jnp.zeros(P_mat.shape[0])  # Full size
+            x0_1 = x0_1.at[bc_rows_array].set(bc_vals_array)
+            
+            # x0_2 = copy_bc(P @ current_sol_reduced, problem)
+            current_sol_full = P_mat @ current_sol  # Expand reduced to full
+            x0_2 = jnp.zeros(P_mat.shape[0])
+            x0_2 = x0_2.at[bc_rows_array].set(current_sol_full[bc_rows_array])
+            
+            # x0 = P.T @ (x0_1 - x0_2) - transform to reduced space
+            x0 = P_mat.T @ (x0_1 - x0_2)
+        else:
+            # Standard (non-reduced) problem case
+            # x0_1 = assign_bc(zeros, problem) - sets BC values at BC locations, 0 elsewhere
+            x0_1 = jnp.zeros_like(current_sol)
+            x0_1 = x0_1.at[bc_rows_array].set(bc_vals_array)
+            
+            # x0_2 = copy_bc(current_sol, problem) - copies current solution values at BC locations, 0 elsewhere
+            x0_2 = jnp.zeros_like(current_sol)
+            x0_2 = x0_2.at[bc_rows_array].set(current_sol[bc_rows_array])
+            
+            # x0 = x0_1 - x0_2 (the original correct implementation)
+            x0 = x0_1 - x0_2
         
         return x0
         
@@ -163,7 +183,7 @@ class SolverOptions:
     linear_solver_x0_fn: Optional[Callable] = None  # Function to compute initial guess: f(current_sol) -> x0
 
 
-def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None):
+def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None, P_mat=None):
     """Newton solver using JAX while_loop for JIT compatibility.
     
     Parameters
@@ -183,6 +203,8 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
     internal_vars : InternalVars, optional
         Internal variables (e.g., material properties) to pass to J_bc_applied and res_bc_applied.
         If provided, these functions will be called with (sol, internal_vars).
+    P_mat : BCOO matrix, optional
+        Prolongation matrix for reduced problems (maps reduced to full DOFs)
         
     Returns
     -------
@@ -201,7 +223,8 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         # Create bc_aware x0 function
         x0_fn = create_x0(
             bc_rows=bc.bc_rows,
-            bc_vals=bc.bc_vals
+            bc_vals=bc.bc_vals,
+            P_mat=P_mat
         )
     
     # Define solver functions for JAX compatibility (no conditionals inside JAX-traced code)
@@ -212,7 +235,7 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         else:
             M = solver_options.preconditioner
             
-        x, info = jax.scipy.sparse.linalg.cg(
+        x, _ = jax.scipy.sparse.linalg.cg(
             A, b, x0=x0, 
             M=M,
             tol=solver_options.linear_solver_tol,
@@ -228,7 +251,7 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         else:
             M = solver_options.preconditioner
             
-        x, info = jax.scipy.sparse.linalg.bicgstab(
+        x, _ = jax.scipy.sparse.linalg.bicgstab(
             A, b, x0=x0,
             M=M,
             tol=solver_options.linear_solver_tol,
@@ -244,7 +267,7 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         else:
             M = solver_options.preconditioner
             
-        x, info = jax.scipy.sparse.linalg.gmres(
+        x, _ = jax.scipy.sparse.linalg.gmres(
             A, b, x0=x0,
             M=M,
             tol=solver_options.linear_solver_tol,
@@ -267,9 +290,8 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
     else:  # Must be gmres since we validated above
         linear_solve_fn = solve_gmres
     
-    @jax.jit
-    def linear_solve(A, b, x0=None):
-        """Solve linear system Ax = b using JAX sparse solvers - JIT compiled."""
+    def linear_solve_jit(A, b, x0=None):
+        """Solve linear system Ax = b using JAX sparse solvers."""
         # Assume A is already in BCOO format (which it should be from the assembler)
         # Use pre-selected solver function (no conditionals in JAX-traced code)
         return linear_solve_fn(A, b, x0)
@@ -296,7 +318,7 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         x0 = x0_fn(sol)
         
         # Solve linear system: J * delta_sol = -res
-        delta_sol = linear_solve(J, -res, x0=x0)
+        delta_sol = linear_solve_jit(J, -res, x0=x0)
         
         # Efficient Armijo backtracking line search
         # More efficient than vectorized evaluation for large problems
@@ -309,7 +331,7 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         rho = 0.5  # Backtracking factor
         max_backtracks = 30  # Allow many backtracks for hard problems
         
-        def armijo_line_search_body(carry, i):
+        def armijo_line_search_body(carry, _):
             """Body function for line search loop."""
             alpha, found_good, best_sol, best_norm = carry
             
@@ -377,7 +399,7 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
     return final_state
 
 
-def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, num_iters: int, internal_vars=None):
+def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, num_iters: int, internal_vars=None, P_mat=None):
     """Newton solver using JAX fori_loop for fixed iterations - optimized for vmap.
     
     This solver is specifically designed for use with vmap where we need:
@@ -403,6 +425,8 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
     internal_vars : InternalVars, optional
         Internal variables (e.g., material properties) to pass to J_bc_applied and res_bc_applied.
         If provided, these functions will be called with (sol, internal_vars).
+    P_mat : BCOO matrix, optional
+        Prolongation matrix for reduced problems (maps reduced to full DOFs)
         
     Returns
     -------
@@ -430,12 +454,13 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
     else:
         x0_fn = create_x0(
             bc_rows=bc.bc_rows,
-            bc_vals=bc.bc_vals
+            bc_vals=bc.bc_vals,
+            P_mat=P_mat
         )
     
     # Define solver functions
     def solve_cg(A, b, x0):
-        x, info = jax.scipy.sparse.linalg.cg(
+        x, _ = jax.scipy.sparse.linalg.cg(
             A, b, x0=x0, 
             M=solver_options.preconditioner,
             tol=solver_options.linear_solver_tol,
@@ -445,7 +470,7 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
         return x
     
     def solve_bicgstab(A, b, x0):
-        x, info = jax.scipy.sparse.linalg.bicgstab(
+        x, _ = jax.scipy.sparse.linalg.bicgstab(
             A, b, x0=x0,
             M=solver_options.preconditioner,
             tol=solver_options.linear_solver_tol,
@@ -455,7 +480,7 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
         return x
     
     def solve_gmres(A, b, x0):
-        x, info = jax.scipy.sparse.linalg.gmres(
+        x, _ = jax.scipy.sparse.linalg.gmres(
             A, b, x0=x0,
             M=solver_options.preconditioner,
             tol=solver_options.linear_solver_tol,
@@ -476,7 +501,7 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
     else:
         linear_solve_fn = solve_gmres
     
-    def newton_iteration(i, state):
+    def newton_iteration(_, state):
         """Single Newton iteration for fori_loop."""
         sol, res_norm = state
         
@@ -505,7 +530,7 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
         rho = 0.5  # Backtracking factor
         max_backtracks = 30  # Allow many backtracks for hard problems
         
-        def armijo_line_search_body(carry, i):
+        def armijo_line_search_body(carry, _):
             """Body function for line search loop."""
             alpha, found_good, best_sol, best_norm = carry
             
@@ -602,6 +627,8 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
     internal_vars : InternalVars, optional
         Internal variables (e.g., material properties) to pass to J_bc_applied and res_bc_applied.
         If provided, these functions will be called with (sol, internal_vars).
+    P_mat : BCOO matrix, optional
+        Prolongation matrix for reduced problems (maps reduced to full DOFs)
         
     Returns
     -------
@@ -623,12 +650,13 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
     else:
         x0_fn = create_x0(
             bc_rows=bc.bc_rows,
-            bc_vals=bc.bc_vals
+            bc_vals=bc.bc_vals,
+            P_mat=P_mat
         )
     
     # Define solver functions
     def solve_cg(A, b, x0):
-        x, info = jax.scipy.sparse.linalg.cg(
+        x, _ = jax.scipy.sparse.linalg.cg(
             A, b, x0=x0, 
             M=solver_options.preconditioner,
             tol=solver_options.linear_solver_tol,
@@ -638,7 +666,7 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
         return x
     
     def solve_bicgstab(A, b, x0):
-        x, info = jax.scipy.sparse.linalg.bicgstab(
+        x, _ = jax.scipy.sparse.linalg.bicgstab(
             A, b, x0=x0,
             M=solver_options.preconditioner,
             tol=solver_options.linear_solver_tol,
@@ -648,7 +676,7 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
         return x
     
     def solve_gmres(A, b, x0):
-        x, info = jax.scipy.sparse.linalg.gmres(
+        x, _ = jax.scipy.sparse.linalg.gmres(
             A, b, x0=x0,
             M=solver_options.preconditioner,
             tol=solver_options.linear_solver_tol,
@@ -677,7 +705,7 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
         max_backtracks = 30
         
         alpha = 1.0
-        for i in range(max_backtracks):
+        for _ in range(max_backtracks):
             # Try current alpha
             trial_sol = sol + alpha * delta_sol
             if internal_vars is not None:
@@ -735,7 +763,7 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
         delta_sol = linear_solve_fn(J, -res, x0)
         
         # Line search
-        new_sol, new_res_norm, alpha, line_search_success = armijo_line_search(
+        new_sol, new_res_norm, _, _ = armijo_line_search(
             sol, delta_sol, res, res_norm
         )
         
@@ -752,7 +780,7 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
     return sol, res_norm, converged, iter_count
 
 
-def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None):
+def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None, P_mat=None):
     """Linear solver for problems that converge in one iteration (no while loop).
     
     This solver is optimized for linear elasticity problems where the solution
@@ -777,6 +805,8 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
     internal_vars : InternalVars, optional
         Internal variables (e.g., material properties) to pass to J_bc_applied and res_bc_applied.
         If provided, these functions will be called with (sol, internal_vars).
+    P_mat : BCOO matrix, optional
+        Prolongation matrix for reduced problems (maps reduced to full DOFs)
         
     Returns
     -------
@@ -801,12 +831,13 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
     else:
         x0_fn = create_x0(
             bc_rows=bc.bc_rows,
-            bc_vals=bc.bc_vals
+            bc_vals=bc.bc_vals,
+            P_mat=P_mat
         )
     
     # Define solver functions
     def solve_cg(A, b, x0):
-        x, info = jax.scipy.sparse.linalg.cg(
+        x, _ = jax.scipy.sparse.linalg.cg(
             A, b, x0=x0, 
             M=solver_options.preconditioner,
             tol=solver_options.linear_solver_tol,
@@ -816,7 +847,7 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         return x
     
     def solve_bicgstab(A, b, x0):
-        x, info = jax.scipy.sparse.linalg.bicgstab(
+        x, _ = jax.scipy.sparse.linalg.bicgstab(
             A, b, x0=x0,
             M=solver_options.preconditioner,
             tol=solver_options.linear_solver_tol,
@@ -826,7 +857,7 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         return x
     
     def solve_gmres(A, b, x0):
-        x, info = jax.scipy.sparse.linalg.gmres(
+        x, _ = jax.scipy.sparse.linalg.gmres(
             A, b, x0=x0,
             M=solver_options.preconditioner,
             tol=solver_options.linear_solver_tol,
@@ -871,7 +902,7 @@ def __linear_solve_adjoint(A, b, solver_options: SolverOptions):
     
     # Define solver functions
     def solve_cg(A, b, x0):
-        x, info = jax.scipy.sparse.linalg.cg(
+        x, _ = jax.scipy.sparse.linalg.cg(
             A, b, x0=x0, 
             M=solver_options.preconditioner,
             tol=solver_options.linear_solver_tol,
@@ -881,7 +912,7 @@ def __linear_solve_adjoint(A, b, solver_options: SolverOptions):
         return x
     
     def solve_bicgstab(A, b, x0):
-        x, info = jax.scipy.sparse.linalg.bicgstab(
+        x, _ = jax.scipy.sparse.linalg.bicgstab(
             A, b, x0=x0,
             M=solver_options.preconditioner,
             tol=solver_options.linear_solver_tol,
@@ -891,7 +922,7 @@ def __linear_solve_adjoint(A, b, solver_options: SolverOptions):
         return x
     
     def solve_gmres(A, b, x0):
-        x, info = jax.scipy.sparse.linalg.gmres(
+        x, _ = jax.scipy.sparse.linalg.gmres(
             A, b, x0=x0,
             M=solver_options.preconditioner,
             tol=solver_options.linear_solver_tol,
@@ -917,7 +948,112 @@ def __linear_solve_adjoint(A, b, solver_options: SolverOptions):
     
     return sol
 
-def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None, iter_num=None):
+
+def _create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options, iter_num):
+    """Create matrix-free reduced solver for periodic boundary conditions."""
+    
+    # Create full space functions
+    J_bc_func = create_J_bc_function(problem, bc)
+    res_bc_func = create_res_bc_function(problem, bc)
+    
+    # Matrix-free reduced operations
+    def create_reduced_matvec(sol_full, internal_vars):
+        """Create matrix-vector product function for reduced Jacobian."""
+        J_full = J_bc_func(sol_full, internal_vars)
+        
+        def reduced_matvec(v_reduced):
+            v_full = P @ v_reduced          # Expand to full space
+            Jv_full = J_full @ v_full       # Apply full Jacobian
+            Jv_reduced = P.T @ Jv_full      # Reduce back
+            return Jv_reduced
+        return reduced_matvec
+    
+    def compute_reduced_residual(sol_full, internal_vars):
+        """Compute residual in reduced space."""
+        res_full = res_bc_func(sol_full, internal_vars)
+        return P.T @ res_full
+    
+    # Matrix-free solver function
+    def reduced_solve_fn(internal_vars, initial_guess_full):
+        """Solve in reduced space using matrix-free CG."""
+        # Compute reduced residual
+        res_reduced = compute_reduced_residual(initial_guess_full, internal_vars)
+        
+        # Create reduced Jacobian matvec
+        J_reduced_matvec = create_reduced_matvec(initial_guess_full, internal_vars)
+        
+        # Solve reduced system: J_reduced @ sol_reduced = -res_reduced
+        sol_reduced, _ = jax.scipy.sparse.linalg.cg(J_reduced_matvec, -res_reduced, 
+                                                   tol=solver_options.tol,
+                                                   maxiter=solver_options.linear_solver_maxiter)
+        
+        # Map back to full space
+        sol_full = P @ sol_reduced
+        return sol_full, None
+    
+    @jax.custom_vjp
+    def differentiable_solve(internal_vars, initial_guess):
+        """Matrix-free reduced solver with automatic differentiation."""
+        return reduced_solve_fn(internal_vars, initial_guess)[0]
+    
+    def f_fwd(internal_vars, initial_guess):
+        """Forward function for custom VJP."""
+        sol = differentiable_solve(internal_vars, initial_guess)
+        return sol, (internal_vars, sol)
+    
+    def f_bwd(res, v):
+        """Backward function using matrix-free adjoint."""
+        internal_vars, sol = res
+        
+        # Create adjoint matvec operator: (P.T @ J.T @ P) @ adjoint = P.T @ v
+        J_full = J_bc_func(sol, internal_vars)
+        rhs_reduced = P.T @ v
+        
+        def adjoint_matvec(adjoint_reduced):
+            adjoint_full = P @ adjoint_reduced    # Expand to full space
+            Jt_adjoint_full = J_full.T @ adjoint_full  # Apply transpose Jacobian
+            return P.T @ Jt_adjoint_full          # Reduce back
+        
+        # Solve adjoint system: J_reduced.T @ adjoint_reduced = rhs_reduced
+        adjoint_reduced, _ = jax.scipy.sparse.linalg.cg(adjoint_matvec, rhs_reduced,
+                                                        tol=adjoint_solver_options.tol)
+        
+        # Compute VJP for internal variables
+        adjoint_full = P @ adjoint_reduced
+        
+        def constraint_fn(dofs, internal_vars):
+            return res_bc_func(dofs, internal_vars)
+        
+        def constraint_fn_sol_to_sol(sol_list, internal_vars):
+            dofs = jax.flatten_util.ravel_pytree(sol_list)[0]
+            con_vec = constraint_fn(dofs, internal_vars)
+            return problem.unflatten_fn_sol_list(con_vec)
+        
+        def get_partial_params_c_fn(sol_list):
+            def partial_params_c_fn(internal_vars):
+                return constraint_fn_sol_to_sol(sol_list, internal_vars)
+            return partial_params_c_fn
+
+        def get_vjp_contraint_fn_params(internal_vars, sol_list):
+            partial_c_fn = get_partial_params_c_fn(sol_list)
+            def vjp_linear_fn(v_list):
+                _, f_vjp = jax.vjp(partial_c_fn, internal_vars)
+                val, = f_vjp(v_list)
+                return val
+            return vjp_linear_fn
+        
+        sol_list = problem.unflatten_fn_sol_list(sol)
+        vjp_linear_fn = get_vjp_contraint_fn_params(internal_vars, sol_list)
+        vjp_result = vjp_linear_fn(problem.unflatten_fn_sol_list(adjoint_full))
+        vjp_result = jax.tree_util.tree_map(lambda x: -x, vjp_result)
+
+        return (vjp_result, None)  # No gradient w.r.t. initial_guess
+    
+    differentiable_solve.defvjp(f_fwd, f_bwd)
+    return differentiable_solve
+
+
+def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None, iter_num=None, P=None):
     """Create a differentiable solver that returns gradients w.r.t. internal_vars using custom VJP.
     
     This solver uses the self-adjoint approach for efficient gradient computation:
@@ -941,6 +1077,9 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
         - >1: Use newton_solve_fori with fixed number of iterations (vmappable)
         Note: When iter_num is not None, the solver is vmappable since it uses fixed iterations.
         Recommended: Use iter_num=1 for linear problems for optimal performance.
+    P : BCOO matrix, optional
+        Prolongation matrix for periodic boundary conditions (maps reduced to full DOFs).
+        If provided, solver works in reduced space using matrix-free operations for memory efficiency.
         
     Returns
     -------
@@ -1010,10 +1149,15 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
             use_jacobi_preconditioner=True
         )
 
-    J_bc_func = jax.jit(create_J_bc_function(problem, bc))
-    res_bc_func = jax.jit(create_res_bc_function(problem, bc))
-        
-    # Solve using appropriate method based on iter_num
+    # Branch between standard and reduced solver
+    if P is not None:
+        return _create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options, iter_num)
+    
+    # Standard solver (original implementation)
+    J_bc_func = create_J_bc_function(problem, bc)
+    res_bc_func = create_res_bc_function(problem, bc)
+    
+    # Standard case - no special handling
     if iter_num is None:
         solve_fn = lambda internal_vars, initial_sol: newton_solve(
             J_bc_func, res_bc_func, initial_sol, bc, solver_options, internal_vars
@@ -1075,7 +1219,7 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
         def get_vjp_contraint_fn_params(internal_vars, sol_list):
             partial_c_fn = get_partial_params_c_fn(sol_list)
             def vjp_linear_fn(v_list):
-                primals_output, f_vjp = jax.vjp(partial_c_fn, internal_vars)
+                _, f_vjp = jax.vjp(partial_c_fn, internal_vars)
                 val, = f_vjp(v_list)
                 return val
             return vjp_linear_fn
