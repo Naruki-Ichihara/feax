@@ -41,7 +41,7 @@ class ElasticityProblem(Problem):
 
 # Create mesh (small for demo)
 print("Creating mesh...")
-meshio_mesh = box_mesh(40, 20, 20, 2., 1., 1.)
+mesh = box_mesh(40, 20, 20, 2., 1., 1.)
 
 # Boundary locations
 def left(point):
