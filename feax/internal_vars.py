@@ -1,120 +1,208 @@
 """
-Dataclass for managing internal variables in a JAX-compatible way.
+Internal variables management for FEAX finite element framework.
+
+This module provides the InternalVars dataclass for managing material properties
+and loading parameters separately from problem structure. This separation enables
+efficient optimization and parameter studies through JAX transformations.
+
+The design philosophy separates:
+- Problem: Geometric structure (mesh, elements, quadrature)  
+- InternalVars: Material parameters and loads
 """
 
 import jax
 import jax.numpy as np
 from dataclasses import dataclass
-from typing import Tuple, List
+from typing import Tuple, List, Callable, Optional, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from feax.problem import Problem
 
 
 @dataclass(frozen=True)
 class InternalVars:
-    """Container for internal variables used in FE computations.
+    """Container for internal variables used in finite element computations.
     
-    This dataclass separates material properties and loading parameters from the
-    Problem structure, making it easier to vary these parameters in optimization
-    or sensitivity analysis while keeping the FE structure fixed.
+    This dataclass holds material properties, loading parameters, and other
+    variables that change during optimization or parameter studies, while keeping
+    the finite element structure (Problem) fixed. This separation enables efficient
+    JAX transformations for optimization and sensitivity analysis.
     
-    Attributes
+    The data structure mirrors the physics kernel organization:
+    - volume_vars: Parameters for volume integrals (tensor maps, mass maps)
+    - surface_vars: Parameters for surface integrals (boundary loads, tractions)
+    
+    Parameters
     ----------
-    volume_vars : tuple of arrays
-        Internal variables for volume integrals. Each array has shape 
-        (num_cells, num_quads) and represents values at quadrature points.
-    surface_vars : list of tuples
-        Internal variables for surface integrals. One entry per surface/location_fn.
-        Each entry is a tuple of arrays with shape (num_surface_faces, num_face_quads).
+    volume_vars : Tuple[np.ndarray, ...], optional
+        Tuple of arrays for volume integral parameters. Each array has shape
+        (num_cells, num_quads) representing values at quadrature points.
+        Common examples: material properties (E, nu), density, source terms
+    surface_vars : Optional[List[Tuple[np.ndarray, ...]]], optional
+        List of tuples for surface integral parameters. One entry per surface/location_fn.
+        Each tuple contains arrays with shape (num_surface_faces, num_face_quads).
+        Common examples: surface tractions, pressures, heat fluxes
+        
+    Notes
+    -----
+    This class is registered as a JAX PyTree for automatic differentiation and
+    transformations like vmap, grad, jit. The frozen dataclass ensures immutability
+    required for functional programming patterns.
+    
+    Examples
+    --------
+    Creating material parameters for elasticity:
+    >>> E = InternalVars.create_uniform_volume_var(problem, 210e9)  # Young's modulus
+    >>> nu = InternalVars.create_uniform_volume_var(problem, 0.3)   # Poisson's ratio  
+    >>> internal_vars = InternalVars(volume_vars=(E, nu))
+    
+    Adding spatial variation:
+    >>> def E_field(x): return 200e9 + 50e9 * x[0]  # Varies with x-coordinate
+    >>> E_varying = InternalVars.create_spatially_varying_volume_var(problem, E_field)
+    >>> internal_vars = InternalVars(volume_vars=(E_varying, nu))
     """
     volume_vars: Tuple[np.ndarray, ...] = ()
-    surface_vars: List[Tuple[np.ndarray, ...]] = None
+    surface_vars: Optional[List[Tuple[np.ndarray, ...]]] = None
     
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Initialize default values for optional fields.
+        
+        This method is called automatically after dataclass initialization
+        to handle default values for optional fields.
+        """
         # Initialize surface_vars as empty list if None
         if self.surface_vars is None:
             object.__setattr__(self, 'surface_vars', [])
     
     @staticmethod
-    def create_uniform_volume_var(problem, value: float, var_index: int = 0) -> np.ndarray:
-        """Create a uniform volume variable array for all quadrature points.
+    def create_uniform_volume_var(problem: 'Problem', value: float, var_index: int = 0) -> np.ndarray:
+        """Create uniform volume variable array for all quadrature points.
+        
+        This is the most common way to create material properties or parameters
+        that are constant throughout the domain.
         
         Parameters
         ----------
         problem : Problem
-            The FE problem to get dimensions from
+            The finite element problem to get dimensions from
         value : float
-            The uniform value to set
-        var_index : int
-            Which FE variable to use (for multi-physics problems)
+            The uniform value to assign to all quadrature points
+        var_index : int, optional
+            Which finite element variable to use for multi-variable problems. 
+            Default is 0 (first variable)
             
         Returns
         -------
         array : np.ndarray
-            Array of shape (num_cells, num_quads) filled with value
+            Array of shape (num_cells, num_quads) filled with the specified value
+            
+        Examples
+        --------
+        Create uniform material properties:
+        >>> E = InternalVars.create_uniform_volume_var(problem, 210e9)  # Young's modulus
+        >>> rho = InternalVars.create_uniform_volume_var(problem, 7800)  # Density
         """
         num_cells = problem.num_cells
         num_quads = problem.fes[var_index].num_quads
         return np.full((num_cells, num_quads), value)
     
     @staticmethod
-    def create_uniform_surface_var(problem, value: float, surface_index: int = 0) -> np.ndarray:
-        """Create a uniform surface variable array for all surface quadrature points.
+    def create_uniform_surface_var(problem: 'Problem', value: float, surface_index: int = 0) -> np.ndarray:
+        """Create uniform surface variable array for all surface quadrature points.
+        
+        Used to create surface parameters like uniform tractions, pressures,
+        or boundary fluxes that are constant over a boundary surface.
         
         Parameters
         ----------
         problem : Problem
-            The FE problem to get dimensions from
+            The finite element problem to get surface dimensions from
         value : float
-            The uniform value to set
-        surface_index : int
-            Which surface/location_fn to use
+            The uniform value to assign to all surface quadrature points
+        surface_index : int, optional
+            Which surface/location_fn to use. Default is 0 (first surface)
             
         Returns
         -------
         array : np.ndarray
-            Array of shape (num_surface_faces, num_face_quads) filled with value
+            Array of shape (num_surface_faces, num_face_quads) filled with the specified value
+            
+        Examples
+        --------
+        Create uniform surface loads:
+        >>> pressure = InternalVars.create_uniform_surface_var(problem, -1000)  # Pressure load
+        >>> heat_flux = InternalVars.create_uniform_surface_var(problem, 50.0)  # Heat flux
         """
         num_surface_faces = len(problem.boundary_inds_list[surface_index])
         num_face_quads = problem.fes[0].face_shape_vals.shape[1]
         return np.full((num_surface_faces, num_face_quads), value)
     
     @staticmethod
-    def create_spatially_varying_volume_var(problem, var_fn, var_index: int = 0) -> np.ndarray:
-        """Create a spatially varying volume variable using a function.
+    def create_spatially_varying_volume_var(problem: 'Problem', var_fn: Callable[[np.ndarray], float], 
+                                          var_index: int = 0) -> np.ndarray:
+        """Create spatially varying volume variable using a function.
+        
+        This method evaluates a user-defined function at all quadrature points
+        to create spatially varying material properties or parameters.
         
         Parameters
         ----------
         problem : Problem
-            The FE problem to get quadrature points from
-        var_fn : callable
-            Function that takes position (x, y, z) and returns variable value
-        var_index : int
-            Which FE variable to use
+            The finite element problem to get quadrature points from
+        var_fn : Callable[[np.ndarray], float]
+            Function that takes position coordinates (x, y, z) and returns variable value.
+            Function signature: (coordinates: np.ndarray) -> float
+        var_index : int, optional
+            Which finite element variable to use. Default is 0 (first variable)
             
         Returns
         -------
         array : np.ndarray
             Array of shape (num_cells, num_quads) with spatially varying values
+            
+        Examples
+        --------
+        Create spatially varying material properties:
+        >>> def E_gradient(x): return 200e9 + 50e9 * x[0]  # Varies with x-coordinate
+        >>> E_varying = InternalVars.create_spatially_varying_volume_var(problem, E_gradient)
+        
+        >>> def density_field(x): return 7800 * (1 + 0.1 * np.sin(x[0]))  # Sinusoidal variation
+        >>> rho_varying = InternalVars.create_spatially_varying_volume_var(problem, density_field)
         """
         quad_points = problem.physical_quad_points  # (num_cells, num_quads, dim)
         return jax.vmap(jax.vmap(var_fn))(quad_points)
     
     @staticmethod
-    def create_spatially_varying_surface_var(problem, var_fn, surface_index: int = 0) -> np.ndarray:
-        """Create a spatially varying surface variable using a function.
+    def create_spatially_varying_surface_var(problem: 'Problem', var_fn: Callable[[np.ndarray], float], 
+                                           surface_index: int = 0) -> np.ndarray:
+        """Create spatially varying surface variable using a function.
+        
+        This method evaluates a user-defined function at all surface quadrature points
+        to create spatially varying surface loads, tractions, or boundary conditions.
         
         Parameters
         ----------
         problem : Problem
-            The FE problem to get surface quadrature points from
-        var_fn : callable
-            Function that takes position (x, y, z) and returns variable value
-        surface_index : int
-            Which surface to use
+            The finite element problem to get surface quadrature points from
+        var_fn : Callable[[np.ndarray], float]
+            Function that takes position coordinates (x, y, z) and returns variable value.
+            Function signature: (coordinates: np.ndarray) -> float
+        surface_index : int, optional
+            Which surface to use. Default is 0 (first surface)
             
         Returns
         -------
         array : np.ndarray
             Array of shape (num_surface_faces, num_face_quads) with spatially varying values
+            
+        Examples
+        --------
+        Create spatially varying surface loads:
+        >>> def pressure_gradient(x): return 1000 * x[1]  # Hydrostatic pressure
+        >>> pressure = InternalVars.create_spatially_varying_surface_var(problem, pressure_gradient)
+        
+        >>> def traction_field(x): return 500 * np.sin(np.pi * x[0])  # Sinusoidal traction
+        >>> traction = InternalVars.create_spatially_varying_surface_var(problem, traction_field)
         """
         surface_quad_points = problem.physical_surface_quad_points[surface_index]
         return jax.vmap(jax.vmap(var_fn))(surface_quad_points)
@@ -163,8 +251,23 @@ class InternalVars:
 
 
 # Register as JAX PyTree for automatic differentiation and transformations
-def _internal_vars_flatten(iv):
-    """Flatten InternalVars into leaves and treedef."""
+def _internal_vars_flatten(iv: InternalVars) -> Tuple[List[np.ndarray], Tuple[int, List[int]]]:
+    """Flatten InternalVars into leaves and auxiliary data for JAX pytree.
+    
+    This function extracts all JAX arrays (leaves) and structural information
+    needed to reconstruct the InternalVars object.
+    
+    Parameters
+    ----------
+    iv : InternalVars
+        InternalVars object to flatten
+        
+    Returns
+    -------
+    Tuple[List[np.ndarray], Tuple[int, List[int]]]
+        (leaves, aux_data) where leaves contains all arrays and aux_data
+        contains structure information for reconstruction
+    """
     # Flatten all arrays into a single list
     leaves = list(iv.volume_vars)
     for surface_tuple in iv.surface_vars:
@@ -175,8 +278,24 @@ def _internal_vars_flatten(iv):
     return leaves, aux_data
 
 
-def _internal_vars_unflatten(aux_data, leaves):
-    """Reconstruct InternalVars from leaves and treedef."""
+def _internal_vars_unflatten(aux_data: Tuple[int, List[int]], leaves: List[np.ndarray]) -> InternalVars:
+    """Reconstruct InternalVars from flattened leaves and auxiliary data.
+    
+    This function rebuilds the InternalVars structure from the flat list of
+    arrays and structural information.
+    
+    Parameters
+    ----------
+    aux_data : Tuple[int, List[int]]
+        Structural information: (num_volume_vars, surface_var_counts)
+    leaves : List[np.ndarray]
+        Flat list of all arrays
+        
+    Returns
+    -------
+    InternalVars
+        Reconstructed InternalVars object
+    """
     num_volume_vars, surface_var_counts = aux_data
     
     # Extract volume vars

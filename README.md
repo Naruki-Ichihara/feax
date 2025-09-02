@@ -8,11 +8,14 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![JAX](https://img.shields.io/badge/JAX-0.7%2B-green.svg)](https://github.com/google/jax)
 
+[**Transformations**](#JAX Transformations in FEAX)
+| [**Reference docs**](https://naruki-ichihara.github.io/feax_docs/)
+
 **FEAX** (Finite Element Analysis with JAX) is a compact, high-performance finite element analysis engine built on JAX. It provides an API for solving partial differential equations with automatic differentiation, JIT compilation, and GPU acceleration.
 
 ## What is FEAX?
 
-FEAX combines the power of modern automatic differentiation with classical finite element methods. It's designed for:
+FEAX combines automatic differentiation with finite element methods. It's designed for:
 
 - **Differentiable Physics**: Compute gradients through entire FE simulations for optimization, inverse problems, and machine learning
 - **High Performance**: JIT compilation and vectorization through JAX for maximum computational efficiency
@@ -91,7 +94,7 @@ pip install -e .
 
 ## Quick Start
 
-Here's a simple linear elasticity example:
+Here's a linear elasticity example:
 
 ```python
 import jax
@@ -308,18 +311,19 @@ internal_vars = InternalVars(
 
 #### Boundary Conditions
 ```python
-# New boundary condition API using dataclasses
+# Boundary condition API using dataclasses
 bc_config = DirichletBCConfig([
     DirichletBCSpec(boundary_function, dof_index, value_function),
     # Multiple boundary conditions
 ])
 
-# Legacy API still available via DirichletBC.from_bc_info
-bc = DirichletBC.from_bc_info(problem, [
-    [boundary_function],  # Where to apply
-    [dof_index],         # Which DOF
-    [value_function]     # What value
+# Alternative: Create BC directly from specs  
+bc = DirichletBC.from_specs(problem, [
+    DirichletBCSpec(boundary_function, dof_index, value_function)
 ])
+
+# Or use the configuration approach
+bc = bc_config.create_bc(problem)
 ```
 
 #### Solvers
@@ -347,4 +351,4 @@ FEAX builds upon the excellent work of:
 
 ---
 
-*FEAX: Bringing modern automatic differentiation to finite element analysis.*
+*FEAX: Automatic differentiation for finite element analysis.*

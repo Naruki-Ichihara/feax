@@ -18,7 +18,7 @@ from feax.mesh import box_mesh
 from feax.utils import save_sol
 import os
 import matplotlib.pyplot as plt
-jax.config.update("jax_enable_x64", True)  # Use 64-bit precision for better accuracy
+jax.config.update("jax_enable_x64", True)  # Use 64-bit precision for higher accuracy
 
 # Problem setup
 E0 = 70e3
@@ -28,7 +28,7 @@ p = 3  # SIMP penalization parameter
 T = 1e2  # Traction magnitude (fixed)
 
 # Batch sizes for benchmarking
-batch_sizes = [1, 20, 40, 60]
+batch_sizes = [1, 10, 30]
 
 class DensityElasticityProblem(Problem):
     def get_tensor_map(self):

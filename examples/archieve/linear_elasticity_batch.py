@@ -49,7 +49,7 @@ def tension_disp(point):
 dirichlet_bc_info = [[left] * 3 + [right], [0, 1, 2, 0], 
                      [zero_disp, zero_disp, zero_disp, tension_disp]]
 
-# Create clean Problem (NO internal_vars!)
+# Create Problem (NO internal_vars!)
 problem = ElasticityProblem(
     mesh=mesh, vec=3, dim=3, ele_type='HEX8', gauss_order=2,
     dirichlet_bc_info=dirichlet_bc_info, location_fns=[right]
@@ -64,26 +64,20 @@ internal_vars = InternalVars(
 
 bc = DirichletBC.from_problem(problem)
 
-# Create 10 different boundary conditions with varying tension values using from_bc_info
+# Create 10 different boundary conditions with varying tension values using dataclass API
 tension_values = np.linspace(0.05, 0.15, batch_size)
 bc_list = []
 initial_sol_batch = []
 
 for tension in tension_values:
-    # Create tension function for this specific value
-    def make_tension_func(t):
-        def tension_func(point):
-            return t
-        return tension_func
+    # Create BC configuration using dataclass API
+    bc_config = DirichletBCConfig([
+        DirichletBCSpec(location=left, component='all', value=0.0),  # Fix left boundary completely
+        DirichletBCSpec(location=right, component='x', value=float(tension))  # Apply tension on right
+    ])
     
-    tension_func = make_tension_func(float(tension))
-    
-    # Create BC info for this tension value
-    bc_info = [[left] * 3 + [right], [0, 1, 2, 0], 
-               [zero_disp, zero_disp, zero_disp, tension_func]]
-    
-    # Use the new from_bc_info method
-    bc = DirichletBC.from_bc_info(problem, bc_info)
+    # Create DirichletBC from config
+    bc = bc_config.create_bc(problem)
     bc_list.append(bc)
     
     # Create initial solution with BC values set

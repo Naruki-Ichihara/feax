@@ -1,50 +1,104 @@
 """
 Problem class with modular design separating FE structure from material parameters.
+
+This module provides the core Problem class that defines finite element problem
+structure independent of material parameters, enabling efficient optimization
+and parameter studies through JAX transformations.
 """
 
 import jax
 import jax.numpy as np
 import jax.flatten_util
 from dataclasses import dataclass
+from typing import List, Tuple, Union, Optional, Callable, Any, TYPE_CHECKING
 
 from feax.mesh import Mesh
 from feax.fe import FiniteElement
 
+if TYPE_CHECKING:
+    from feax.types import TensorMap, MassMap, SurfaceMap
+
 
 @dataclass
 class Problem:
-    """Problem class that handles FE structure with separated material parameters.
+    """Finite element problem definition with separated structure and material parameters.
     
-    This design separates finite element structure from material properties,
-    making it suitable for optimization and parameter studies.
+    This class defines the finite element problem structure (mesh, elements, quadrature)
+    independently of material parameters, enabling efficient optimization and parameter
+    studies through JAX transformations.
     
+    The design separates:
+    - Structure: mesh, elements, boundary conditions (Problem class)
+    - Parameters: material properties, loads (InternalVars class)
+    
+    This separation allows the same Problem to be used with different material
+    parameters while maintaining efficiency through pre-computed geometric data.
+    
+    Parameters
+    ----------
+    mesh : Union[Mesh, List[Mesh]]
+        Finite element mesh(es). Single mesh for single-variable problems,
+        list of meshes for multi-variable problems
+    vec : Union[int, List[int]] 
+        Number of vector components per variable. Single int for single-variable,
+        list of ints for multi-variable problems
+    dim : int
+        Spatial dimension of the problem (2D or 3D)
+    ele_type : Union[str, List[str]], optional
+        Element type identifier(s). Default 'HEX8'
+    gauss_order : Union[int, List[int]], optional
+        Gaussian quadrature order(s). Default determined by element type
+    location_fns : Optional[List[Callable]], optional
+        Functions defining boundary locations for surface integrals
+    additional_info : Tuple[Any, ...], optional
+        Additional problem-specific information passed to custom_init()
+        
     Attributes
     ----------
-    mesh : Mesh
-        Finite element mesh
-    vec : int
-        Number of vector components in solution
-    dim : int
-        Spatial dimension of the problem
-    ele_type : str
-        Element type (HEX8, TET4, etc.)
-    gauss_order : int
-        Order of Gaussian quadrature
-    location_fns : list
-        Location functions for surface integrals
-    additional_info : tuple
-        Additional problem-specific information
+    num_vars : int
+        Number of variables in the problem
+    fes : List[FiniteElement] 
+        Finite element objects for each variable
+    num_cells : int
+        Total number of elements
+    num_total_dofs_all_vars : int
+        Total degrees of freedom across all variables
+    I, J : np.ndarray
+        Sparse matrix indices for assembly
+    unflatten_fn_sol_list : Callable
+        Function to unflatten solution vector to per-variable arrays
+        
+    Notes
+    -----
+    Subclasses should implement:
+    - get_tensor_map(): Returns function for gradient-based physics 
+    - get_mass_map(): Returns function for mass/reaction terms (optional)
+    - get_surface_maps(): Returns functions for surface loads (optional)
+    - custom_init(): Additional initialization if needed (optional)
     """
-    mesh: Mesh
-    vec: int
+    mesh: Union[Mesh, List[Mesh]]
+    vec: Union[int, List[int]]
     dim: int
-    ele_type: str = 'HEX8'
-    gauss_order: int = None
-    location_fns: list = None
-    additional_info: tuple = ()
+    ele_type: Union[str, List[str]] = 'HEX8'
+    gauss_order: Optional[Union[int, List[int]]] = None
+    location_fns: Optional[List[Callable]] = None
+    additional_info: Tuple[Any, ...] = ()
 
-    def __post_init__(self):
-        """Initialize all state data for the finite element problem."""
+    def __post_init__(self) -> None:
+        """Initialize all state data for the finite element problem.
+        
+        This method handles the conversion of single variables to lists for
+        uniform processing, creates finite element objects, computes assembly
+        indices, and pre-computes geometric data for efficient assembly.
+        
+        The initialization process:
+        1. Normalizes input parameters to list format
+        2. Creates FiniteElement objects for each variable  
+        3. Computes sparse matrix assembly indices (I, J)
+        4. Pre-computes shape functions and Jacobian data
+        5. Sets up boundary condition data structures
+        6. Calls custom_init() for problem-specific setup
+        """
         if type(self.mesh) != type([]):
             self.mesh = [self.mesh]
             self.vec = [self.vec]
@@ -148,53 +202,136 @@ class Problem:
         # Initialize without internal_vars - kernels will be created separately
         self.custom_init(*self.additional_info)
 
-    def custom_init(self, *args):
-        """Child class should override if additional initialization is required."""
+    def custom_init(self, *args: Any) -> None:
+        """Custom initialization for problem-specific setup.
+        
+        Subclasses should override this method to perform additional
+        initialization using the additional_info parameters.
+        
+        Parameters
+        ----------
+        *args : Any
+            Arguments passed from additional_info tuple
+        """
         pass
 
-    def get_tensor_map(self):
-        """Override in subclass to define volume physics."""
+    def get_tensor_map(self) -> 'TensorMap':
+        """Get tensor map function for gradient-based physics.
+        
+        This method must be implemented by subclasses to define the constitutive
+        relationship between gradients and stress/flux tensors.
+        
+        Returns
+        -------
+        TensorMap
+            Function that maps gradients to stress/flux tensors
+            Signature: (u_grad: Array, *internal_vars) -> stress_tensor: Array
+            
+        Raises
+        ------
+        NotImplementedError
+            If not implemented by subclass
+            
+        Examples
+        --------
+        For linear elasticity:
+        >>> def tensor_map(u_grad, E, nu):
+        ...     # Compute stress from displacement gradient
+        ...     return stress_tensor
+        """
         raise NotImplementedError("Subclass must implement get_tensor_map")
     
-    def get_surface_maps(self):
-        """Override in subclass to define surface physics."""
+    def get_surface_maps(self) -> List['SurfaceMap']:
+        """Get surface map functions for boundary loads.
+        
+        Override this method to define surface tractions, pressures, or fluxes
+        applied to boundaries identified by location_fns.
+        
+        Returns
+        -------
+        List[SurfaceMap]
+            List of functions for surface loads. Each function has signature:
+            (u: Array, x: Array, *internal_vars) -> traction: Array
+            
+        Notes
+        -----
+        The number of surface maps should match the number of location_fns
+        provided to the Problem constructor.
+        """
         return []
     
-    def get_mass_map(self):
-        """Override in subclass to define mass matrix physics."""
+    def get_mass_map(self) -> Optional['MassMap']:
+        """Get mass map function for inertia/reaction terms.
+        
+        Override this method to define mass matrix contributions or reaction terms
+        that don't involve gradients (e.g., inertia, damping, reactions).
+        
+        Returns
+        -------
+        Optional[MassMap]
+            Function for mass/reaction terms with signature:
+            (u: Array, x: Array, *internal_vars) -> mass_term: Array
+            Returns None if no mass terms are present
+        """
         return None
 
 
-# Register as JAX PyTree (straightforward without internal_vars)
-def _problem_tree_flatten(obj):
-    """Flatten the Problem - no dynamic parts since no internal_vars."""
-    # No dynamic parts - everything is static
+# Register as JAX PyTree for use with JAX transformations
+def _problem_tree_flatten(obj: Problem) -> Tuple[Tuple, dict]:
+    """Flatten Problem object for JAX pytree registration.
+    
+    Since Problem objects contain only static structure information
+    (no JAX arrays), all data goes into the static part.
+    
+    Parameters
+    ----------
+    obj : Problem
+        Problem object to flatten
+        
+    Returns
+    -------
+    Tuple[Tuple, dict]
+        (dynamic_data, static_data) where dynamic_data is empty
+        and static_data contains all Problem fields
+    """
+    # No dynamic parts - everything is static structure
     dynamic = ()
     
-    # All data is static
+    # All data is static geometric/structural information
     static = {
         'mesh': obj.mesh,
         'vec': obj.vec,
         'dim': obj.dim,
         'ele_type': obj.ele_type,
         'gauss_order': obj.gauss_order,
-        'dirichlet_bc_info': obj.dirichlet_bc_info,
         'location_fns': obj.location_fns,
         'additional_info': obj.additional_info,
     }
     return dynamic, static
 
 
-def _problem_tree_unflatten(static, dynamic):
-    """Reconstruct the Problem from flattened parts."""
-    # Create a new instance with the original constructor parameters
+def _problem_tree_unflatten(static: dict, dynamic: Tuple) -> Problem:
+    """Reconstruct Problem object from flattened parts.
+    
+    Parameters
+    ----------
+    static : dict
+        Static data containing Problem constructor arguments
+    dynamic : Tuple
+        Dynamic data (empty for Problem objects)
+        
+    Returns
+    -------
+    Problem
+        Reconstructed Problem instance
+    """
+    # Create instance with original constructor parameters
     instance = Problem(
         mesh=static['mesh'],
         vec=static['vec'],
         dim=static['dim'],
         ele_type=static['ele_type'],
         gauss_order=static['gauss_order'],
-        dirichlet_bc_info=static['dirichlet_bc_info'],
         location_fns=static['location_fns'],
         additional_info=static['additional_info'],
     )

@@ -1,5 +1,5 @@
 """
-Performance benchmark for linear elasticity solver using clean FEAX API.
+Performance benchmark for linear elasticity solver using FEAX API.
 Compares different implementation approaches: for loop (no jit), for loop (jit), and vmap implementations.
 """
 
@@ -45,7 +45,7 @@ def tension_disp(point):
 dirichlet_bc_info = [[left] * 3 + [right], [0, 1, 2, 0], 
                      [zero_disp, zero_disp, zero_disp, tension_disp]]
 
-# Create clean Problem (NO internal_vars!)
+# Create Problem (NO internal_vars!)
 problem = ElasticityProblem(
     mesh=mesh, vec=3, dim=3, ele_type='HEX8', gauss_order=2,
     dirichlet_bc_info=dirichlet_bc_info

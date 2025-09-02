@@ -1,3 +1,10 @@
+"""
+Utility functions for FEAX finite element analysis framework.
+
+This module provides utility functions for file I/O, solution initialization,
+and data processing operations commonly needed in finite element analysis.
+"""
+
 import jax
 import jax.numpy as np
 import numpy as onp
@@ -6,7 +13,10 @@ import os
 
 from feax.mesh import get_meshio_cell_type, Mesh
 from feax.DCboundary import DirichletBC
-from typing import Optional, List, Tuple, Union
+from typing import Optional, List, Tuple, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from feax.problem import Problem
 
 
 def save_sol(
@@ -112,7 +122,7 @@ def save_sol(
     out_mesh.write(sol_file)
 
 
-def zero_like_initial_guess(problem, bc: DirichletBC) -> np.ndarray:
+def zero_like_initial_guess(problem: 'Problem', bc: DirichletBC) -> np.ndarray:
     """Create a zero initial guess with boundary condition values set.
     
     This is the standard initial guess for FE problems: zeros everywhere

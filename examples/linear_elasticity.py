@@ -11,7 +11,7 @@ from feax import DirichletBCSpec, DirichletBCConfig
 from feax.mesh import box_mesh
 from feax.utils import save_sol
 import os
-jax.config.update("jax_enable_x64", True)  # Use 64-bit precision for better accuracy
+jax.config.update("jax_enable_x64", True)  # Use 64-bit precision for higher accuracy
 
 # Problem setup
 E0 = 70e3

@@ -20,7 +20,7 @@ from feax import DirichletBCSpec, DirichletBCConfig
 from feax.mesh import rectangle_mesh
 from feax.utils import save_sol
 import os
-jax.config.update("jax_enable_x64", True)  # Use 64-bit precision for better accuracy
+jax.config.update("jax_enable_x64", True)  # Use 64-bit precision for higher accuracy
 
 class Poisson(Problem):
     """2D Poisson problem implementation matching JAX-FEM example."""

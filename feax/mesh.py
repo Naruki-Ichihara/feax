@@ -1,4 +1,12 @@
+"""
+Mesh management and generation utilities for FEAX finite element framework.
+
+This module provides the Mesh class for managing finite element meshes and utility
+functions for mesh generation, validation, and format conversion.
+"""
+
 import os
+from typing import Tuple, Callable, Optional, TYPE_CHECKING
 import numpy as onp
 import meshio
 
@@ -7,35 +15,67 @@ from feax.basis import get_face_shape_vals_and_grads
 import jax
 import jax.numpy as np
 
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+
 
 class Mesh():
-    """Mesh manager.
+    """Finite element mesh manager.
+    
+    This class manages mesh data including node coordinates, element connectivity,
+    and element type information. It provides methods for querying mesh properties
+    and analyzing boundary conditions.
 
+    Parameters
+    ----------
+    points : NDArray
+        Node coordinates with shape (num_total_nodes, dim)
+    cells : NDArray
+        Element connectivity with shape (num_cells, num_nodes_per_element)
+    ele_type : str, optional
+        Element type identifier (default: 'TET4')
+        
     Attributes
     ----------
-    points : NumpyArray
-        Shape is (num_total_nodes, dim).
-    cells: NumpyArray
-        Shape is (num_cells, num_nodes).
+    points : NDArray
+        Node coordinates with shape (num_total_nodes, dim)
+    cells : NDArray
+        Element connectivity with shape (num_cells, num_nodes_per_element)  
+    ele_type : str
+        Element type identifier
+        
+    Notes
+    -----
+    The element connectivity array should follow the standard node ordering
+    conventions for each element type.
     """
-    def __init__(self, points, cells, ele_type='TET4'):
+    def __init__(self, points: 'NDArray', cells: 'NDArray', ele_type: str = 'TET4') -> None:
         # TODO (Very important for debugging purpose!): Assert that cells must have correct orders
         self.points = points
         self.cells = cells
         self.ele_type = ele_type
 
-    def count_selected_faces(self, location_fn):
-        """Given location functions, compute the number of faces that satisfy the location function. 
-        Useful for setting up distributed load conditions.
+    def count_selected_faces(self, location_fn: Callable[[np.ndarray], bool]) -> int:
+        """Count faces that satisfy a location function.
+        
+        This method is useful for setting up distributed load conditions by
+        identifying boundary faces that meet specified geometric criteria.
 
         Parameters
         ----------
-        location_fns : list
-            :attr:`~jax_fem.problem.Problem.location_fns`
+        location_fn : Callable[[np.ndarray], bool]
+            Function that takes face centroid coordinates and returns True
+            if the face is on the desired boundary
 
         Returns
         -------
         face_count : int
+            Number of faces satisfying the location function
+            
+        Notes
+        -----
+        This method uses vectorized operations for efficient face selection
+        and works with all supported element types.
         """
         _, _, _, _, face_inds = get_face_shape_vals_and_grads(self.ele_type)
         cell_points = onp.take(self.points, self.cells, axis=0)
@@ -53,19 +93,29 @@ class Mesh():
         return boundary_inds.shape[0]
 
 
-def check_mesh_TET4(points, cells):
-    """Check the order of TET4 element.
+def check_mesh_TET4(points: 'NDArray', cells: 'NDArray') -> np.ndarray:
+    """Check the node ordering of TET4 elements by computing signed volumes.
+    
+    This function computes the signed volume of each tetrahedral element to verify
+    proper node ordering. Negative volumes indicate inverted elements.
 
     Parameters
     ----------
-    points : list
-        :attr:`~.Mesh.points`
-    cells : list
-        :attr:`~.Mesh.cells`
+    points : NDArray
+        Node coordinates with shape (num_nodes, 3)
+    cells : NDArray  
+        Element connectivity with shape (num_elements, 4)
 
     Returns
     -------
-    qlts : JaxArray
+    qualities : np.ndarray
+        Signed volumes for each element. Positive values indicate proper ordering,
+        negative values indicate inverted elements
+        
+    Notes
+    -----
+    The quality metric is computed as the scalar triple product of edge vectors
+    from the first node to the other three nodes.
     """
     def quality(pts):
         p1, p2, p3, p4 = pts
@@ -77,19 +127,34 @@ def check_mesh_TET4(points, cells):
     qlts = jax.vmap(quality)(points[cells])
     return qlts
 
-def get_meshio_cell_type(ele_type):
-    """Convert element type into a compatible string with 
-    `meshio <https://github.com/nschloe/meshio/blob/9dc6b0b05c9606cad73ef11b8b7785dd9b9ea325/src/meshio/xdmf/common.py#L36>`_.
+def get_meshio_cell_type(ele_type: str) -> str:
+    """Convert FEAX element type to meshio-compatible cell type string.
+    
+    This function maps FEAX element type identifiers to the corresponding
+    cell type names used by the meshio library for file I/O operations.
 
     Parameters
     ----------
     ele_type : str
-        :attr:`~jax_fem.fe.FiniteElement.ele_type`
+        FEAX element type identifier (e.g., 'TET4', 'HEX8', 'TRI3', 'QUAD4')
 
     Returns
     -------
     cell_type : str
-        Compatible with meshio.
+        Meshio-compatible cell type name
+        
+    Raises
+    ------
+    NotImplementedError
+        If the element type is not supported
+        
+    Notes
+    -----
+    Supported element types include:
+    - TET4, TET10: Tetrahedral elements
+    - HEX8, HEX20, HEX27: Hexahedral elements  
+    - TRI3, TRI6: Triangular elements
+    - QUAD4, QUAD8: Quadrilateral elements
     """
     if ele_type == 'TET4':
         cell_type = 'tetra'
@@ -114,19 +179,32 @@ def get_meshio_cell_type(ele_type):
     return cell_type
 
 
-def rectangle_mesh(Nx, Ny, domain_x, domain_y):
-    """Generate QUAD4 mesh.
+def rectangle_mesh(Nx: int, Ny: int, domain_x: float, domain_y: float) -> Mesh:
+    """Generate structured QUAD4 mesh for rectangular domain.
+    
+    Creates a structured quadrilateral mesh over a rectangular domain with
+    uniform spacing in both directions.
 
     Parameters
     ----------
     Nx : int
-        Number of nodes along x-axis.
+        Number of elements along x-axis
     Ny : int
-        Number of nodes along y-axis.
+        Number of elements along y-axis
     domain_x : float
-        Length of side along x-axis.
+        Length of domain along x-axis
     domain_y : float
-        Length of side along y-axis.
+        Length of domain along y-axis
+        
+    Returns
+    -------
+    mesh : Mesh
+        Structured rectangular mesh with QUAD4 elements
+        
+    Notes
+    -----
+    The mesh spans from (0, 0) to (domain_x, domain_y) with uniform element spacing.
+    Node numbering follows standard conventions with elements oriented counter-clockwise.
     """
     dim = 2
     x = onp.linspace(0, domain_x, Nx + 1)
@@ -145,23 +223,36 @@ def rectangle_mesh(Nx, Ny, domain_x, domain_y):
     return Mesh(mesh.points, mesh.cells_dict['quad'], ele_type="QUAD4")
 
 
-def box_mesh(Nx, Ny, Nz, domain_x, domain_y, domain_z):
-    """Generate HEX8 mesh.
+def box_mesh(Nx: int, Ny: int, Nz: int, domain_x: float, domain_y: float, domain_z: float) -> Mesh:
+    """Generate structured HEX8 mesh for box domain.
+    
+    Creates a structured hexahedral mesh over a box domain with uniform
+    spacing in all three directions.
 
     Parameters
     ----------
     Nx : int
-        Number of nodes along x-axis.
+        Number of elements along x-axis
     Ny : int
-        Number of nodes along y-axis.
+        Number of elements along y-axis
     Nz : int
-        Number of nodes along z-axis.
+        Number of elements along z-axis
     domain_x : float
-        Length of side along x-axis.
+        Length of domain along x-axis
     domain_y : float
-        Length of side along y-axis.
+        Length of domain along y-axis
     domain_z : float
-        Length of side along z-axis.
+        Length of domain along z-axis
+        
+    Returns
+    -------
+    mesh : Mesh
+        Structured box mesh with HEX8 elements
+        
+    Notes
+    -----
+    The mesh spans from (0, 0, 0) to (domain_x, domain_y, domain_z) with uniform 
+    element spacing. Node numbering follows standard hexahedral conventions.
     """
     dim = 3
     x = onp.linspace(0, domain_x, Nx + 1)

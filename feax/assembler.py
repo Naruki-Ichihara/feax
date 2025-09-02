@@ -1,6 +1,14 @@
 """
 Assembler functions that work with Problem and InternalVars.
-This is the main assembler API with separated internal variables.
+
+This module provides the main assembler API for finite element analysis with
+separated internal variables. It handles the assembly of residual vectors and
+Jacobian matrices for both volume and surface integrals, supporting various
+physics kernels (Laplace, mass, surface, and universal).
+
+The assembler separates the finite element structure (Problem) from material
+properties and loading parameters (InternalVars), enabling efficient
+optimization and sensitivity analysis.
 """
 
 import jax
@@ -8,13 +16,52 @@ import jax.numpy as np
 from jax.experimental import sparse
 import jax.flatten_util
 import functools
+from typing import List, Tuple, Any, TYPE_CHECKING
 from feax.internal_vars import InternalVars
+from feax.types import (
+    TensorMap, MassMap, SurfaceMap, LaplaceKernel, MassKernel, SurfaceKernel,
+    VolumeKernel, JacobianFunction, ResidualFunction
+)
+
+if TYPE_CHECKING:
+    from feax.problem import Problem
+    from feax.DCboundary import DirichletBC
 
 
-def get_laplace_kernel(problem, tensor_map):
-    """Create laplace kernel function for problem (without internal_vars in problem)."""
+def get_laplace_kernel(problem: 'Problem', tensor_map: TensorMap) -> LaplaceKernel:
+    """Create Laplace kernel function for gradient-based physics.
     
-    def laplace_kernel(cell_sol_flat, cell_shape_grads, cell_v_grads_JxW, *cell_internal_vars):
+    The Laplace kernel handles gradient-based terms in the weak form, such as
+    those arising in elasticity, heat conduction, and diffusion problems. It
+    implements the integral term: ∫ σ(∇u) : ∇v dΩ where σ is the stress/flux
+    tensor computed from the gradient.
+    
+    Parameters
+    ----------
+    problem : Problem
+        The finite element problem containing mesh and element information.
+    tensor_map : Callable
+        Function that maps gradient tensor to stress/flux tensor.
+        Signature: (u_grad: ndarray, *internal_vars) -> ndarray
+        where u_grad has shape (vec, dim) and returns (vec, dim).
+    
+    Returns
+    -------
+    Callable
+        Laplace kernel function that computes the contribution to the weak form
+        from gradient-based physics.
+    
+    Notes
+    -----
+    The kernel operates on a single element and is vectorized over quadrature
+    points for efficiency. The tensor_map function is applied via vmap to all
+    quadrature points simultaneously.
+    """
+    
+    def laplace_kernel(cell_sol_flat: np.ndarray, 
+                      cell_shape_grads: np.ndarray, 
+                      cell_v_grads_JxW: np.ndarray, 
+                      *cell_internal_vars: np.ndarray) -> np.ndarray:
         cell_sol_list = problem.unflatten_fn_dof(cell_sol_flat)
         cell_shape_grads = cell_shape_grads[:, :problem.fes[0].num_nodes, :]
         cell_sol = cell_sol_list[0]
@@ -37,10 +84,38 @@ def get_laplace_kernel(problem, tensor_map):
     return laplace_kernel
 
 
-def get_mass_kernel(problem, mass_map):
-    """Create mass kernel function for problem."""
+def get_mass_kernel(problem: 'Problem', mass_map: MassMap) -> MassKernel:
+    """Create mass kernel function for non-gradient terms.
     
-    def mass_kernel(cell_sol_flat, x, cell_JxW, *cell_internal_vars):
+    The mass kernel handles terms without derivatives in the weak form, such as
+    mass matrices, reaction terms, or body forces. It implements the integral
+    term: ∫ m(u, x) · v dΩ where m is a mass-like term.
+    
+    Parameters
+    ----------
+    problem : Problem
+        The finite element problem containing mesh and element information.
+    mass_map : Callable
+        Function that computes the mass term.
+        Signature: (u: ndarray, x: ndarray, *internal_vars) -> ndarray
+        where u has shape (vec,), x has shape (dim,), and returns (vec,).
+    
+    Returns
+    -------
+    Callable
+        Mass kernel function that computes the contribution to the weak form
+        from non-gradient physics.
+    
+    Notes
+    -----
+    This kernel is useful for time-dependent problems (inertia terms),
+    reaction-diffusion equations, or adding body forces/sources.
+    """
+    
+    def mass_kernel(cell_sol_flat: np.ndarray, 
+                   x: np.ndarray, 
+                   cell_JxW: np.ndarray, 
+                   *cell_internal_vars: np.ndarray) -> np.ndarray:
         cell_sol_list = problem.unflatten_fn_dof(cell_sol_flat)
         cell_sol = cell_sol_list[0]
         cell_JxW = cell_JxW[0]
@@ -58,10 +133,40 @@ def get_mass_kernel(problem, mass_map):
     return mass_kernel
 
 
-def get_surface_kernel(problem, surface_map):
-    """Create surface kernel function for problem."""
+def get_surface_kernel(problem: 'Problem', surface_map: SurfaceMap) -> SurfaceKernel:
+    """Create surface kernel function for boundary integrals.
     
-    def surface_kernel(cell_sol_flat, x, face_shape_vals, face_shape_grads, face_nanson_scale, *cell_internal_vars_surface):
+    The surface kernel handles boundary integrals in the weak form, such as
+    surface tractions, pressures, or fluxes. It implements the integral term:
+    ∫ t(u, x) · v dΓ where t is the surface load/flux.
+    
+    Parameters
+    ----------
+    problem : Problem
+        The finite element problem containing mesh and element information.
+    surface_map : Callable
+        Function that computes the surface traction/flux.
+        Signature: (u: ndarray, x: ndarray, *internal_vars) -> ndarray
+        where u has shape (vec,), x has shape (dim,), and returns (vec,).
+    
+    Returns
+    -------
+    Callable
+        Surface kernel function that computes the contribution to the weak form
+        from boundary loads/fluxes.
+    
+    Notes
+    -----
+    The Nanson scale factor accounts for the transformation from reference to
+    physical surface elements, including the Jacobian and surface normal.
+    """
+    
+    def surface_kernel(cell_sol_flat: np.ndarray, 
+                      x: np.ndarray, 
+                      face_shape_vals: np.ndarray, 
+                      face_shape_grads: np.ndarray, 
+                      face_nanson_scale: np.ndarray, 
+                      *cell_internal_vars_surface: np.ndarray) -> np.ndarray:
         cell_sol_list = problem.unflatten_fn_dof(cell_sol_flat)
         cell_sol = cell_sol_list[0]
         face_shape_vals = face_shape_vals[:, :problem.fes[0].num_nodes]
@@ -79,8 +184,32 @@ def get_surface_kernel(problem, surface_map):
     return surface_kernel
 
 
-def create_volume_kernel(problem):
-    """Create volume kernel function that accepts internal_vars."""
+def create_volume_kernel(problem: 'Problem') -> VolumeKernel:
+    """Create unified volume kernel combining all volume physics.
+    
+    This function creates a kernel that combines contributions from all volume
+    integral terms: Laplace (gradient-based), mass (non-gradient), and universal
+    (custom) kernels. The resulting kernel is used for both residual and
+    Jacobian assembly.
+    
+    Parameters
+    ----------
+    problem : Problem
+        The finite element problem that may define get_tensor_map(),
+        get_mass_map(), and/or get_universal_kernel() methods.
+    
+    Returns
+    -------
+    Callable
+        Combined volume kernel function that sums contributions from all
+        applicable physics kernels.
+    
+    Notes
+    -----
+    The kernel checks for the existence of each physics method in the problem
+    and only includes contributions from those that are defined. This allows
+    for flexible problem definitions with any combination of physics terms.
+    """
     
     def kernel(cell_sol_flat, physical_quad_points, cell_shape_grads, cell_JxW, cell_v_grads_JxW, *cell_internal_vars):
         mass_val = 0.
@@ -104,8 +233,32 @@ def create_volume_kernel(problem):
     return kernel
 
 
-def create_surface_kernel(problem, surface_index):
-    """Create surface kernel function that accepts internal_vars."""
+def create_surface_kernel(problem: 'Problem', surface_index: int) -> VolumeKernel:
+    """Create unified surface kernel for a specific boundary.
+    
+    This function creates a kernel that combines contributions from standard
+    surface maps and universal surface kernels for a specific boundary surface
+    identified by surface_index.
+    
+    Parameters
+    ----------
+    problem : Problem
+        The finite element problem that may define get_surface_maps() and/or
+        get_universal_kernels_surface() methods.
+    surface_index : int
+        Index identifying which boundary surface this kernel is for.
+        Corresponds to the index in problem.location_fns.
+    
+    Returns
+    -------
+    Callable
+        Combined surface kernel function for the specified boundary.
+    
+    Notes
+    -----
+    Multiple boundaries can have different physics. The surface_index
+    parameter selects which surface map and universal kernel to use.
+    """
     
     def kernel(cell_sol_flat, physical_surface_quad_points, face_shape_vals, face_shape_grads, face_nanson_scale, *cell_internal_vars_surface):
         surface_val = 0.
@@ -125,10 +278,43 @@ def create_surface_kernel(problem, surface_index):
     return kernel
 
 
-def split_and_compute_cell(problem, cells_sol_flat, jac_flag, internal_vars_volume):
-    """Volume integral computation with problem and internal_vars."""
+def split_and_compute_cell(problem: 'Problem', 
+                           cells_sol_flat: np.ndarray, 
+                           jac_flag: bool, 
+                           internal_vars_volume: Tuple[np.ndarray, ...]) -> Any:
+    """Compute volume integrals for residual or Jacobian assembly.
     
-    def value_and_jacfwd(f, x):
+    This function evaluates volume integrals over all elements, optionally
+    computing the Jacobian via forward-mode automatic differentiation. It
+    uses batching to manage memory for large meshes.
+    
+    Parameters
+    ----------
+    problem : Problem
+        The finite element problem containing mesh and quadrature data.
+    cells_sol_flat : np.ndarray
+        Flattened solution values at element nodes.
+        Shape: (num_cells, num_nodes * vec).
+    jac_flag : bool
+        If True, compute both values and Jacobian. If False, compute only values.
+    internal_vars_volume : tuple of np.ndarray
+        Material properties at quadrature points for each variable.
+        Each array has shape (num_cells, num_quads).
+    
+    Returns
+    -------
+    np.ndarray or tuple of np.ndarray
+        If jac_flag is False: weak form values with shape (num_cells, num_dofs).
+        If jac_flag is True: tuple of (values, jacobian) where jacobian has
+        shape (num_cells, num_dofs, num_dofs).
+    
+    Notes
+    -----
+    The function splits computation into batches (default 20) to avoid memory
+    issues with large meshes. This is particularly important for 3D problems.
+    """
+    
+    def value_and_jacfwd(f: VolumeKernel, x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         pushfwd = functools.partial(jax.jvp, f, (x, ))
         basis = np.eye(len(x.reshape(-1)), dtype=x.dtype).reshape(-1, *x.shape)
         y, jac = jax.vmap(pushfwd, out_axes=(None, -1))((basis, ))
@@ -145,9 +331,15 @@ def split_and_compute_cell(problem, cells_sol_flat, jac_flag, internal_vars_volu
         vmap_fn = jax.vmap(kernel)
     
     # Prepare input collection
-    num_cuts = 20
-    if num_cuts > problem.num_cells:
-        num_cuts = problem.num_cells
+    # Adaptive batch size based on problem size to manage memory
+    # Smaller batches for larger problems to avoid OOM
+    if problem.num_cells > 5000:
+        num_cuts = min(100, problem.num_cells)  # More cuts for very large problems
+    elif problem.num_cells > 1000:
+        num_cuts = min(50, problem.num_cells)   # Medium number of cuts
+    else:
+        num_cuts = min(20, problem.num_cells)   # Original behavior for small problems
+    
     batch_size = problem.num_cells // num_cuts
     input_collection = [cells_sol_flat, problem.physical_quad_points, problem.shape_grads, 
                        problem.JxW, problem.v_grads_JxW, *internal_vars_volume]
@@ -164,8 +356,9 @@ def split_and_compute_cell(problem, cells_sol_flat, jac_flag, internal_vars_volu
             val, jac = vmap_fn(*input_col)
             values.append(val)
             jacs.append(jac)
-        values = np.vstack(values)
-        jacs = np.vstack(jacs)
+        # Use concatenate instead of vstack to avoid memory overhead
+        values = np.concatenate(values, axis=0) if len(values) > 1 else values[0]
+        jacs = np.concatenate(jacs, axis=0) if len(jacs) > 1 else jacs[0]
         return values, jacs
     else:
         values = []
@@ -177,14 +370,47 @@ def split_and_compute_cell(problem, cells_sol_flat, jac_flag, internal_vars_volu
 
             val = vmap_fn(*input_col)
             values.append(val)
-        values = np.vstack(values)
+        # Use concatenate instead of vstack to avoid memory overhead
+        values = np.concatenate(values, axis=0) if len(values) > 1 else values[0]
         return values
 
 
-def compute_face(problem, cells_sol_flat, jac_flag, internal_vars_surfaces):
-    """Surface integral computation with problem and internal_vars."""
+def compute_face(problem: 'Problem', 
+                cells_sol_flat: np.ndarray, 
+                jac_flag: bool, 
+                internal_vars_surfaces: List[Tuple[np.ndarray, ...]]) -> Any:
+    """Compute surface integrals for residual or Jacobian assembly.
     
-    def value_and_jacfwd(f, x):
+    This function evaluates surface integrals over all boundary faces,
+    optionally computing the Jacobian via forward-mode automatic differentiation.
+    
+    Parameters
+    ----------
+    problem : Problem
+        The finite element problem containing boundary information.
+    cells_sol_flat : np.ndarray
+        Flattened solution values at element nodes.
+        Shape: (num_cells, num_nodes * vec).
+    jac_flag : bool
+        If True, compute both values and Jacobian. If False, compute only values.
+    internal_vars_surfaces : list of tuple of np.ndarray
+        Surface variables for each boundary. Each entry corresponds to one
+        boundary surface and contains arrays with shape
+        (num_surface_faces, num_face_quads).
+    
+    Returns
+    -------
+    list of np.ndarray or list of tuple
+        If jac_flag is False: list of weak form values for each boundary.
+        If jac_flag is True: list of (values, jacobian) tuples for each boundary.
+    
+    Notes
+    -----
+    Each boundary surface can have different loading conditions or physics,
+    handled through separate surface kernels and internal variables.
+    """
+    
+    def value_and_jacfwd(f: VolumeKernel, x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         pushfwd = functools.partial(jax.jvp, f, (x, ))
         basis = np.eye(len(x.reshape(-1)), dtype=x.dtype).reshape(-1, *x.shape)
         y, jac = jax.vmap(pushfwd, out_axes=(None, -1))((basis, ))
@@ -232,8 +458,36 @@ def compute_face(problem, cells_sol_flat, jac_flag, internal_vars_surfaces):
         return values
 
 
-def compute_residual_vars_helper(problem, weak_form_flat, weak_form_face_flat):
-    """Compute residual variables helper function."""
+def compute_residual_vars_helper(problem: 'Problem', 
+                                 weak_form_flat: np.ndarray, 
+                                 weak_form_face_flat: List[np.ndarray]) -> List[np.ndarray]:
+    """Assemble residual from element and face contributions.
+    
+    This helper function assembles the global residual vector by accumulating
+    contributions from volume and surface integrals at the appropriate nodes.
+    
+    Parameters
+    ----------
+    problem : Problem
+        The finite element problem containing connectivity information.
+    weak_form_flat : np.ndarray
+        Flattened weak form values from volume integrals.
+        Shape: (num_cells, num_dofs_per_cell).
+    weak_form_face_flat : list of np.ndarray
+        Weak form values from surface integrals for each boundary.
+        Each array has shape (num_boundary_faces, num_dofs_per_face).
+    
+    Returns
+    -------
+    list of np.ndarray
+        Global residual for each solution variable.
+        Each array has shape (num_total_nodes, vec).
+    
+    Notes
+    -----
+    Uses JAX's at[].add() for scatter-add operations to accumulate
+    contributions from multiple elements sharing the same nodes.
+    """
     res_list = [np.zeros((fe.num_total_nodes, fe.vec)) for fe in problem.fes]
     weak_form_list = jax.vmap(lambda x: problem.unflatten_fn_dof(x))(weak_form_flat) # [(num_cells, num_nodes, vec), ...]
     res_list = [res_list[i].at[problem.cells_list[i].reshape(-1)].add(weak_form_list[i].reshape(-1, problem.fes[i].vec)) for i in range(len(res_list))]
@@ -245,19 +499,57 @@ def compute_residual_vars_helper(problem, weak_form_flat, weak_form_face_flat):
     return res_list
 
 
-def get_J(problem, sol_list, internal_vars: InternalVars):
-    """Compute Jacobian matrix with separated internal variables."""
+def get_J(problem: 'Problem', 
+          sol_list: List[np.ndarray], 
+          internal_vars: InternalVars) -> sparse.BCOO:
+    """Compute Jacobian matrix with separated internal variables.
+    
+    Assembles the global Jacobian matrix by computing derivatives of the weak
+    form with respect to the solution variables. Uses forward-mode automatic
+    differentiation for element-level Jacobians.
+    
+    Parameters
+    ----------
+    problem : Problem
+        The finite element problem containing mesh and physics definitions.
+    sol_list : list of np.ndarray
+        Solution arrays for each variable.
+        Each array has shape (num_total_nodes, vec).
+    internal_vars : InternalVars
+        Container with material properties and loading parameters.
+    
+    Returns
+    -------
+    sparse.BCOO
+        Sparse Jacobian matrix in JAX BCOO format.
+        Shape: (num_total_dofs, num_total_dofs).
+    
+    Examples
+    --------
+    >>> J = get_J(problem, [solution], internal_vars)
+    >>> print(f"Jacobian shape: {J.shape}, nnz: {J.nnz}")
+    
+    Notes
+    -----
+    The Jacobian is assembled in sparse format for memory efficiency,
+    particularly important for large 3D problems.
+    """
     cells_sol_list = [sol[cells] for cells, sol in zip(problem.cells_list, sol_list)]
     cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
     
     # Compute Jacobian values from volume integrals
     _, cells_jac_flat = split_and_compute_cell(problem, cells_sol_flat, True, internal_vars.volume_vars)
-    V = np.array(cells_jac_flat.reshape(-1))
-
+    
+    # Collect all Jacobian arrays to avoid repeated concatenation
+    V_arrays = [cells_jac_flat.reshape(-1)]
+    
     # Add Jacobian values from surface integrals
     _, cells_jac_face_flat = compute_face(problem, cells_sol_flat, True, internal_vars.surface_vars)
     for cells_jac_f_flat in cells_jac_face_flat:
-        V = np.hstack((V, np.array(cells_jac_f_flat.reshape(-1))))
+        V_arrays.append(cells_jac_f_flat.reshape(-1))
+    
+    # Single concatenation to avoid memory overhead
+    V = np.concatenate(V_arrays) if len(V_arrays) > 1 else np.array(V_arrays[0])
 
     # Build BCOO sparse matrix
     indices = np.stack([problem.I, problem.J], axis=1)
@@ -267,8 +559,42 @@ def get_J(problem, sol_list, internal_vars: InternalVars):
     return J
 
 
-def get_res(problem, sol_list, internal_vars: InternalVars):
-    """Compute residual with separated internal variables."""
+def get_res(problem: 'Problem', 
+            sol_list: List[np.ndarray], 
+            internal_vars: InternalVars) -> List[np.ndarray]:
+    """Compute residual vector with separated internal variables.
+    
+    Assembles the global residual vector by evaluating the weak form at the
+    current solution state. Includes contributions from both volume and
+    surface integrals.
+    
+    Parameters
+    ----------
+    problem : Problem
+        The finite element problem containing mesh and physics definitions.
+    sol_list : list of np.ndarray
+        Solution arrays for each variable.
+        Each array has shape (num_total_nodes, vec).
+    internal_vars : InternalVars
+        Container with material properties and loading parameters.
+    
+    Returns
+    -------
+    list of np.ndarray
+        Residual arrays for each solution variable.
+        Each array has shape (num_total_nodes, vec).
+    
+    Examples
+    --------
+    >>> residual = get_res(problem, [solution], internal_vars)
+    >>> res_norm = np.linalg.norm(jax.flatten_util.ravel_pytree(residual)[0])
+    >>> print(f"Residual norm: {res_norm}")
+    
+    Notes
+    -----
+    The residual represents the imbalance in the weak form equations.
+    For converged solutions, the residual should be near zero.
+    """
     cells_sol_list = [sol[cells] for cells, sol in zip(problem.cells_list, sol_list)]
     cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
     
@@ -281,8 +607,31 @@ def get_res(problem, sol_list, internal_vars: InternalVars):
     return compute_residual_vars_helper(problem, weak_form_flat, weak_form_face_flat)
 
 
-def create_J_bc_function(problem, bc):
-    """Create Jacobian function with BC applied."""
+def create_J_bc_function(problem: 'Problem', bc: 'DirichletBC') -> JacobianFunction:
+    """Create Jacobian function with Dirichlet BC applied.
+    
+    Returns a function that computes the Jacobian matrix with Dirichlet
+    boundary conditions enforced. The BC application modifies the matrix
+    to enforce constraints.
+    
+    Parameters
+    ----------
+    problem : Problem
+        The finite element problem definition.
+    bc : DirichletBC
+        Dirichlet boundary condition specifications.
+    
+    Returns
+    -------
+    Callable
+        Function with signature (sol_flat, internal_vars) -> sparse.BCOO
+        that returns the BC-modified Jacobian matrix.
+    
+    Notes
+    -----
+    The returned function is suitable for use in Newton solvers and
+    can be differentiated for sensitivity analysis.
+    """
     from feax.DCboundary import apply_boundary_to_J
     
     def J_bc_func(sol_flat, internal_vars: InternalVars):
@@ -293,8 +642,31 @@ def create_J_bc_function(problem, bc):
     return J_bc_func
 
 
-def create_res_bc_function(problem, bc):
-    """Create residual function with BC applied."""
+def create_res_bc_function(problem: 'Problem', bc: 'DirichletBC') -> ResidualFunction:
+    """Create residual function with Dirichlet BC applied.
+    
+    Returns a function that computes the residual vector with Dirichlet
+    boundary conditions enforced. The BC application zeros out residuals
+    at constrained DOFs.
+    
+    Parameters
+    ----------
+    problem : Problem
+        The finite element problem definition.
+    bc : DirichletBC
+        Dirichlet boundary condition specifications.
+    
+    Returns
+    -------
+    Callable
+        Function with signature (sol_flat, internal_vars) -> np.ndarray
+        that returns the BC-modified residual vector.
+    
+    Notes
+    -----
+    The returned function is used in Newton solvers to find solutions
+    that satisfy both the weak form equations and boundary conditions.
+    """
     from feax.DCboundary import apply_boundary_to_res
     
     def res_bc_func(sol_flat, internal_vars: InternalVars):
@@ -303,32 +675,4 @@ def create_res_bc_function(problem, bc):
         res_flat = jax.flatten_util.ravel_pytree(res)[0]
         return apply_boundary_to_res(bc, res_flat, sol_flat)
     
-    return res_bc_func
-
-def create_J_bc_function_reduced(problem, bc, P):
-    """Create Jacobian function with BC applied."""
-    from feax.DCboundary import apply_boundary_to_J
-    
-    def J_bc_func(sol_flat, internal_vars: InternalVars):
-        sol_list = problem.unflatten_fn_sol_list(sol_flat)
-        J = get_J(problem, sol_list, internal_vars)
-        J_bc = apply_boundary_to_J(bc, J)
-        J_temp = P.T @ J_bc
-        J_red = J_temp @ P
-        return J_red
-    
-    return J_bc_func
-
-def create_res_bc_function_reduced(problem, bc, P):
-    """Create residual function with BC applied."""
-    from feax.DCboundary import apply_boundary_to_res
-    
-    def res_bc_func(sol_flat, internal_vars: InternalVars):
-        sol_list = problem.unflatten_fn_sol_list(sol_flat)
-        res = get_res(problem, sol_list, internal_vars)
-        res_flat = jax.flatten_util.ravel_pytree(res)[0]
-        res_bc = apply_boundary_to_res(bc, res_flat, sol_flat)
-        res_red = P.T @ res_bc
-        return res_red
-
     return res_bc_func

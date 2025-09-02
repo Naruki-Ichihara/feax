@@ -1,12 +1,31 @@
+"""
+Nonlinear and linear solvers for FEAX finite element framework.
+
+This module provides Newton-Raphson solvers, linear solvers, and solver configuration
+utilities for solving finite element problems. It includes both JAX-based solvers
+for performance and Python-based solvers for debugging.
+
+Key Features:
+- Newton-Raphson solvers with line search and convergence control
+- Multiple solver variants: while loop, fixed iterations, and Python debugging
+- Jacobi preconditioning for improved convergence
+- Comprehensive solver configuration through SolverOptions dataclass
+- Support for multipoint constraints via prolongation matrices
+"""
+
 import jax
 import jax.numpy as jnp
 from dataclasses import dataclass
-from typing import Optional, Callable
+from typing import Optional, Callable, Union, Tuple, Any, TYPE_CHECKING
 from .assembler import create_J_bc_function, create_res_bc_function
 from .DCboundary import DirichletBC
 
+if TYPE_CHECKING:
+    from feax.problem import Problem
+    from feax.internal_vars import InternalVars
 
-def create_jacobi_preconditioner(A, shift=1e-12):
+
+def create_jacobi_preconditioner(A: jax.experimental.sparse.BCOO, shift: float = 1e-12) -> jax.experimental.sparse.BCOO:
     """Create Jacobi (diagonal) preconditioner from sparse matrix.
     
     Parameters
@@ -344,7 +363,7 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
             trial_norm = jnp.linalg.norm(trial_res)
             
             # Check if valid (no NaN) and satisfies Armijo condition
-            is_valid = ~jnp.any(jnp.isnan(trial_res))
+            is_valid = jnp.logical_not(jnp.any(jnp.isnan(trial_res)))
             merit_decrease = 0.5 * (trial_norm**2 - initial_res_norm**2)
             armijo_satisfied = merit_decrease <= c1 * alpha * grad_merit
             
@@ -352,8 +371,8 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
             
             # Update carry: if acceptable and not found yet, use this
             new_found = found_good | is_acceptable
-            new_sol = jnp.where(~found_good & is_acceptable, trial_sol, best_sol)
-            new_norm = jnp.where(~found_good & is_acceptable, trial_norm, best_norm)
+            new_sol = jnp.where(jnp.logical_not(found_good) & is_acceptable, trial_sol, best_sol)
+            new_norm = jnp.where(jnp.logical_not(found_good) & is_acceptable, trial_norm, best_norm)
             new_alpha = jnp.where(is_acceptable, alpha, alpha * rho)
             
             return (new_alpha, new_found, new_sol, new_norm), None
@@ -543,7 +562,7 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
             trial_norm = jnp.linalg.norm(trial_res)
             
             # Check if valid (no NaN) and satisfies Armijo condition
-            is_valid = ~jnp.any(jnp.isnan(trial_res))
+            is_valid = jnp.logical_not(jnp.any(jnp.isnan(trial_res)))
             merit_decrease = 0.5 * (trial_norm**2 - initial_res_norm**2)
             armijo_satisfied = merit_decrease <= c1 * alpha * grad_merit
             
@@ -551,8 +570,8 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
             
             # Update carry: if acceptable and not found yet, use this
             new_found = found_good | is_acceptable
-            new_sol = jnp.where(~found_good & is_acceptable, trial_sol, best_sol)
-            new_norm = jnp.where(~found_good & is_acceptable, trial_norm, best_norm)
+            new_sol = jnp.where(jnp.logical_not(found_good) & is_acceptable, trial_sol, best_sol)
+            new_norm = jnp.where(jnp.logical_not(found_good) & is_acceptable, trial_norm, best_norm)
             new_alpha = jnp.where(is_acceptable, alpha, alpha * rho)
             
             return (new_alpha, new_found, new_sol, new_norm), None
@@ -609,7 +628,7 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
     
     This solver uses regular Python control flow instead of JAX control flow,
     making it easier to debug and understand. It cannot be JIT compiled but
-    provides the same functionality as newton_solve with better introspection.
+    provides the same functionality as newton_solve with detailed introspection.
     
     Parameters
     ----------

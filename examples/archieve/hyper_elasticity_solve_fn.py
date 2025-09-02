@@ -73,7 +73,7 @@ bc_config = DirichletBCConfig([
     DirichletBCSpec(location=right, component='all', value=zero_dirichlet_val)
 ])
 
-# Create clean Problem (NO internal_vars!)
+# Create Problem (NO internal_vars!)
 feax_problem = HyperElasticityFeax(mesh,
                           vec=3,
                           dim=3)
