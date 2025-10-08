@@ -78,112 +78,100 @@ def create_affine_displacement_solver(
     mesh: Any,
     solver_options: SolverOptions = None
 ) -> Callable[[Any, np.ndarray], np.ndarray]:
-    """Create an affine displacement solver using JAX linear solvers directly.
-    
-    This solver implements affine displacement boundary conditions by:
-    1. Assembling the system matrix directly from the problem
-    2. Computing affine force term K * u_macro 
-    3. Solving the reduced system using JAX linear solvers
-    4. Adding back the macro displacement field
-    
-    This approach bypasses FEAX's create_solver and uses JAX linear algebra directly,
-    similar to the reference solver pattern but adapted for periodic lattice problems.
-    
+    """Create an affine displacement solver for LINEAR elasticity homogenization.
+
+    This solver computes the affine displacement problem for linear elasticity:
+    1. Solves: K @ u_fluctuation = -K @ u_macro  (in reduced space)
+    2. Returns: u_total = u_fluctuation + u_macro
+    3. Fully differentiable via JAX's implicit differentiation
+
+    **Note**: This solver is for LINEAR problems only (constant stiffness K).
+    For nonlinear problems with periodic BCs, use create_solver(problem, bc, P=P) directly.
+    Homogenization (computing C_hom) only makes sense for linear elasticity where
+    the stiffness tensor is constant.
+
     Args:
-        problem: FEAX Problem instance with assembled matrices
+        problem: FEAX Problem instance (must be linear elasticity)
         bc: Dirichlet boundary conditions (typically empty for periodic problems)
         P (np.ndarray): Prolongation matrix from periodic boundary conditions
         epsilon_macro (np.ndarray): Macroscopic strain tensor of shape (3, 3)
         mesh: FEAX mesh object for computing macro displacement field
-        solver_options (SolverOptions, optional): FEAX solver options. Defaults to bicgstab with Jacobi preconditioning.
-        
+        solver_options (SolverOptions, optional): Linear solver configuration
+
     Returns:
-        Callable: Solver function that takes (internal_vars, initial_guess) and returns total displacement
-        
+        Callable: Differentiable solver (internal_vars, initial_guess) -> total displacement
+
     Example:
-        >>> # Setup periodic BCs and macro strain
         >>> pbc = periodic_bc_3D(unitcell, vec=3, dim=3)
         >>> P = prolongation_matrix(pbc, mesh, vec=3)
         >>> epsilon_macro = np.array([[0.01, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
-        >>> 
-        >>> # Create affine solver
         >>> solver = create_affine_displacement_solver(problem, bc, P, epsilon_macro, mesh)
-        >>> displacement = solver(internal_vars, initial_guess)
+        >>> u_total = solver(internal_vars, initial_guess)
     """
     import jax
-    from jax.experimental.sparse import BCOO
-    
+    from feax.assembler import create_J_bc_function
+
     if solver_options is None:
         solver_options = SolverOptions(
-            linear_solver="bicgstab",
-            use_jacobi_preconditioner=True,
+            linear_solver="cg",
             linear_solver_tol=1e-10,
             linear_solver_maxiter=10000
         )
-    
-    # Create macro displacement field (affine term)
-    macro_term = create_macro_displacement_field(mesh, epsilon_macro)
-    
+
     def affine_solver(internal_vars: Any, initial_guess: np.ndarray) -> np.ndarray:
-        """Solve affine displacement problem using matrix-free approach like FEAX.
-        
-        Args:
-            internal_vars: FEAX InternalVars with material properties
-            initial_guess (np.ndarray): Initial displacement guess
-            
-        Returns:
-            np.ndarray: Total displacement field (fluctuation + macro)
+        """Linear affine displacement solver.
+
+        Solves: K @ u_fluctuation = -K @ u_macro  (in reduced space)
+        Returns: u_total = u_fluctuation + u_macro
         """
-        # Use FEAX's matrix-free approach
-        from feax.assembler import create_J_bc_function
-        J_bc_applied = create_J_bc_function(problem, bc)
-        
-        # Macro displacement field
-        u_macro_jax = np.array(macro_term)
-        
-        # Compute Jacobian once at initial + macro displacement
-        J_full = J_bc_applied(initial_guess + u_macro_jax, internal_vars)
-        
+        # Compute macro displacement field
+        u_macro = create_macro_displacement_field(mesh, epsilon_macro)
+
+        # Get Jacobian function
+        J_bc_func = create_J_bc_function(problem, bc)
+
+        # Compute Jacobian at u_macro (for linear problems, K is constant)
+        J_full = J_bc_func(u_macro, internal_vars)
+
         # Matrix-free reduced Jacobian operator
         def reduced_matvec(v_reduced):
-            v_full = P @ v_reduced          # Expand to full space
-            Jv_full = J_full @ v_full       # Apply full Jacobian
-            Jv_reduced = P.T @ Jv_full      # Reduce back
+            v_full = P @ v_reduced
+            Jv_full = J_full @ v_full
+            Jv_reduced = P.T @ Jv_full
             return Jv_reduced
-        
-        # Right-hand side: -P^T @ (J @ u_macro)
-        b = -P.T @ (J_full @ u_macro_jax)
-        
-        # Initial guess in reduced space
+
+        # RHS: -P^T @ (J @ u_macro)
+        b = -P.T @ (J_full @ u_macro)
+
+        # Solve in reduced space
         x0 = np.zeros(P.shape[1])
-        
-        # Solve using matrix-free operator
+
         if solver_options.linear_solver == 'cg':
-            u_fluctuation, info = jax.scipy.sparse.linalg.cg(
+            u_fluct_reduced, _ = jax.scipy.sparse.linalg.cg(
                 reduced_matvec, b, x0=x0,
                 tol=solver_options.linear_solver_tol,
                 maxiter=solver_options.linear_solver_maxiter
             )
         elif solver_options.linear_solver == 'bicgstab':
-            u_fluctuation, info = jax.scipy.sparse.linalg.bicgstab(
+            u_fluct_reduced, _ = jax.scipy.sparse.linalg.bicgstab(
                 reduced_matvec, b, x0=x0,
                 tol=solver_options.linear_solver_tol,
                 atol=solver_options.linear_solver_atol,
                 maxiter=solver_options.linear_solver_maxiter
             )
-        else:  # gmres
-            u_fluctuation, info = jax.scipy.sparse.linalg.gmres(
+        else:
+            u_fluct_reduced, _ = jax.scipy.sparse.linalg.gmres(
                 reduced_matvec, b, x0=x0,
                 tol=solver_options.linear_solver_tol,
                 atol=solver_options.linear_solver_atol,
                 maxiter=solver_options.linear_solver_maxiter
             )
-        
-        # Total displacement = prolongated fluctuation + macro
-        u_total = P @ u_fluctuation + u_macro_jax
-        
+
+        # Total displacement
+        u_total = P @ u_fluct_reduced + u_macro
+
         return u_total
-    
+
     return affine_solver
 
 
@@ -195,29 +183,39 @@ def create_homogenization_solver(
     mesh: Any,
     dim: int = 3
 ) -> Callable[[Any], np.ndarray]:
-    """Create a computational homogenization solver that computes homogenized stiffness matrix.
-    
+    """Create a computational homogenization solver for LINEAR elasticity.
+
     This solver runs multiple macroscopic strain cases and computes the volume-averaged
     stress response to determine the homogenized stiffness matrix C_hom.
-    
+
     For 2D: Runs 3 independent strain cases (11, 22, 12)
     For 3D: Runs 6 independent strain cases (11, 22, 33, 23, 13, 12)
-    
+
     The homogenized stiffness relates average stress to average strain via:
     <σ> = C_hom : <ε>
-    
+
+    **Important**: This solver is for LINEAR elasticity only (constant C_hom).
+    For nonlinear materials, C depends on strain state and homogenization requires
+    tangent/secant stiffness computation at each strain level. For nonlinear periodic
+    problems, use create_solver(problem, bc, P=P) directly.
+
+    **Differentiability**:
+    The homogenization solver is fully differentiable w.r.t. internal_vars (material
+    properties) via JAX's built-in implicit differentiation. This enables topology
+    optimization with homogenized properties as objectives.
+
     Args:
-        problem: FEAX Problem instance with mesh and finite elements
+        problem: FEAX Problem instance (must be LINEAR elasticity)
         bc: Dirichlet boundary conditions (typically empty for periodic problems)
         P (np.ndarray): Prolongation matrix from periodic boundary conditions
         solver_options (SolverOptions): Linear solver configuration
         mesh: FEAX mesh object for computing macro displacement field
         dim (int): Problem dimension (2 or 3). Defaults to 3.
-        
+
     Returns:
-        Callable: Function that takes internal_vars and returns homogenized stiffness matrix
+        Callable: Differentiable function that takes internal_vars and returns homogenized stiffness matrix
                  Shape: (3, 3) for 2D in Voigt notation, (6, 6) for 3D in Voigt notation
-        
+
     Raises:
         ValueError: If dim is not 2 or 3
         
@@ -303,36 +301,58 @@ def create_homogenization_solver(
         cells_sol_list = [sol[cells] for cells, sol in zip(problem.cells_list, sol_list)]
         cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
         
+        # Prepare internal variables for vmap over cells
+        # Handle both cell-based (num_cells,) and quad-based (num_cells, num_quads)
+        volume_vars_for_vmap = []
+
+        # Determine number of quad points from JxW
+        # JxW can have shape (num_cells, num_quads) or (num_cells, 1, num_quads)
+        if problem.JxW.ndim == 3:
+            num_quads = problem.JxW.shape[2]
+        elif problem.JxW.ndim == 2:
+            num_quads = problem.JxW.shape[1]
+        else:
+            num_quads = 1
+
+        for var in internal_vars.volume_vars:
+            if var.ndim == 1:
+                # Cell-based: broadcast to (num_cells, num_quads)
+                var_quad = np.tile(var[:, None], (1, num_quads))
+                volume_vars_for_vmap.append(var_quad)
+            else:
+                # Already quad-based
+                volume_vars_for_vmap.append(var)
+
         # Compute stress for all cells at once
         def compute_cell_stress(cell_sol_flat, cell_shape_grads, cell_JxW, *cell_internal_vars):
             """Compute volume-weighted stress for one cell."""
             cell_sol = problem.unflatten_fn_dof(cell_sol_flat)[0]
             vec = problem.fes[0].vec
-            
+
             # Compute u_grads at all quad points
             u_grads = np.sum(
                 cell_sol[None, :, :, None] * cell_shape_grads[:, :, None, :],
                 axis=1
             )
-            
+
             # Apply tensor_map at all quad points
             stresses = jax.vmap(tensor_map)(u_grads, *cell_internal_vars)
-            
+
             # Weight by quadrature weights
             if cell_JxW.ndim == 2:
                 weights = cell_JxW[0, :]
             else:
                 weights = cell_JxW
-                
+
             weighted_stress = stresses * weights[:, None, None]
             return np.sum(weighted_stress, axis=0)
-        
+
         # Vectorize over all cells
         stress_per_cell = jax.vmap(compute_cell_stress)(
             cells_sol_flat,
             problem.shape_grads,
             problem.JxW,
-            *internal_vars.volume_vars
+            *volume_vars_for_vmap
         )
         
         # Average stress

@@ -28,6 +28,50 @@ if TYPE_CHECKING:
     from feax.DCboundary import DirichletBC
 
 
+def interpolate_to_quad_points(var: np.ndarray, shape_vals: np.ndarray, num_cells: int, num_quads: int) -> np.ndarray:
+    """Interpolate node-based or cell-based values to quadrature points.
+
+    This function handles three cases:
+    1. Node-based: shape (num_nodes,) -> interpolate using shape functions
+    2. Cell-based: shape (num_cells,) -> broadcast to all quad points in cell
+    3. Quad-based: shape (num_cells, num_quads) -> pass through (legacy)
+
+    Parameters
+    ----------
+    var : np.ndarray
+        Variable to interpolate. Can be:
+        - (num_nodes,) for node-based
+        - (num_cells,) for cell-based
+        - (num_cells, num_quads) for quad-based (legacy)
+    shape_vals : np.ndarray
+        Shape function values at quadrature points, shape (num_quads, num_nodes)
+    num_cells : int
+        Number of cells/elements
+    num_quads : int
+        Number of quadrature points per cell
+
+    Returns
+    -------
+    np.ndarray
+        Values at quadrature points, shape (num_quads,)
+    """
+    if var.ndim == 1:
+        if var.shape[0] == num_cells:
+            # Cell-based: broadcast single value to all quad points
+            return np.full(num_quads, var[0])  # For single cell, var[0] is the cell value
+        else:
+            # Node-based: interpolate using shape functions
+            # var has shape (num_nodes,), need to extract cell nodes
+            # This is handled by the caller passing cell_var_nodal
+            return np.dot(shape_vals, var)  # (num_quads, num_nodes) @ (num_nodes,) -> (num_quads,)
+    elif var.ndim == 2:
+        # Quad-based (legacy): shape (num_cells, num_quads)
+        # Return just this cell's quad values
+        return var[0]  # Assumes var is already sliced for this cell
+    else:
+        raise ValueError(f"Variable has unexpected shape: {var.shape}")
+
+
 def get_laplace_kernel(problem: 'Problem', tensor_map: TensorMap) -> LaplaceKernel:
     """Create Laplace kernel function for gradient-based physics.
     
@@ -58,24 +102,50 @@ def get_laplace_kernel(problem: 'Problem', tensor_map: TensorMap) -> LaplaceKern
     quadrature points simultaneously.
     """
     
-    def laplace_kernel(cell_sol_flat: np.ndarray, 
-                      cell_shape_grads: np.ndarray, 
-                      cell_v_grads_JxW: np.ndarray, 
+    def laplace_kernel(cell_sol_flat: np.ndarray,
+                      cell_shape_grads: np.ndarray,
+                      cell_v_grads_JxW: np.ndarray,
                       *cell_internal_vars: np.ndarray) -> np.ndarray:
         cell_sol_list = problem.unflatten_fn_dof(cell_sol_flat)
         cell_shape_grads = cell_shape_grads[:, :problem.fes[0].num_nodes, :]
         cell_sol = cell_sol_list[0]
         cell_v_grads_JxW = cell_v_grads_JxW[:, :problem.fes[0].num_nodes, :, :]
         vec = problem.fes[0].vec
+        num_quads = problem.fes[0].num_quads
+        shape_vals = problem.fes[0].shape_vals
 
         # (1, num_nodes, vec, 1) * (num_quads, num_nodes, 1, dim) -> (num_quads, num_nodes, vec, dim)
         u_grads = cell_sol[None, :, :, None] * cell_shape_grads[:, :, None, :]
         u_grads = np.sum(u_grads, axis=1)  # (num_quads, vec, dim)
         u_grads_reshape = u_grads.reshape(-1, vec, problem.dim)  # (num_quads, vec, dim)
-        
-        # Apply tensor map with internal variables
-        u_physics = jax.vmap(tensor_map)(u_grads_reshape, *cell_internal_vars).reshape(u_grads.shape)
-        
+
+        # Interpolate internal variables to quadrature points
+        cell_internal_vars_quad = []
+        for var in cell_internal_vars:
+            if var.ndim == 0:
+                # Scalar (cell-based): broadcast to all quad points
+                var_quad = np.full(num_quads, var)
+            elif var.ndim == 1:
+                if var.shape[0] == problem.fes[0].num_nodes:
+                    # Node-based: interpolate using shape functions
+                    var_quad = np.dot(shape_vals, var)  # (num_quads, num_nodes) @ (num_nodes,) -> (num_quads,)
+                elif var.shape[0] == 1:
+                    # Cell-based (single element): broadcast to all quad points
+                    var_quad = np.full(num_quads, var[0])
+                elif var.shape[0] == num_quads:
+                    # Quad-based (legacy): already has quad point values
+                    var_quad = var
+                else:
+                    # Unknown, assume cell-based
+                    var_quad = np.full(num_quads, var[0])
+            else:
+                # Unknown format, pass through
+                var_quad = var
+            cell_internal_vars_quad.append(var_quad)
+
+        # Apply tensor map with internal variables at quad points
+        u_physics = jax.vmap(tensor_map)(u_grads_reshape, *cell_internal_vars_quad).reshape(u_grads.shape)
+
         # (num_quads, num_nodes, vec, dim) -> (num_nodes, vec)
         val = np.sum(u_physics[:, None, :, :] * cell_v_grads_JxW, axis=(0, -1))
         val = jax.flatten_util.ravel_pytree(val)[0] # (num_nodes*vec + ...,)
@@ -112,21 +182,48 @@ def get_mass_kernel(problem: 'Problem', mass_map: MassMap) -> MassKernel:
     reaction-diffusion equations, or adding body forces/sources.
     """
     
-    def mass_kernel(cell_sol_flat: np.ndarray, 
-                   x: np.ndarray, 
-                   cell_JxW: np.ndarray, 
+    def mass_kernel(cell_sol_flat: np.ndarray,
+                   x: np.ndarray,
+                   cell_JxW: np.ndarray,
                    *cell_internal_vars: np.ndarray) -> np.ndarray:
         cell_sol_list = problem.unflatten_fn_dof(cell_sol_flat)
         cell_sol = cell_sol_list[0]
         cell_JxW = cell_JxW[0]
         vec = problem.fes[0].vec
-        
+        num_quads = problem.fes[0].num_quads
+        shape_vals = problem.fes[0].shape_vals
+
         # (1, num_nodes, vec) * (num_quads, num_nodes, 1) -> (num_quads, num_nodes, vec) -> (num_quads, vec)
-        u = np.sum(cell_sol[None, :, :] * problem.fes[0].shape_vals[:, :, None], axis=1)
-        u_physics = jax.vmap(mass_map)(u, x, *cell_internal_vars)  # (num_quads, vec)
-        
+        u = np.sum(cell_sol[None, :, :] * shape_vals[:, :, None], axis=1)
+
+        # Interpolate internal variables to quadrature points
+        cell_internal_vars_quad = []
+        for var in cell_internal_vars:
+            if var.ndim == 0:
+                # Scalar (cell-based): broadcast to all quad points
+                var_quad = np.full(num_quads, var)
+            elif var.ndim == 1:
+                if var.shape[0] == problem.fes[0].num_nodes:
+                    # Node-based: interpolate using shape functions
+                    var_quad = np.dot(shape_vals, var)  # (num_quads, num_nodes) @ (num_nodes,) -> (num_quads,)
+                elif var.shape[0] == 1:
+                    # Cell-based (single element): broadcast to all quad points
+                    var_quad = np.full(num_quads, var[0])
+                elif var.shape[0] == num_quads:
+                    # Quad-based (legacy): already has quad point values
+                    var_quad = var
+                else:
+                    # Unknown, assume cell-based
+                    var_quad = np.full(num_quads, var[0])
+            else:
+                # Unknown format, pass through
+                var_quad = var
+            cell_internal_vars_quad.append(var_quad)
+
+        u_physics = jax.vmap(mass_map)(u, x, *cell_internal_vars_quad)  # (num_quads, vec)
+
         # (num_quads, 1, vec) * (num_quads, num_nodes, 1) * (num_quads, 1, 1) -> (num_nodes, vec)
-        val = np.sum(u_physics[:, None, :] * problem.fes[0].shape_vals[:, :, None] * cell_JxW[:, None, None], axis=0)
+        val = np.sum(u_physics[:, None, :] * shape_vals[:, :, None] * cell_JxW[:, None, None], axis=0)
         val = jax.flatten_util.ravel_pytree(val)[0] # (num_nodes*vec + ...,)
         return val
 
@@ -341,8 +438,31 @@ def split_and_compute_cell(problem: 'Problem',
         num_cuts = min(20, problem.num_cells)   # Original behavior for small problems
     
     batch_size = problem.num_cells // num_cuts
-    input_collection = [cells_sol_flat, problem.physical_quad_points, problem.shape_grads, 
-                       problem.JxW, problem.v_grads_JxW, *internal_vars_volume]
+
+    # Transform internal vars to per-cell format
+    # For node-based: extract nodes for each cell
+    # For cell-based: keep as-is
+    # For quad-based: keep as-is (legacy)
+    internal_vars_per_cell = []
+    for var in internal_vars_volume:
+        if var.ndim == 1:
+            if var.shape[0] == problem.num_cells:
+                # Cell-based: already per-cell, just needs to be indexable
+                internal_vars_per_cell.append(var)
+            else:
+                # Node-based: extract nodes for each cell
+                # var shape: (num_nodes,), cells shape: (num_cells, num_nodes_per_elem)
+                var_per_cell = var[problem.fes[0].cells]  # (num_cells, num_nodes_per_elem)
+                internal_vars_per_cell.append(var_per_cell)
+        elif var.ndim == 2:
+            # Quad-based (legacy): already (num_cells, num_quads)
+            internal_vars_per_cell.append(var)
+        else:
+            # Unknown format, pass through
+            internal_vars_per_cell.append(var)
+
+    input_collection = [cells_sol_flat, problem.physical_quad_points, problem.shape_grads,
+                       problem.JxW, problem.v_grads_JxW, *internal_vars_per_cell]
 
     if jac_flag:
         values = []

@@ -10,7 +10,6 @@ from .DCboundary import DirichletBC, apply_boundary_to_J, apply_boundary_to_res,
 from .solver import newton_solve, SolverOptions, create_solver, linear_solve, newton_solve_fori, newton_solve_py
 from .utils import zero_like_initial_guess
 # Memory-efficient utilities
-from .utils_memory import chunked_vmap, estimate_memory_usage, create_memory_efficient_solver
 # Common types for convenience (full type library available in feax.types)
 from .types import Array, TensorMap, MassMap, SurfaceMap
 
@@ -20,6 +19,5 @@ __all__ = [
     'Mesh', 'DirichletBC', 'newton_solve', 'SolverOptions', 'create_solver',
     'zero_like_initial_guess', 'DirichletBCSpec', 'DirichletBCConfig', 'dirichlet_bc_config',
     'apply_boundary_to_J', 'apply_boundary_to_res',
-    'Array', 'TensorMap', 'MassMap', 'SurfaceMap',
-    'chunked_vmap', 'estimate_memory_usage', 'create_memory_efficient_solver'
+    'Array', 'TensorMap', 'MassMap', 'SurfaceMap'
 ]

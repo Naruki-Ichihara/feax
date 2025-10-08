@@ -22,44 +22,51 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class InternalVars:
     """Container for internal variables used in finite element computations.
-    
+
     This dataclass holds material properties, loading parameters, and other
     variables that change during optimization or parameter studies, while keeping
     the finite element structure (Problem) fixed. This separation enables efficient
     JAX transformations for optimization and sensitivity analysis.
-    
+
     The data structure mirrors the physics kernel organization:
     - volume_vars: Parameters for volume integrals (tensor maps, mass maps)
     - surface_vars: Parameters for surface integrals (boundary loads, tractions)
-    
+
     Parameters
     ----------
     volume_vars : Tuple[np.ndarray, ...], optional
-        Tuple of arrays for volume integral parameters. Each array has shape
-        (num_cells, num_quads) representing values at quadrature points.
+        Tuple of arrays for volume integral parameters. Each array can have shape:
+        - (num_nodes,) for node-based variables (most memory efficient)
+        - (num_cells,) for cell-based/element-wise variables
+        - (num_cells, num_quads) for quad-point based variables (legacy)
+        The assembler automatically interpolates to quadrature points.
         Common examples: material properties (E, nu), density, source terms
     surface_vars : Optional[List[Tuple[np.ndarray, ...]]], optional
         List of tuples for surface integral parameters. One entry per surface/location_fn.
         Each tuple contains arrays with shape (num_surface_faces, num_face_quads).
         Common examples: surface tractions, pressures, heat fluxes
-        
+
     Notes
     -----
     This class is registered as a JAX PyTree for automatic differentiation and
     transformations like vmap, grad, jit. The frozen dataclass ensures immutability
     required for functional programming patterns.
-    
+
     Examples
     --------
-    Creating material parameters for elasticity:
-    >>> E = InternalVars.create_uniform_volume_var(problem, 210e9)  # Young's modulus
-    >>> nu = InternalVars.create_uniform_volume_var(problem, 0.3)   # Poisson's ratio  
+    Creating material parameters for elasticity (node-based):
+    >>> E = InternalVars.create_node_var(problem, 210e9)  # Young's modulus at nodes
+    >>> nu = InternalVars.create_node_var(problem, 0.3)   # Poisson's ratio at nodes
     >>> internal_vars = InternalVars(volume_vars=(E, nu))
-    
+
+    Creating cell-based material properties:
+    >>> rho = InternalVars.create_cell_var(problem, 0.5)  # Density per element
+    >>> internal_vars = InternalVars(volume_vars=(rho,))
+
     Adding spatial variation:
     >>> def E_field(x): return 200e9 + 50e9 * x[0]  # Varies with x-coordinate
-    >>> E_varying = InternalVars.create_spatially_varying_volume_var(problem, E_field)
-    >>> internal_vars = InternalVars(volume_vars=(E_varying, nu))
+    >>> E_varying = InternalVars.create_node_var_from_fn(problem, E_field)
+    >>> internal_vars = InternalVars(volume_vars=(E_varying,))
     """
     volume_vars: Tuple[np.ndarray, ...] = ()
     surface_vars: Optional[List[Tuple[np.ndarray, ...]]] = None
@@ -75,12 +82,76 @@ class InternalVars:
             object.__setattr__(self, 'surface_vars', [])
     
     @staticmethod
+    def create_node_var(problem: 'Problem', value: float, var_index: int = 0) -> np.ndarray:
+        """Create uniform node-based variable (most memory efficient).
+
+        Node-based variables are the most efficient representation for material
+        properties. The assembler automatically interpolates to quadrature points
+        using finite element shape functions.
+
+        Parameters
+        ----------
+        problem : Problem
+            The finite element problem to get dimensions from
+        value : float
+            The uniform value to assign to all nodes
+        var_index : int, optional
+            Which finite element variable to use for multi-variable problems.
+            Default is 0 (first variable)
+
+        Returns
+        -------
+        array : np.ndarray
+            Array of shape (num_nodes,) filled with the specified value
+
+        Examples
+        --------
+        Create uniform material properties:
+        >>> E = InternalVars.create_node_var(problem, 210e9)  # Young's modulus
+        >>> rho = InternalVars.create_node_var(problem, 7800)  # Density
+        """
+        num_nodes = problem.fes[var_index].num_total_nodes
+        return np.full(num_nodes, value)
+
+    @staticmethod
+    def create_cell_var(problem: 'Problem', value: float, var_index: int = 0) -> np.ndarray:
+        """Create uniform cell-based (element-wise) variable.
+
+        Cell-based variables are useful for element-wise constant properties,
+        such as in topology optimization where each element has a single density.
+        The assembler automatically expands to quadrature points.
+
+        Parameters
+        ----------
+        problem : Problem
+            The finite element problem to get dimensions from
+        value : float
+            The uniform value to assign to all cells
+        var_index : int, optional
+            Which finite element variable to use for multi-variable problems.
+            Default is 0 (first variable)
+
+        Returns
+        -------
+        array : np.ndarray
+            Array of shape (num_cells,) filled with the specified value
+
+        Examples
+        --------
+        Create uniform element properties:
+        >>> rho = InternalVars.create_cell_var(problem, 0.5)  # Topology density per element
+        >>> E = InternalVars.create_cell_var(problem, 70e3)  # Young's modulus per element
+        """
+        num_cells = problem.num_cells
+        return np.full(num_cells, value)
+
+    @staticmethod
     def create_uniform_volume_var(problem: 'Problem', value: float, var_index: int = 0) -> np.ndarray:
-        """Create uniform volume variable array for all quadrature points.
-        
-        This is the most common way to create material properties or parameters
-        that are constant throughout the domain.
-        
+        """Create uniform volume variable array for all quadrature points (legacy).
+
+        NOTE: This method is deprecated. Use create_node_var() or create_cell_var() instead
+        for better memory efficiency.
+
         Parameters
         ----------
         problem : Problem
@@ -88,14 +159,14 @@ class InternalVars:
         value : float
             The uniform value to assign to all quadrature points
         var_index : int, optional
-            Which finite element variable to use for multi-variable problems. 
+            Which finite element variable to use for multi-variable problems.
             Default is 0 (first variable)
-            
+
         Returns
         -------
         array : np.ndarray
             Array of shape (num_cells, num_quads) filled with the specified value
-            
+
         Examples
         --------
         Create uniform material properties:
@@ -138,13 +209,86 @@ class InternalVars:
         return np.full((num_surface_faces, num_face_quads), value)
     
     @staticmethod
-    def create_spatially_varying_volume_var(problem: 'Problem', var_fn: Callable[[np.ndarray], float], 
+    def create_node_var_from_fn(problem: 'Problem', var_fn: Callable[[np.ndarray], float],
+                                var_index: int = 0) -> np.ndarray:
+        """Create spatially varying node-based variable using a function.
+
+        This method evaluates a user-defined function at all node positions
+        to create spatially varying material properties or parameters.
+
+        Parameters
+        ----------
+        problem : Problem
+            The finite element problem to get node positions from
+        var_fn : Callable[[np.ndarray], float]
+            Function that takes position coordinates (x, y, z) and returns variable value.
+            Function signature: (coordinates: np.ndarray) -> float
+        var_index : int, optional
+            Which finite element variable to use. Default is 0 (first variable)
+
+        Returns
+        -------
+        array : np.ndarray
+            Array of shape (num_nodes,) with spatially varying values
+
+        Examples
+        --------
+        Create spatially varying material properties:
+        >>> def E_gradient(x): return 200e9 + 50e9 * x[0]  # Varies with x-coordinate
+        >>> E_varying = InternalVars.create_node_var_from_fn(problem, E_gradient)
+
+        >>> def density_field(x): return 7800 * (1 + 0.1 * np.sin(x[0]))  # Sinusoidal variation
+        >>> rho_varying = InternalVars.create_node_var_from_fn(problem, density_field)
+        """
+        node_points = problem.fes[var_index].points  # (num_nodes, dim)
+        return jax.vmap(var_fn)(node_points)
+
+    @staticmethod
+    def create_cell_var_from_fn(problem: 'Problem', var_fn: Callable[[np.ndarray], float],
+                                var_index: int = 0) -> np.ndarray:
+        """Create spatially varying cell-based variable using a function.
+
+        This method evaluates a user-defined function at element centroids
+        to create spatially varying material properties or parameters.
+
+        Parameters
+        ----------
+        problem : Problem
+            The finite element problem to get element centroids from
+        var_fn : Callable[[np.ndarray], float]
+            Function that takes position coordinates (x, y, z) and returns variable value.
+            Function signature: (coordinates: np.ndarray) -> float
+        var_index : int, optional
+            Which finite element variable to use. Default is 0 (first variable)
+
+        Returns
+        -------
+        array : np.ndarray
+            Array of shape (num_cells,) with spatially varying values
+
+        Examples
+        --------
+        Create spatially varying material properties:
+        >>> def density_field(x): return 0.5 * (1 + np.tanh(x[0]))  # Smooth transition
+        >>> rho_varying = InternalVars.create_cell_var_from_fn(problem, density_field)
+        """
+        # Compute cell centroids
+        cells = problem.fes[var_index].cells
+        points = problem.fes[var_index].points
+        centroids = jax.vmap(lambda cell: np.mean(points[cell], axis=0))(cells)
+        return jax.vmap(var_fn)(centroids)
+
+    @staticmethod
+    def create_spatially_varying_volume_var(problem: 'Problem', var_fn: Callable[[np.ndarray], float],
                                           var_index: int = 0) -> np.ndarray:
-        """Create spatially varying volume variable using a function.
-        
+        """Create spatially varying volume variable using a function (legacy).
+
+        NOTE: This method is deprecated. Use create_node_var_from_fn() or
+        create_cell_var_from_fn() instead for better memory efficiency.
+
         This method evaluates a user-defined function at all quadrature points
         to create spatially varying material properties or parameters.
-        
+
         Parameters
         ----------
         problem : Problem
@@ -154,18 +298,18 @@ class InternalVars:
             Function signature: (coordinates: np.ndarray) -> float
         var_index : int, optional
             Which finite element variable to use. Default is 0 (first variable)
-            
+
         Returns
         -------
         array : np.ndarray
             Array of shape (num_cells, num_quads) with spatially varying values
-            
+
         Examples
         --------
         Create spatially varying material properties:
         >>> def E_gradient(x): return 200e9 + 50e9 * x[0]  # Varies with x-coordinate
         >>> E_varying = InternalVars.create_spatially_varying_volume_var(problem, E_gradient)
-        
+
         >>> def density_field(x): return 7800 * (1 + 0.1 * np.sin(x[0]))  # Sinusoidal variation
         >>> rho_varying = InternalVars.create_spatially_varying_volume_var(problem, density_field)
         """

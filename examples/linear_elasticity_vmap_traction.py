@@ -41,7 +41,8 @@ class ElasticityProblem(Problem):
 
 # Create mesh (small for demo)
 print("Creating mesh...")
-mesh = box_mesh(40, 20, 20, 2., 1., 1.)
+# Old: box_mesh(40, 20, 20, 2., 1., 1.) - 40 elements in 2.0 length -> mesh_size = 0.05
+mesh = box_mesh(size=(2.0, 1.0, 1.0), mesh_size=0.05, element_type='HEX8')
 
 # Boundary locations
 def left(point):
@@ -137,6 +138,26 @@ for batch_size in batch_sizes:
         max_diff = max(diffs)
         print(f"  Max difference: {max_diff:.2e}")
         print(f"  ✅ Results match!" if max_diff < 1e-10 else "  ❌ Results differ!")
+    
+    # Save solutions for batch_size=10 case
+    if batch_size == 10:
+        print(f"  Saving solutions for {batch_size} cases...")
+        for i, (traction_val, solution) in enumerate(zip(traction_values, vmap_solutions)):
+            # Reshape solution to (n_nodes, 3) for displacement
+            n_nodes = mesh.points.shape[0]
+            displacement = solution.reshape((n_nodes, 3))
+            
+            # Create output directory and save
+            output_dir = "/workspace/examples/data/vmap_traction_results/solutions"
+            os.makedirs(output_dir, exist_ok=True)
+            vtk_filename = f"{output_dir}/solution_traction_{traction_val:.2f}.vtu"
+            
+            save_sol(
+                mesh=mesh,
+                sol_file=vtk_filename,
+                point_infos=[("displacement", displacement)]
+            )
+            print(f"    Saved solution {i+1}/{batch_size}: {vtk_filename}")
     
     # Store results
     results['batch_size'].append(batch_size)

@@ -50,7 +50,8 @@ class ElasticityProblem(Problem):
         # The universal compliance function will handle all surfaces automatically
 
 # Create mesh and problem
-mesh = box_mesh_gmsh(40, 20, 20, 2., 1., 1.)
+# Old: box_mesh_gmsh(40, 20, 20, 2., 1., 1.) - 40 elements in 2.0 length -> mesh_size = 0.05
+mesh = box_mesh(size=(2.0, 1.0, 1.0), mesh_size=0.05, element_type='HEX8')
 
 def left(point):
     return np.isclose(point[0], 0., atol=1e-5)
