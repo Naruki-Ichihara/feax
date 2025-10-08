@@ -49,7 +49,8 @@ class DensityElasticityProblem(Problem):
 
 # Create mesh
 print("Creating mesh...")
-mesh = box_mesh(40, 20, 20, 2., 1., 1.)
+# Old: box_mesh(40, 20, 20, 2., 1., 1.) - 40 elements in 2.0 length -> mesh_size = 0.05
+mesh = box_mesh(size=(2.0, 1.0, 1.0), mesh_size=0.05, element_type='HEX8')
 
 # Boundary locations
 def left(point):
@@ -78,17 +79,18 @@ print(f"Problem: {problem.num_total_dofs_all_vars} DOFs")
 # Single solve function for one density value
 def single_solve(density):
     """Solve for a single density value using SIMP material interpolation."""
-    # Create uniform density field
-    rho = InternalVars.create_uniform_volume_var(problem, density)
-    
+    # Create uniform density field - using cell-based variables for efficiency
+    # Cell-based is perfect for topology optimization where each element has a single density
+    rho = InternalVars.create_cell_var(problem, density)
+
     # Create fixed traction
     traction_z = InternalVars.create_uniform_surface_var(problem, T)
-    
+
     internal_vars = InternalVars(
         volume_vars=[rho],
         surface_vars=[(traction_z,)]
     )
-    
+
     # Solve with zero initial guess
     return solver(internal_vars, zero_like_initial_guess(problem, bc))
 

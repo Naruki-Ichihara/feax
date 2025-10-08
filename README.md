@@ -102,7 +102,7 @@ import jax.numpy as np
 from feax import Problem, InternalVars, create_solver
 from feax import Mesh, SolverOptions, zero_like_initial_guess
 from feax import DirichletBCSpec, DirichletBCConfig
-from feax.mesh import box_mesh_gmsh
+from feax.mesh import box_mesh
 
 # Define the physics
 class LinearElasticity(Problem):
@@ -115,9 +115,8 @@ class LinearElasticity(Problem):
             return lmbda * np.trace(epsilon) * np.eye(3) + 2 * mu * epsilon
         return stress_tensor
 
-# Create mesh
-meshio_mesh = box_mesh_gmsh(40, 20, 20, 2.0, 1.0, 1.0, data_dir='/tmp', ele_type='HEX8')
-mesh = Mesh(meshio_mesh.points, meshio_mesh.cells_dict['hexahedron'])
+# Create mesh (40 elements in 2.0 length -> mesh_size = 0.05)
+mesh = box_mesh(size=(2.0, 1.0, 1.0), mesh_size=0.05, element_type='HEX8')
 
 # Set up problem
 problem = LinearElasticity(mesh, vec=3, dim=3)

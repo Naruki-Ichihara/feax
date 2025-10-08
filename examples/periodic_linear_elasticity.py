@@ -22,8 +22,8 @@ T = 1e2
 nu = 0.3
 p = 3
 
-epsilon_macro = np.array([[0.1, 0.0, 0.0],
-                          [0.0, 0.0, 0.0],
+epsilon_macro = np.array([[0.0, 0.1, 0.0],
+                          [0.1, 0.0, 0.0],
                           [0.0, 0.0, 0.0]])
 
 class ElasticityProblem(Problem):
@@ -40,7 +40,7 @@ class ElasticityProblem(Problem):
 from feax.lattice_toolkit.unitcell import UnitCell
 class Cube(UnitCell):
     def mesh_build(self, **kwargs):
-        return box_mesh(20, 20, 20, 1, 1, 1)
+        return box_mesh(size=(1.0, 1.0, 1.0), mesh_size=0.05, element_type='HEX8')
 unitcell = Cube()
 mesh = unitcell.mesh
 
@@ -72,10 +72,7 @@ rho_element = create_fcc_density(
     density_void=0.0       # Density in void regions  
 )
 
-print(f"FCC density shape: {rho_element.shape} (element-based)")
-print(f"Problem num_cells: {problem.num_cells}")
-print(f"Density values range: [{np.min(rho_element):.1f}, {np.max(rho_element):.1f}]")
-print(f"Volume fraction: {np.mean(rho_element):.3f}")
+print(f"Density shape: {rho_element.shape}, volume fraction: {np.mean(rho_element):.3f}")
 
 # Convert to FEAX volume variable format (broadcast to quad points)
 template = InternalVars.create_uniform_volume_var(problem, 1.0)
@@ -119,24 +116,6 @@ sol_time = end - start
 numdofs = problem.num_total_dofs_all_vars
 print(f"sol time {sol_time}, dofs {numdofs}")
 
-# Analyze displacement components
-sol_reshaped = sol.reshape(-1, 3)
-mean_disp = np.mean(sol_reshaped, axis=0)
-print(f"Mean displacement: [{mean_disp[0]:.6e}, {mean_disp[1]:.6e}, {mean_disp[2]:.6e}]")
-print(f"Max displacement magnitude: {np.max(np.linalg.norm(sol_reshaped, axis=1)):.6f}")
-
-# Create macro displacement for comparison
-from feax.lattice_toolkit.solver import create_macro_displacement_field
-u_macro = create_macro_displacement_field(mesh, epsilon_macro).reshape(-1, 3)
-u_fluctuation = sol_reshaped - u_macro
-
-print(f"Macro displacement mean: [{np.mean(u_macro, axis=0)[0]:.6e}, {np.mean(u_macro, axis=0)[1]:.6e}, {np.mean(u_macro, axis=0)[2]:.6e}]")
-print(f"Macro displacement max magnitude: {np.max(np.linalg.norm(u_macro, axis=1)):.6f}")
-
-print(f"Fluctuation mean: [{np.mean(u_fluctuation, axis=0)[0]:.6e}, {np.mean(u_fluctuation, axis=0)[1]:.6e}, {np.mean(u_fluctuation, axis=0)[2]:.6e}]")  
-print(f"Fluctuation max magnitude: {np.max(np.linalg.norm(u_fluctuation, axis=1)):.6f}")
-print(f"Fluctuation RMS: {np.sqrt(np.mean(u_fluctuation**2)):.6f}")
-
 sol_unflat = problem.unflatten_fn_sol_list(sol)
 displacement = sol_unflat[0]
 
@@ -151,8 +130,3 @@ save_sol(
     point_infos=[("displacement", displacement)],
     cell_infos=[("density", rho_element)]  # Save element-based density directly as cell data
 )
-
-print(f"Saved solution with FCC density field to: {vtk_path}")
-print(f"Element-based density memory: {rho_element.nbytes / 1024:.1f} KB")
-print(f"Old quad-point density would be: {rho_array_0.nbytes / 1024:.1f} KB") 
-print(f"Memory savings: {(1 - rho_element.nbytes / rho_array_0.nbytes) * 100:.1f}%")

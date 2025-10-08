@@ -6,7 +6,7 @@ functions for mesh generation, validation, and format conversion.
 """
 
 import os
-from typing import Tuple, Callable, Optional, TYPE_CHECKING
+from typing import Tuple, Callable, Optional, Union, TYPE_CHECKING
 import numpy as onp
 import meshio
 
@@ -14,6 +14,12 @@ from feax.basis import get_face_shape_vals_and_grads
 
 import jax
 import jax.numpy as np
+
+try:
+    import gmsh
+    GMSH_AVAILABLE = True
+except ImportError:
+    GMSH_AVAILABLE = False
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -54,6 +60,97 @@ class Mesh():
         self.points = points
         self.cells = cells
         self.ele_type = ele_type
+
+    @staticmethod
+    def from_gmsh(gmsh_mesh: meshio.Mesh, element_type: Optional[str] = None) -> 'Mesh':
+        """Convert meshio.Mesh (from Gmsh) to FEAX Mesh.
+
+        This static method converts a meshio.Mesh object (typically from reading
+        a Gmsh file or using meshio's mesh generation) to a FEAX Mesh object.
+
+        Parameters
+        ----------
+        gmsh_mesh : meshio.Mesh
+            Meshio mesh object containing points and cells
+        element_type : str, optional
+            FEAX element type to use. If None, automatically detects from gmsh_mesh.
+            Supported: 'TET4', 'TET10', 'HEX8', 'HEX20', 'HEX27', 'TRI3', 'TRI6', 'QUAD4', 'QUAD8'
+
+        Returns
+        -------
+        mesh : Mesh
+            FEAX Mesh object
+
+        Raises
+        ------
+        ValueError
+            If element_type is not found in gmsh_mesh or is unsupported
+
+        Examples
+        --------
+        Read Gmsh .msh file and convert:
+        >>> import meshio
+        >>> gmsh_mesh = meshio.read("mesh.msh")
+        >>> mesh = Mesh.from_gmsh(gmsh_mesh)
+
+        Convert meshio mesh with specific element type:
+        >>> mesh = Mesh.from_gmsh(gmsh_mesh, element_type='HEX8')
+
+        Notes
+        -----
+        - The method automatically maps meshio cell types to FEAX element types
+        - Only volume elements (3D) and surface elements (2D) are supported
+        - If multiple element types exist, specify element_type to select one
+        """
+        # Mapping from meshio cell types to FEAX element types
+        meshio_to_feax = {
+            'tetra': 'TET4',
+            'tetra10': 'TET10',
+            'hexahedron': 'HEX8',
+            'hexahedron20': 'HEX20',
+            'hexahedron27': 'HEX27',
+            'triangle': 'TRI3',
+            'triangle6': 'TRI6',
+            'quad': 'QUAD4',
+            'quad8': 'QUAD8',
+        }
+
+        # Get available cell types in the mesh
+        available_types = {}
+        for cell_block in gmsh_mesh.cells:
+            cell_type = cell_block.type
+            if cell_type in meshio_to_feax:
+                feax_type = meshio_to_feax[cell_type]
+                available_types[feax_type] = cell_block.data
+
+        if not available_types:
+            raise ValueError(
+                f"No supported element types found in gmsh_mesh. "
+                f"Available types: {[c.type for c in gmsh_mesh.cells]}"
+            )
+
+        # Determine element type to use
+        if element_type is None:
+            # Auto-select: prefer 3D elements, then 2D
+            priority = ['HEX8', 'HEX20', 'HEX27', 'TET4', 'TET10', 'QUAD4', 'QUAD8', 'TRI3', 'TRI6']
+            for pref_type in priority:
+                if pref_type in available_types:
+                    element_type = pref_type
+                    break
+            if element_type is None:
+                element_type = list(available_types.keys())[0]
+
+        if element_type not in available_types:
+            raise ValueError(
+                f"Element type '{element_type}' not found in gmsh_mesh. "
+                f"Available types: {list(available_types.keys())}"
+            )
+
+        # Extract points and cells
+        points = gmsh_mesh.points
+        cells = available_types[element_type]
+
+        return Mesh(points, cells, ele_type=element_type)
 
     def count_selected_faces(self, location_fn: Callable[[np.ndarray], bool]) -> int:
         """Count faces that satisfy a location function.
@@ -179,99 +276,490 @@ def get_meshio_cell_type(ele_type: str) -> str:
     return cell_type
 
 
-def rectangle_mesh(Nx: int, Ny: int, domain_x: float, domain_y: float) -> Mesh:
-    """Generate structured QUAD4 mesh for rectangular domain.
-    
-    Creates a structured quadrilateral mesh over a rectangular domain with
-    uniform spacing in both directions.
+
+def box_mesh(
+    size: Union[float, Tuple[float, float, float]],
+    origin: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    mesh_size: float = 0.1,
+    element_type: str = 'HEX8',
+    recombine: bool = True
+) -> Mesh:
+    """Generate structured or unstructured mesh for box domain using Gmsh.
+
+    Creates high-quality meshes using Gmsh, supporting both hexahedral (HEX8)
+    and tetrahedral (TET4) elements with structured or unstructured meshing.
+
+    Parameters
+    ----------
+    size : float or tuple of 3 floats
+        If float: creates cube with side length = size
+        If tuple: (length_x, length_y, length_z) for rectangular box
+    origin : tuple of 3 floats, optional
+        Origin point (x0, y0, z0) of the box. Default is (0, 0, 0)
+    mesh_size : float, optional
+        Target element size. Smaller values create finer meshes. Default is 0.1
+    element_type : str, optional
+        'HEX8' for hexahedral elements (default) or 'TET4' for tetrahedral
+    recombine : bool, optional
+        If True and element_type='HEX8', use structured recombination algorithm.
+        Default is True for better quality hexahedral meshes.
+
+    Returns
+    -------
+    mesh : Mesh
+        Mesh with HEX8 or TET4 elements
+
+    Raises
+    ------
+    ImportError
+        If gmsh is not installed
+    ValueError
+        If element_type is not 'HEX8' or 'TET4'
+
+    Examples
+    --------
+    Create structured HEX8 mesh:
+    >>> mesh = box_mesh_gmsh(1.0, mesh_size=0.1, element_type='HEX8')
+
+    Create unstructured TET4 mesh:
+    >>> mesh = box_mesh_gmsh((2.0, 1.0, 0.5), mesh_size=0.05, element_type='TET4')
+
+    Notes
+    -----
+    - Gmsh provides superior mesh quality compared to simple structured meshes
+    - HEX8 meshes are preferred for most applications (better accuracy per DOF)
+    - TET4 meshes are more flexible for complex geometries
+    - For simple boxes with uniform elements, use box_mesh() for speed
+    """
+    if not GMSH_AVAILABLE:
+        raise ImportError("gmsh is not installed. Install with: pip install gmsh")
+
+    if element_type not in ['HEX8', 'TET4']:
+        raise ValueError(f"element_type must be 'HEX8' or 'TET4', got {element_type}")
+
+    # Parse size argument
+    if isinstance(size, (int, float)):
+        lx = ly = lz = float(size)
+    else:
+        lx, ly, lz = size
+
+    x0, y0, z0 = origin
+
+    # Initialize Gmsh
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)  # Suppress terminal output
+
+    try:
+        gmsh.model.add("box")
+
+        # Create box geometry
+        box_tag = gmsh.model.occ.addBox(x0, y0, z0, lx, ly, lz)
+        gmsh.model.occ.synchronize()
+
+        # Set mesh size
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", mesh_size)
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size)
+
+        if element_type == 'HEX8' and recombine:
+            # Use transfinite algorithm for structured HEX mesh
+            # Get all surfaces and curves
+            surfaces = gmsh.model.getEntities(2)
+            curves = gmsh.model.getEntities(1)
+
+            # Calculate number of divisions based on mesh_size
+            nx = max(2, int(lx / mesh_size) + 1)
+            ny = max(2, int(ly / mesh_size) + 1)
+            nz = max(2, int(lz / mesh_size) + 1)
+
+            # Set transfinite curves - assign appropriate number of points based on curve direction
+            for curve in curves:
+                _, curve_tag = curve
+                # Get curve endpoints to determine its direction
+                bounds = gmsh.model.getBoundingBox(1, curve_tag)
+                dx = abs(bounds[3] - bounds[0])
+                dy = abs(bounds[4] - bounds[1])
+                dz = abs(bounds[5] - bounds[2])
+
+                # Determine curve direction and set appropriate number of points
+                if dx > dy and dx > dz:  # X-direction curve
+                    num_points = nx
+                elif dy > dx and dy > dz:  # Y-direction curve
+                    num_points = ny
+                else:  # Z-direction curve
+                    num_points = nz
+
+                gmsh.model.mesh.setTransfiniteCurve(curve_tag, num_points)
+
+            # Set transfinite surfaces
+            for surface in surfaces:
+                _, surface_tag = surface
+                gmsh.model.mesh.setTransfiniteSurface(surface_tag)
+                gmsh.model.mesh.setRecombine(2, surface_tag)
+
+            # Set transfinite volume
+            gmsh.model.mesh.setTransfiniteVolume(box_tag)
+            gmsh.model.mesh.setRecombine(3, box_tag)
+
+        elif element_type == 'HEX8' and not recombine:
+            # Unstructured HEX mesh via recombination
+            gmsh.option.setNumber("Mesh.RecombineAll", 1)
+            gmsh.option.setNumber("Mesh.Algorithm", 8)  # Frontal-Delaunay for quads
+            gmsh.option.setNumber("Mesh.Algorithm3D", 1)  # Delaunay for tets, then recombine
+
+        # Generate 3D mesh
+        gmsh.model.mesh.generate(3)
+
+        # Get mesh data
+        node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
+        points = node_coords.reshape(-1, 3)
+
+        # Get elements
+        if element_type == 'HEX8':
+            elem_types, elem_tags, elem_node_tags = gmsh.model.mesh.getElements(3, -1)
+            # Find hexahedral elements (type 5 in Gmsh)
+            hex_idx = None
+            for i, etype in enumerate(elem_types):
+                if etype == 5:  # Hexahedron
+                    hex_idx = i
+                    break
+            if hex_idx is None:
+                raise RuntimeError("No hexahedral elements found in mesh")
+            cells = elem_node_tags[hex_idx].reshape(-1, 8) - 1  # Gmsh uses 1-based indexing
+            ele_type_out = 'HEX8'
+        else:  # TET4
+            elem_types, elem_tags, elem_node_tags = gmsh.model.mesh.getElements(3, -1)
+            # Find tetrahedral elements (type 4 in Gmsh)
+            tet_idx = None
+            for i, etype in enumerate(elem_types):
+                if etype == 4:  # Tetrahedron
+                    tet_idx = i
+                    break
+            if tet_idx is None:
+                raise RuntimeError("No tetrahedral elements found in mesh")
+            cells = elem_node_tags[tet_idx].reshape(-1, 4) - 1
+            ele_type_out = 'TET4'
+
+        # Reindex nodes to be contiguous from 0
+        unique_nodes = onp.unique(cells.flatten())
+        node_map = onp.full(len(points), -1, dtype=onp.int32)
+        node_map[unique_nodes] = onp.arange(len(unique_nodes))
+        cells_reindexed = node_map[cells]
+        points_filtered = points[unique_nodes]
+
+        return Mesh(points_filtered, cells_reindexed, ele_type=ele_type_out)
+
+    finally:
+        gmsh.finalize()
+
+
+def rectangle_mesh(
+    Nx: int,
+    Ny: int,
+    domain_x: float = 1.0,
+    domain_y: float = 1.0,
+    origin: Tuple[float, float] = (0.0, 0.0)
+) -> Mesh:
+    """Generate structured 2D rectangular mesh with QUAD4 elements.
+
+    Creates a simple structured quadrilateral mesh for rectangular domains.
+    This is a lightweight alternative to Gmsh for simple 2D problems.
 
     Parameters
     ----------
     Nx : int
-        Number of elements along x-axis
+        Number of elements in x-direction
     Ny : int
-        Number of elements along y-axis
-    domain_x : float
-        Length of domain along x-axis
-    domain_y : float
-        Length of domain along y-axis
-        
+        Number of elements in y-direction
+    domain_x : float, optional
+        Length of domain in x-direction. Default is 1.0
+    domain_y : float, optional
+        Length of domain in y-direction. Default is 1.0
+    origin : tuple of 2 floats, optional
+        Origin point (x0, y0) of the rectangle. Default is (0, 0)
+
     Returns
     -------
     mesh : Mesh
-        Structured rectangular mesh with QUAD4 elements
-        
+        Mesh with QUAD4 elements
+
+    Examples
+    --------
+    Create 32x32 mesh on unit square:
+    >>> mesh = rectangle_mesh(Nx=32, Ny=32, domain_x=1.0, domain_y=1.0)
+
     Notes
     -----
-    The mesh spans from (0, 0) to (domain_x, domain_y) with uniform element spacing.
-    Node numbering follows standard conventions with elements oriented counter-clockwise.
+    - Generates (Nx+1) × (Ny+1) nodes
+    - Generates Nx × Ny QUAD4 elements
+    - Node ordering follows standard QUAD4 convention
     """
-    dim = 2
-    x = onp.linspace(0, domain_x, Nx + 1)
-    y = onp.linspace(0, domain_y, Ny + 1)
+    x0, y0 = origin
+
+    # Create structured grid of nodes
+    x = onp.linspace(x0, x0 + domain_x, Nx + 1)
+    y = onp.linspace(y0, y0 + domain_y, Ny + 1)
     xv, yv = onp.meshgrid(x, y, indexing='ij')
-    points_xy = onp.stack((xv, yv), axis=dim)
-    points = points_xy.reshape(-1, dim)
-    points_inds = onp.arange(len(points))
-    points_inds_xy = points_inds.reshape(Nx + 1, Ny + 1)
-    inds1 = points_inds_xy[:-1, :-1]
-    inds2 = points_inds_xy[1:, :-1]
-    inds3 = points_inds_xy[1:, 1:]
-    inds4 = points_inds_xy[:-1, 1:]
-    cells = onp.stack((inds1, inds2, inds3, inds4), axis=dim).reshape(-1, 4)
-    mesh = meshio.Mesh(points=points, cells={'quad': cells})
-    return Mesh(mesh.points, mesh.cells_dict['quad'], ele_type="QUAD4")
+
+    # Create points array (num_nodes, 2) - embed in 2D space
+    points = onp.stack([xv.reshape(-1), yv.reshape(-1)], axis=1)
+
+    # Create connectivity for QUAD4 elements
+    # Node numbering: 0--1
+    #                 |  |
+    #                 3--2
+    cells = []
+    for i in range(Nx):
+        for j in range(Ny):
+            # Node indices in the grid
+            n0 = i * (Ny + 1) + j
+            n1 = (i + 1) * (Ny + 1) + j
+            n2 = (i + 1) * (Ny + 1) + (j + 1)
+            n3 = i * (Ny + 1) + (j + 1)
+            cells.append([n0, n1, n2, n3])
+
+    cells = onp.array(cells, dtype=onp.int32)
+
+    return Mesh(points, cells, ele_type='QUAD4')
 
 
-def box_mesh(Nx: int, Ny: int, Nz: int, domain_x: float, domain_y: float, domain_z: float) -> Mesh:
-    """Generate structured HEX8 mesh for box domain.
-    
-    Creates a structured hexahedral mesh over a box domain with uniform
-    spacing in all three directions.
+def sphere_mesh(
+    radius: float,
+    center: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    mesh_size: float = 0.1,
+    element_type: str = 'TET4'
+) -> Mesh:
+    """Generate mesh for sphere using Gmsh.
+
+    Creates a tetrahedral or hexahedral mesh for a spherical domain.
+    Note: Hexahedral meshing of spheres is challenging and may produce
+    lower quality elements.
 
     Parameters
     ----------
-    Nx : int
-        Number of elements along x-axis
-    Ny : int
-        Number of elements along y-axis
-    Nz : int
-        Number of elements along z-axis
-    domain_x : float
-        Length of domain along x-axis
-    domain_y : float
-        Length of domain along y-axis
-    domain_z : float
-        Length of domain along z-axis
-        
+    radius : float
+        Radius of the sphere
+    center : tuple of 3 floats, optional
+        Center point (x, y, z) of the sphere. Default is (0, 0, 0)
+    mesh_size : float, optional
+        Target element size. Default is 0.1
+    element_type : str, optional
+        'TET4' for tetrahedral (default, recommended) or 'HEX8' for hexahedral
+
     Returns
     -------
     mesh : Mesh
-        Structured box mesh with HEX8 elements
-        
+        Mesh with TET4 or HEX8 elements
+
+    Raises
+    ------
+    ImportError
+        If gmsh is not installed
+
+    Examples
+    --------
+    Create TET4 sphere mesh:
+    >>> mesh = sphere_mesh_gmsh(1.0, mesh_size=0.1)
+
     Notes
     -----
-    The mesh spans from (0, 0, 0) to (domain_x, domain_y, domain_z) with uniform 
-    element spacing. Node numbering follows standard hexahedral conventions.
+    - TET4 is strongly recommended for spheres (better quality)
+    - HEX8 meshes for spheres may have distorted elements
     """
-    dim = 3
-    x = onp.linspace(0, domain_x, Nx + 1)
-    y = onp.linspace(0, domain_y, Ny + 1)
-    z = onp.linspace(0, domain_z, Nz + 1)
-    xv, yv, zv = onp.meshgrid(x, y, z, indexing='ij')
-    points_xyz = onp.stack((xv, yv, zv), axis=dim)
-    points = points_xyz.reshape(-1, dim)
-    points_inds = onp.arange(len(points))
-    points_inds_xyz = points_inds.reshape(Nx + 1, Ny + 1, Nz + 1)
-    inds1 = points_inds_xyz[:-1, :-1, :-1]
-    inds2 = points_inds_xyz[1:, :-1, :-1]
-    inds3 = points_inds_xyz[1:, 1:, :-1]
-    inds4 = points_inds_xyz[:-1, 1:, :-1]
-    inds5 = points_inds_xyz[:-1, :-1, 1:]
-    inds6 = points_inds_xyz[1:, :-1, 1:]
-    inds7 = points_inds_xyz[1:, 1:, 1:]
-    inds8 = points_inds_xyz[:-1, 1:, 1:]
-    cells = onp.stack((inds1, inds2, inds3, inds4, inds5, inds6, inds7, inds8),
-                      axis=dim).reshape(-1, 8)
-    mesh = meshio.Mesh(points=points, cells={'hexahedron': cells})
-    return Mesh(mesh.points, mesh.cells_dict['hexahedron'], ele_type="HEX8")
+    if not GMSH_AVAILABLE:
+        raise ImportError("gmsh is not installed. Install with: pip install gmsh")
+
+    if element_type not in ['HEX8', 'TET4']:
+        raise ValueError(f"element_type must be 'HEX8' or 'TET4', got {element_type}")
+
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+
+    try:
+        gmsh.model.add("sphere")
+
+        # Create sphere geometry
+        x0, y0, z0 = center
+        sphere_tag = gmsh.model.occ.addSphere(x0, y0, z0, radius)
+        gmsh.model.occ.synchronize()
+
+        # Set mesh size
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", mesh_size)
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size)
+
+        if element_type == 'HEX8':
+            gmsh.option.setNumber("Mesh.RecombineAll", 1)
+            gmsh.option.setNumber("Mesh.Algorithm3D", 1)
+
+        # Generate mesh
+        gmsh.model.mesh.generate(3)
+
+        # Get mesh data
+        node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
+        points = node_coords.reshape(-1, 3)
+
+        elem_types, elem_tags, elem_node_tags = gmsh.model.mesh.getElements(3, -1)
+
+        if element_type == 'HEX8':
+            hex_idx = None
+            for i, etype in enumerate(elem_types):
+                if etype == 5:
+                    hex_idx = i
+                    break
+            if hex_idx is None:
+                raise RuntimeError("No hexahedral elements found. Try element_type='TET4'")
+            cells = elem_node_tags[hex_idx].reshape(-1, 8) - 1
+            ele_type_out = 'HEX8'
+        else:
+            tet_idx = None
+            for i, etype in enumerate(elem_types):
+                if etype == 4:
+                    tet_idx = i
+                    break
+            if tet_idx is None:
+                raise RuntimeError("No tetrahedral elements found")
+            cells = elem_node_tags[tet_idx].reshape(-1, 4) - 1
+            ele_type_out = 'TET4'
+
+        # Reindex nodes
+        unique_nodes = onp.unique(cells.flatten())
+        node_map = onp.full(len(points), -1, dtype=onp.int32)
+        node_map[unique_nodes] = onp.arange(len(unique_nodes))
+        cells_reindexed = node_map[cells]
+        points_filtered = points[unique_nodes]
+
+        return Mesh(points_filtered, cells_reindexed, ele_type=ele_type_out)
+
+    finally:
+        gmsh.finalize()
+
+
+def cylinder_mesh(
+    radius: float,
+    height: float,
+    center: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    axis: Tuple[float, float, float] = (0.0, 0.0, 1.0),
+    mesh_size: float = 0.1,
+    element_type: str = 'TET4'
+) -> Mesh:
+    """Generate mesh for cylinder using Gmsh.
+
+    Creates a tetrahedral or hexahedral mesh for a cylindrical domain.
+
+    Parameters
+    ----------
+    radius : float
+        Radius of the cylinder
+    height : float
+        Height of the cylinder along the axis
+    center : tuple of 3 floats, optional
+        Center point (x, y, z) of the cylinder base. Default is (0, 0, 0)
+    axis : tuple of 3 floats, optional
+        Direction vector of cylinder axis. Default is (0, 0, 1) (z-axis)
+    mesh_size : float, optional
+        Target element size. Default is 0.1
+    element_type : str, optional
+        'TET4' for tetrahedral (default) or 'HEX8' for hexahedral
+
+    Returns
+    -------
+    mesh : Mesh
+        Mesh with TET4 or HEX8 elements
+
+    Raises
+    ------
+    ImportError
+        If gmsh is not installed
+
+    Examples
+    --------
+    Create TET4 cylinder mesh:
+    >>> mesh = cylinder_mesh_gmsh(0.5, 2.0, mesh_size=0.1)
+
+    Create HEX8 cylinder mesh:
+    >>> mesh = cylinder_mesh_gmsh(0.5, 2.0, mesh_size=0.1, element_type='HEX8')
+    """
+    if not GMSH_AVAILABLE:
+        raise ImportError("gmsh is not installed. Install with: pip install gmsh")
+
+    if element_type not in ['HEX8', 'TET4']:
+        raise ValueError(f"element_type must be 'HEX8' or 'TET4', got {element_type}")
+
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+
+    try:
+        gmsh.model.add("cylinder")
+
+        # Normalize axis
+        axis_array = onp.array(axis)
+        axis_norm = axis_array / onp.linalg.norm(axis_array)
+
+        # For simplicity, create cylinder along z-axis then rotate if needed
+        # Gmsh's addCylinder works best with z-aligned cylinders
+        x0, y0, z0 = center
+
+        # Create cylinder along z-axis
+        cylinder_tag = gmsh.model.occ.addCylinder(x0, y0, z0, 0, 0, height, radius)
+
+        # If axis is not z-aligned, rotate the cylinder
+        if not onp.allclose(axis_norm, [0, 0, 1]):
+            # Calculate rotation to align z-axis with desired axis
+            z_axis = onp.array([0, 0, 1])
+            rotation_axis = onp.cross(z_axis, axis_norm)
+            if onp.linalg.norm(rotation_axis) > 1e-10:
+                rotation_axis = rotation_axis / onp.linalg.norm(rotation_axis)
+                angle = onp.arccos(onp.dot(z_axis, axis_norm))
+                gmsh.model.occ.rotate([(3, cylinder_tag)], x0, y0, z0,
+                                     rotation_axis[0], rotation_axis[1], rotation_axis[2], angle)
+
+        gmsh.model.occ.synchronize()
+
+        # Set mesh size
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", mesh_size)
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size)
+
+        if element_type == 'HEX8':
+            gmsh.option.setNumber("Mesh.RecombineAll", 1)
+            gmsh.option.setNumber("Mesh.Algorithm3D", 1)
+
+        # Generate mesh
+        gmsh.model.mesh.generate(3)
+
+        # Get mesh data
+        node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
+        points = node_coords.reshape(-1, 3)
+
+        elem_types, elem_tags, elem_node_tags = gmsh.model.mesh.getElements(3, -1)
+
+        if element_type == 'HEX8':
+            hex_idx = None
+            for i, etype in enumerate(elem_types):
+                if etype == 5:
+                    hex_idx = i
+                    break
+            if hex_idx is None:
+                raise RuntimeError("No hexahedral elements found. Try element_type='TET4'")
+            cells = elem_node_tags[hex_idx].reshape(-1, 8) - 1
+            ele_type_out = 'HEX8'
+        else:
+            tet_idx = None
+            for i, etype in enumerate(elem_types):
+                if etype == 4:
+                    tet_idx = i
+                    break
+            if tet_idx is None:
+                raise RuntimeError("No tetrahedral elements found")
+            cells = elem_node_tags[tet_idx].reshape(-1, 4) - 1
+            ele_type_out = 'TET4'
+
+        # Reindex nodes
+        unique_nodes = onp.unique(cells.flatten())
+        node_map = onp.full(len(points), -1, dtype=onp.int32)
+        node_map[unique_nodes] = onp.arange(len(unique_nodes))
+        cells_reindexed = node_map[cells]
+        points_filtered = points[unique_nodes]
+
+        return Mesh(points_filtered, cells_reindexed, ele_type=ele_type_out)
+
+    finally:
+        gmsh.finalize()
