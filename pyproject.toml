@@ -18,6 +18,7 @@ version = "0.0.5"
 
 dependencies = [
     "numpy",
+    "pandas"
     "scipy",
     "matplotlib",
     "meshio",

@@ -1,0 +1,2 @@
+num_nodes,num_samples,connection_prob,max_distance,radius,E0,nu
+27,3000,0.3,0.6,0.1,70000.0,0.3
