@@ -479,9 +479,13 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
     
     # Define solver functions
     def solve_cg(A, b, x0):
+        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
+            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+        else:
+            M = solver_options.preconditioner
         x, _ = jax.scipy.sparse.linalg.cg(
             A, b, x0=x0, 
-            M=solver_options.preconditioner,
+            M=M,
             tol=solver_options.linear_solver_tol,
             atol=solver_options.linear_solver_atol,
             maxiter=solver_options.linear_solver_maxiter
@@ -489,9 +493,13 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
         return x
     
     def solve_bicgstab(A, b, x0):
+        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
+            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+        else:
+            M = solver_options.preconditioner
         x, _ = jax.scipy.sparse.linalg.bicgstab(
             A, b, x0=x0,
-            M=solver_options.preconditioner,
+            M=M,
             tol=solver_options.linear_solver_tol,
             atol=solver_options.linear_solver_atol,
             maxiter=solver_options.linear_solver_maxiter
@@ -499,9 +507,13 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
         return x
     
     def solve_gmres(A, b, x0):
+        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
+            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+        else:
+            M = solver_options.preconditioner
         x, _ = jax.scipy.sparse.linalg.gmres(
             A, b, x0=x0,
-            M=solver_options.preconditioner,
+            M=M,
             tol=solver_options.linear_solver_tol,
             atol=solver_options.linear_solver_atol,
             maxiter=solver_options.linear_solver_maxiter
@@ -675,9 +687,13 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
     
     # Define solver functions
     def solve_cg(A, b, x0):
+        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
+            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+        else:
+            M = solver_options.preconditioner
         x, _ = jax.scipy.sparse.linalg.cg(
             A, b, x0=x0, 
-            M=solver_options.preconditioner,
+            M=M,
             tol=solver_options.linear_solver_tol,
             atol=solver_options.linear_solver_atol,
             maxiter=solver_options.linear_solver_maxiter
@@ -685,9 +701,13 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
         return x
     
     def solve_bicgstab(A, b, x0):
+        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
+            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+        else:
+            M = solver_options.preconditioner
         x, _ = jax.scipy.sparse.linalg.bicgstab(
             A, b, x0=x0,
-            M=solver_options.preconditioner,
+            M=M,
             tol=solver_options.linear_solver_tol,
             atol=solver_options.linear_solver_atol,
             maxiter=solver_options.linear_solver_maxiter
@@ -695,9 +715,13 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
         return x
     
     def solve_gmres(A, b, x0):
+        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
+            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+        else:
+            M = solver_options.preconditioner
         x, _ = jax.scipy.sparse.linalg.gmres(
             A, b, x0=x0,
-            M=solver_options.preconditioner,
+            M=M,
             tol=solver_options.linear_solver_tol,
             atol=solver_options.linear_solver_atol,
             maxiter=solver_options.linear_solver_maxiter
@@ -856,9 +880,13 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
     
     # Define solver functions
     def solve_cg(A, b, x0):
+        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
+            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+        else:
+            M = solver_options.preconditioner
         x, _ = jax.scipy.sparse.linalg.cg(
             A, b, x0=x0, 
-            M=solver_options.preconditioner,
+            M=M,
             tol=solver_options.linear_solver_tol,
             atol=solver_options.linear_solver_atol,
             maxiter=solver_options.linear_solver_maxiter
@@ -866,9 +894,13 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         return x
     
     def solve_bicgstab(A, b, x0):
+        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
+            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+        else:
+            M = solver_options.preconditioner
         x, _ = jax.scipy.sparse.linalg.bicgstab(
             A, b, x0=x0,
-            M=solver_options.preconditioner,
+            M=M,
             tol=solver_options.linear_solver_tol,
             atol=solver_options.linear_solver_atol,
             maxiter=solver_options.linear_solver_maxiter
@@ -876,9 +908,13 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         return x
     
     def solve_gmres(A, b, x0):
+        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
+            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+        else:
+            M = solver_options.preconditioner
         x, _ = jax.scipy.sparse.linalg.gmres(
             A, b, x0=x0,
-            M=solver_options.preconditioner,
+            M=M,
             tol=solver_options.linear_solver_tol,
             atol=solver_options.linear_solver_atol,
             maxiter=solver_options.linear_solver_maxiter
@@ -917,13 +953,18 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
     
     return sol, None
 
+
 def __linear_solve_adjoint(A, b, solver_options: SolverOptions):
     
     # Define solver functions
     def solve_cg(A, b, x0):
+        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
+            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+        else:
+            M = solver_options.preconditioner
         x, _ = jax.scipy.sparse.linalg.cg(
             A, b, x0=x0, 
-            M=solver_options.preconditioner,
+            M=M,
             tol=solver_options.linear_solver_tol,
             atol=solver_options.linear_solver_atol,
             maxiter=solver_options.linear_solver_maxiter
@@ -931,19 +972,28 @@ def __linear_solve_adjoint(A, b, solver_options: SolverOptions):
         return x
     
     def solve_bicgstab(A, b, x0):
+        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
+            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+        else:
+            M = solver_options.preconditioner
         x, _ = jax.scipy.sparse.linalg.bicgstab(
             A, b, x0=x0,
-            M=solver_options.preconditioner,
+            M=M,
             tol=solver_options.linear_solver_tol,
             atol=solver_options.linear_solver_atol,
             maxiter=solver_options.linear_solver_maxiter
         )
+
         return x
     
     def solve_gmres(A, b, x0):
+        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
+            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+        else:
+            M = solver_options.preconditioner
         x, _ = jax.scipy.sparse.linalg.gmres(
             A, b, x0=x0,
-            M=solver_options.preconditioner,
+            M=M,
             tol=solver_options.linear_solver_tol,
             atol=solver_options.linear_solver_atol,
             maxiter=solver_options.linear_solver_maxiter

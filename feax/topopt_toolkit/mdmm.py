@@ -25,7 +25,7 @@ def prepare_update(tree):
         A pytree containing the gradient descent ascent update.
     """
     pred = lambda x: isinstance(x, LagrangeMultiplier)
-    return jax.tree_map(lambda x: LagrangeMultiplier(-x.value) if pred(x) else x, tree, is_leaf=pred)
+    return jax.tree.map(lambda x: LagrangeMultiplier(-x.value) if pred(x) else x, tree, is_leaf=pred)
 
 
 def optax_prepare_update():
