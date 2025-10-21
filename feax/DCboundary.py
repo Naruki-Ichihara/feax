@@ -14,11 +14,9 @@ import jax
 import jax.numpy as np
 from jax.experimental.sparse import BCOO
 from dataclasses import dataclass, field
-from typing import Callable, List, Union, Tuple, Optional, TYPE_CHECKING
+from typing import Callable, List, Union, Tuple
 from jax.tree_util import register_pytree_node
 
-if TYPE_CHECKING:
-    from feax.problem import Problem
 
 
 @dataclass(frozen=True)

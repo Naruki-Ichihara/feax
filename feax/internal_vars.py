@@ -1,25 +1,19 @@
 """
 Internal variables management for FEAX finite element framework.
 
-This module provides the InternalVars dataclass for managing material properties
-and loading parameters separately from problem structure. This separation enables
-efficient optimization and parameter studies through JAX transformations.
-
-The design philosophy separates:
-- Problem: Geometric structure (mesh, elements, quadrature)  
-- InternalVars: Material parameters and loads
+This module provides the InternalVars dataclass for handling dynamic parameters
+separately from problem structure.
 """
 
 import jax
 import jax.numpy as np
 from dataclasses import dataclass
-from typing import Tuple, List, Callable, Optional, Union, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from feax.problem import Problem
+from typing import Tuple, List, Callable, Optional
+from feax.problem import Problem
 
 
 @dataclass(frozen=True)
+@jax.tree_util.register_pytree_node_class
 class InternalVars:
     """Container for internal variables used in finite element computations.
 
@@ -393,71 +387,56 @@ class InternalVars:
         surface_vars_list[surface_index] = tuple(surface_tuple_list)
         return InternalVars(self.volume_vars, surface_vars_list)
 
+    def tree_flatten(self) -> Tuple[List[np.ndarray], Tuple[int, List[int]]]:
+        """Flatten InternalVars into leaves and auxiliary data for JAX pytree.
 
-# Register as JAX PyTree for automatic differentiation and transformations
-def _internal_vars_flatten(iv: InternalVars) -> Tuple[List[np.ndarray], Tuple[int, List[int]]]:
-    """Flatten InternalVars into leaves and auxiliary data for JAX pytree.
-    
-    This function extracts all JAX arrays (leaves) and structural information
-    needed to reconstruct the InternalVars object.
-    
-    Parameters
-    ----------
-    iv : InternalVars
-        InternalVars object to flatten
-        
-    Returns
-    -------
-    Tuple[List[np.ndarray], Tuple[int, List[int]]]
-        (leaves, aux_data) where leaves contains all arrays and aux_data
-        contains structure information for reconstruction
-    """
-    # Flatten all arrays into a single list
-    leaves = list(iv.volume_vars)
-    for surface_tuple in iv.surface_vars:
-        leaves.extend(surface_tuple)
-    
-    # Auxiliary data to reconstruct structure
-    aux_data = (len(iv.volume_vars), [len(st) for st in iv.surface_vars])
-    return leaves, aux_data
+        This method extracts all JAX arrays (leaves) and structural information
+        needed to reconstruct the InternalVars object.
 
+        Returns
+        -------
+        Tuple[List[np.ndarray], Tuple[int, List[int]]]
+            (leaves, aux_data) where leaves contains all arrays and aux_data
+            contains structure information for reconstruction
+        """
+        # Flatten all arrays into a single list
+        leaves = list(self.volume_vars)
+        for surface_tuple in self.surface_vars:
+            leaves.extend(surface_tuple)
 
-def _internal_vars_unflatten(aux_data: Tuple[int, List[int]], leaves: List[np.ndarray]) -> InternalVars:
-    """Reconstruct InternalVars from flattened leaves and auxiliary data.
-    
-    This function rebuilds the InternalVars structure from the flat list of
-    arrays and structural information.
-    
-    Parameters
-    ----------
-    aux_data : Tuple[int, List[int]]
-        Structural information: (num_volume_vars, surface_var_counts)
-    leaves : List[np.ndarray]
-        Flat list of all arrays
-        
-    Returns
-    -------
-    InternalVars
-        Reconstructed InternalVars object
-    """
-    num_volume_vars, surface_var_counts = aux_data
-    
-    # Extract volume vars
-    volume_vars = tuple(leaves[:num_volume_vars])
-    leaves = leaves[num_volume_vars:]
-    
-    # Extract surface vars
-    surface_vars = []
-    for count in surface_var_counts:
-        surface_vars.append(tuple(leaves[:count]))
-        leaves = leaves[count:]
-    
-    return InternalVars(volume_vars, surface_vars)
+        # Auxiliary data to reconstruct structure
+        aux_data = (len(self.volume_vars), [len(st) for st in self.surface_vars])
+        return leaves, aux_data
 
+    @classmethod
+    def tree_unflatten(cls, aux_data: Tuple[int, List[int]], leaves: List[np.ndarray]) -> 'InternalVars':
+        """Reconstruct InternalVars from flattened leaves and auxiliary data.
 
-# Register the PyTree
-jax.tree_util.register_pytree_node(
-    InternalVars,
-    _internal_vars_flatten,
-    _internal_vars_unflatten
-)
+        This method rebuilds the InternalVars structure from the flat list of
+        arrays and structural information.
+
+        Parameters
+        ----------
+        aux_data : Tuple[int, List[int]]
+            Structural information: (num_volume_vars, surface_var_counts)
+        leaves : List[np.ndarray]
+            Flat list of all arrays
+
+        Returns
+        -------
+        InternalVars
+            Reconstructed InternalVars object
+        """
+        num_volume_vars, surface_var_counts = aux_data
+
+        # Extract volume vars
+        volume_vars = tuple(leaves[:num_volume_vars])
+        leaves = leaves[num_volume_vars:]
+
+        # Extract surface vars
+        surface_vars = []
+        for count in surface_var_counts:
+            surface_vars.append(tuple(leaves[:count]))
+            leaves = leaves[count:]
+
+        return cls(volume_vars, surface_vars)

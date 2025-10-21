@@ -11,10 +11,8 @@ Note: This implementation is adapted from JAX-FEM.
 
 import basix
 import numpy as onp
-from typing import Tuple, List, Optional, Union, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from numpy.typing import NDArray
+from typing import Tuple, List, Optional
+from jax import Array
 
 def get_elements(ele_type: str) -> Tuple[basix.ElementFamily, basix.CellType, basix.CellType, int, int, List[int]]:
     """Get element configuration data for basix library integration.
@@ -120,7 +118,7 @@ def get_elements(ele_type: str) -> Tuple[basix.ElementFamily, basix.CellType, ba
     return element_family, basix_ele, basix_face_ele, gauss_order, degree, re_order
 
 
-def reorder_inds(inds: 'NDArray', re_order: List[int]) -> 'NDArray':
+def reorder_inds(inds: Array, re_order: List[int]) -> Array:
     """Apply node re-ordering transformation to match basix conventions.
     
     Converts node indices between meshio ordering (used by mesh files)
@@ -146,7 +144,7 @@ def reorder_inds(inds: 'NDArray', re_order: List[int]) -> 'NDArray':
     return new_inds
 
 
-def get_shape_vals_and_grads(ele_type: str, gauss_order: Optional[int] = None) -> Tuple['NDArray', 'NDArray', 'NDArray']:
+def get_shape_vals_and_grads(ele_type: str, gauss_order: Optional[int] = None) -> Tuple[Array, Array, Array]:
     """Compute shape function values and gradients using basix.
     
     Generates shape function values, reference gradients, and quadrature
@@ -190,7 +188,7 @@ def get_shape_vals_and_grads(ele_type: str, gauss_order: Optional[int] = None) -
     return shape_values, shape_grads_ref, weights
 
 
-def get_face_shape_vals_and_grads(ele_type: str, gauss_order: Optional[int] = None) -> Tuple['NDArray', 'NDArray', 'NDArray', 'NDArray', 'NDArray']:
+def get_face_shape_vals_and_grads(ele_type: str, gauss_order: Optional[int] = None) -> Tuple[Array, Array, Array, Array, Array]:
     """Compute face shape functions and geometric data for surface integrals.
     
     Generates shape function values, gradients, quadrature data, and geometric

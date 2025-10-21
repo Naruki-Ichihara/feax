@@ -6,23 +6,14 @@ functions for mesh generation, validation, and format conversion.
 """
 
 import os
-from typing import Tuple, Callable, Optional, Union, TYPE_CHECKING
+from typing import Tuple, Callable, Optional, Union
 import numpy as onp
 import meshio
-
 from feax.basis import get_face_shape_vals_and_grads
-
 import jax
 import jax.numpy as np
-
-try:
-    import gmsh
-    GMSH_AVAILABLE = True
-except ImportError:
-    GMSH_AVAILABLE = False
-
-if TYPE_CHECKING:
-    from numpy.typing import NDArray
+from jax import Array
+import gmsh
 
 
 class Mesh():
@@ -34,28 +25,28 @@ class Mesh():
 
     Parameters
     ----------
-    points : NDArray
+    points : Array
         Node coordinates with shape (num_total_nodes, dim)
-    cells : NDArray
+    cells : Array
         Element connectivity with shape (num_cells, num_nodes_per_element)
     ele_type : str, optional
         Element type identifier (default: 'TET4')
-        
+
     Attributes
     ----------
-    points : NDArray
+    points : Array
         Node coordinates with shape (num_total_nodes, dim)
-    cells : NDArray
-        Element connectivity with shape (num_cells, num_nodes_per_element)  
+    cells : Array
+        Element connectivity with shape (num_cells, num_nodes_per_element)
     ele_type : str
         Element type identifier
-        
+
     Notes
     -----
     The element connectivity array should follow the standard node ordering
     conventions for each element type.
     """
-    def __init__(self, points: 'NDArray', cells: 'NDArray', ele_type: str = 'TET4') -> None:
+    def __init__(self, points: Array, cells: Array, ele_type: str = 'TET4') -> None:
         # TODO (Very important for debugging purpose!): Assert that cells must have correct orders
         self.points = points
         self.cells = cells
@@ -190,17 +181,17 @@ class Mesh():
         return boundary_inds.shape[0]
 
 
-def check_mesh_TET4(points: 'NDArray', cells: 'NDArray') -> np.ndarray:
+def check_mesh_TET4(points: Array, cells: Array) -> np.ndarray:
     """Check the node ordering of TET4 elements by computing signed volumes.
-    
+
     This function computes the signed volume of each tetrahedral element to verify
     proper node ordering. Negative volumes indicate inverted elements.
 
     Parameters
     ----------
-    points : NDArray
+    points : Array
         Node coordinates with shape (num_nodes, 3)
-    cells : NDArray  
+    cells : Array
         Element connectivity with shape (num_elements, 4)
 
     Returns
@@ -331,8 +322,6 @@ def box_mesh(
     - TET4 meshes are more flexible for complex geometries
     - For simple boxes with uniform elements, use box_mesh() for speed
     """
-    if not GMSH_AVAILABLE:
-        raise ImportError("gmsh is not installed. Install with: pip install gmsh")
 
     if element_type not in ['HEX8', 'TET4']:
         raise ValueError(f"element_type must be 'HEX8' or 'TET4', got {element_type}")
@@ -447,7 +436,6 @@ def box_mesh(
         points_filtered = points[unique_nodes]
 
         return Mesh(points_filtered, cells_reindexed, ele_type=ele_type_out)
-
     finally:
         gmsh.finalize()
 
@@ -565,8 +553,6 @@ def sphere_mesh(
     - TET4 is strongly recommended for spheres (better quality)
     - HEX8 meshes for spheres may have distorted elements
     """
-    if not GMSH_AVAILABLE:
-        raise ImportError("gmsh is not installed. Install with: pip install gmsh")
 
     if element_type not in ['HEX8', 'TET4']:
         raise ValueError(f"element_type must be 'HEX8' or 'TET4', got {element_type}")
@@ -678,8 +664,6 @@ def cylinder_mesh(
     Create HEX8 cylinder mesh:
     >>> mesh = cylinder_mesh_gmsh(0.5, 2.0, mesh_size=0.1, element_type='HEX8')
     """
-    if not GMSH_AVAILABLE:
-        raise ImportError("gmsh is not installed. Install with: pip install gmsh")
 
     if element_type not in ['HEX8', 'TET4']:
         raise ValueError(f"element_type must be 'HEX8' or 'TET4', got {element_type}")

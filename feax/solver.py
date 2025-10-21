@@ -16,13 +16,61 @@ Key Features:
 import jax
 import jax.numpy as jnp
 from dataclasses import dataclass
-from typing import Optional, Callable, Union, Tuple, Any, TYPE_CHECKING
+from typing import Optional, Callable
 from .assembler import create_J_bc_function, create_res_bc_function
 from .DCboundary import DirichletBC
 
-if TYPE_CHECKING:
-    from feax.problem import Problem
-    from feax.internal_vars import InternalVars
+
+@dataclass(frozen=True)
+class SolverOptions:
+    """Configuration options for the Newton solver.
+
+    Parameters
+    ----------
+    tol : float, default 1e-6
+        Absolute tolerance for residual vector (l2 norm)
+    rel_tol : float, default 1e-8
+        Relative tolerance for residual vector (l2 norm)
+    max_iter : int, default 100
+        Maximum number of Newton iterations
+    linear_solver : str, default "cg"
+        Linear solver type. Options: "cg", "bicgstab", "gmres"
+    preconditioner : callable, optional
+        Preconditioner function for linear solver
+    use_jacobi_preconditioner : bool, default False
+        Whether to use Jacobi (diagonal) preconditioner automatically
+    jacobi_shift : float, default 1e-12
+        Regularization parameter for Jacobi preconditioner
+    linear_solver_tol : float, default 1e-10
+        Tolerance for linear solver
+    linear_solver_atol : float, default 1e-10
+        Absolute tolerance for linear solver
+    linear_solver_maxiter : int, default 10000
+        Maximum iterations for linear solver
+    linear_solver_x0_fn : callable, optional
+        Custom function to compute initial guess: f(current_sol) -> x0
+    line_search_max_backtracks : int, default 30
+        Maximum number of backtracking steps in Armijo line search
+    line_search_c1 : float, default 1e-4
+        Armijo constant for sufficient decrease condition
+    line_search_rho : float, default 0.5
+        Backtracking factor for line search (alpha *= rho each iteration)
+    """
+
+    tol: float = 1e-6
+    rel_tol: float = 1e-8
+    max_iter: int = 100
+    linear_solver: str = "cg"  # Options: "cg", "bicgstab", "gmres"
+    preconditioner: Optional[Callable] = None
+    use_jacobi_preconditioner: bool = False
+    jacobi_shift: float = 1e-12
+    linear_solver_tol: float = 1e-10
+    linear_solver_atol: float = 1e-10
+    linear_solver_maxiter: int = 10000
+    linear_solver_x0_fn: Optional[Callable] = None  # Function to compute initial guess: f(current_sol) -> x0
+    line_search_max_backtracks: int = 30
+    line_search_c1: float = 1e-4
+    line_search_rho: float = 0.5
 
 
 def create_jacobi_preconditioner(A: jax.experimental.sparse.BCOO, shift: float = 1e-12) -> jax.experimental.sparse.BCOO:
@@ -159,47 +207,190 @@ def create_x0(bc_rows=None, bc_vals=None, P_mat=None):
     return x0_fn
 
 
-@dataclass(frozen=True)
-class SolverOptions:
-    """Configuration options for the Newton solver.
-    
+def create_armijo_line_search_jax(res_bc_applied, c1=1e-4, rho=0.5, max_backtracks=30):
+    """Create JAX-compatible Armijo backtracking line search using jax.lax.scan.
+
+    This function returns a line search function that can be JIT-compiled.
+
     Parameters
     ----------
-    tol : float, default 1e-6
-        Absolute tolerance for residual vector (l2 norm)
-    rel_tol : float, default 1e-8
-        Relative tolerance for residual vector (l2 norm)
-    max_iter : int, default 100
-        Maximum number of Newton iterations
-    linear_solver : str, default "cg"
-        Linear solver type. Options: "cg", "bicgstab", "gmres"
-    preconditioner : callable, optional
-        Preconditioner function for linear solver
-    use_jacobi_preconditioner : bool, default False
-        Whether to use Jacobi (diagonal) preconditioner automatically
-    jacobi_shift : float, default 1e-12
-        Regularization parameter for Jacobi preconditioner
-    linear_solver_tol : float, default 1e-10
-        Tolerance for linear solver
-    linear_solver_atol : float, default 1e-10
-        Absolute tolerance for linear solver
-    linear_solver_maxiter : int, default 10000
-        Maximum iterations for linear solver
-    linear_solver_x0_fn : callable, optional
-        Custom function to compute initial guess: f(current_sol) -> x0
+    res_bc_applied : callable
+        Residual function with boundary conditions applied.
+        Signature: res_bc_applied(sol, internal_vars=None) -> residual
+    c1 : float, default 1e-4
+        Armijo constant for sufficient decrease condition
+    rho : float, default 0.5
+        Backtracking factor (alpha *= rho each iteration)
+    max_backtracks : int, default 30
+        Maximum number of backtracking steps
+
+    Returns
+    -------
+    line_search_fn : callable
+        Line search function with signature:
+        (sol, delta_sol, initial_res_norm, internal_vars=None) -> (new_sol, new_norm, alpha, success)
     """
-    
-    tol: float = 1e-6
-    rel_tol: float = 1e-8
-    max_iter: int = 100
-    linear_solver: str = "cg"  # Options: "cg", "bicgstab", "gmres"
-    preconditioner: Optional[Callable] = None
-    use_jacobi_preconditioner: bool = False
-    jacobi_shift: float = 1e-12
-    linear_solver_tol: float = 1e-10
-    linear_solver_atol: float = 1e-10
-    linear_solver_maxiter: int = 10000
-    linear_solver_x0_fn: Optional[Callable] = None  # Function to compute initial guess: f(current_sol) -> x0
+
+    def armijo_line_search_body(carry, _):
+        """Body function for line search loop."""
+        alpha, found_good, best_sol, best_norm, internal_vars = carry
+
+        # Try current alpha
+        trial_sol = carry[2] - alpha * carry[1]  # best_sol stored separately, use delta from closure
+        if internal_vars is not None:
+            trial_res = res_bc_applied(trial_sol, internal_vars)
+        else:
+            trial_res = res_bc_applied(trial_sol)
+        trial_norm = jnp.linalg.norm(trial_res)
+
+        # Check if valid (no NaN) and satisfies Armijo condition
+        is_valid = jnp.logical_not(jnp.any(jnp.isnan(trial_res)))
+        merit_decrease = 0.5 * (trial_norm**2 - carry[3]**2)  # vs initial_res_norm
+        grad_merit = -jnp.dot(carry[4], carry[4])  # -||res||^2, res stored in closure
+        armijo_satisfied = merit_decrease <= c1 * alpha * grad_merit
+
+        is_acceptable = is_valid & armijo_satisfied
+
+        # Update carry: if acceptable and not found yet, use this
+        new_found = found_good | is_acceptable
+        new_sol = jnp.where(jnp.logical_not(found_good) & is_acceptable, trial_sol, best_sol)
+        new_norm = jnp.where(jnp.logical_not(found_good) & is_acceptable, trial_norm, best_norm)
+        new_alpha = jnp.where(is_acceptable, alpha, alpha * rho)
+
+        return (new_alpha, new_found, new_sol, new_norm, internal_vars), None
+
+    def line_search(sol, delta_sol, res, res_norm, internal_vars=None):
+        """Execute Armijo line search.
+
+        Parameters
+        ----------
+        sol : array
+            Current solution
+        delta_sol : array
+            Search direction (Newton step)
+        res : array
+            Residual at current solution
+        res_norm : float
+            Norm of residual
+        internal_vars : InternalVars, optional
+            Internal variables for residual evaluation
+
+        Returns
+        -------
+        new_sol : array
+            Updated solution
+        new_norm : float
+            Residual norm at new solution
+        alpha : float
+            Step size used
+        success : bool
+            Whether a valid step was found
+        """
+        # Initialize with full Newton step
+        init_carry = (1.0, False, sol + delta_sol, res_norm, internal_vars)
+
+        # Run line search with closure over delta_sol and res
+        def body_with_closure(carry, x):
+            alpha, found_good, best_sol, best_norm, iv = carry
+            trial_sol = sol + alpha * delta_sol  # Use closure variables
+            if iv is not None:
+                trial_res = res_bc_applied(trial_sol, iv)
+            else:
+                trial_res = res_bc_applied(trial_sol)
+            trial_norm = jnp.linalg.norm(trial_res)
+
+            is_valid = jnp.logical_not(jnp.any(jnp.isnan(trial_res)))
+            merit_decrease = 0.5 * (trial_norm**2 - res_norm**2)
+            grad_merit = -jnp.dot(res, res)
+            armijo_satisfied = merit_decrease <= c1 * alpha * grad_merit
+            is_acceptable = is_valid & armijo_satisfied
+
+            new_found = found_good | is_acceptable
+            new_sol = jnp.where(jnp.logical_not(found_good) & is_acceptable, trial_sol, best_sol)
+            new_norm = jnp.where(jnp.logical_not(found_good) & is_acceptable, trial_norm, best_norm)
+            new_alpha = jnp.where(is_acceptable, alpha, alpha * rho)
+
+            return (new_alpha, new_found, new_sol, new_norm, iv), None
+
+        final_carry, _ = jax.lax.scan(
+            body_with_closure,
+            init_carry,
+            jnp.arange(max_backtracks)
+        )
+
+        final_alpha, found_good, new_sol, new_norm, _ = final_carry
+
+        # If no good step found, use very small step as fallback
+        fallback_sol = sol + 1e-8 * delta_sol
+        if internal_vars is not None:
+            fallback_res = res_bc_applied(fallback_sol, internal_vars)
+        else:
+            fallback_res = res_bc_applied(fallback_sol)
+        fallback_norm = jnp.linalg.norm(fallback_res)
+
+        # Use fallback if nothing worked
+        final_sol = jnp.where(found_good, new_sol, fallback_sol)
+        final_norm = jnp.where(found_good, new_norm, fallback_norm)
+        final_alpha_out = jnp.where(found_good, final_alpha, 1e-8)
+
+        return final_sol, final_norm, final_alpha_out, found_good
+
+    return line_search
+
+
+def create_armijo_line_search_python(res_bc_applied, c1=1e-4, rho=0.5, max_backtracks=30):
+    """Create Python-based Armijo backtracking line search.
+
+    This version uses Python loops and is suitable for debugging or non-JIT contexts.
+
+    Parameters
+    ----------
+    res_bc_applied : callable
+        Residual function with boundary conditions applied
+    c1 : float, default 1e-4
+        Armijo constant
+    rho : float, default 0.5
+        Backtracking factor
+    max_backtracks : int, default 30
+        Maximum backtracking steps
+
+    Returns
+    -------
+    line_search_fn : callable
+        Line search function
+    """
+    def line_search(sol, delta_sol, res, res_norm, internal_vars=None):
+        """Execute Armijo line search using Python loop."""
+        grad_merit = -jnp.dot(res, res)
+
+        alpha = 1.0
+        for _ in range(max_backtracks):
+            trial_sol = sol + alpha * delta_sol
+            if internal_vars is not None:
+                trial_res = res_bc_applied(trial_sol, internal_vars)
+            else:
+                trial_res = res_bc_applied(trial_sol)
+            trial_norm = jnp.linalg.norm(trial_res)
+
+            is_valid = not jnp.any(jnp.isnan(trial_res))
+            merit_decrease = 0.5 * (trial_norm**2 - res_norm**2)
+            armijo_satisfied = merit_decrease <= c1 * alpha * grad_merit
+
+            if is_valid and armijo_satisfied:
+                return trial_sol, trial_norm, alpha, True
+
+            alpha *= rho
+
+        # Fallback
+        fallback_sol = sol + 1e-8 * delta_sol
+        if internal_vars is not None:
+            fallback_res = res_bc_applied(fallback_sol, internal_vars)
+        else:
+            fallback_res = res_bc_applied(fallback_sol)
+        fallback_norm = jnp.linalg.norm(fallback_res)
+        return fallback_sol, fallback_norm, 1e-8, False
+
+    return line_search
 
 
 def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None, P_mat=None):
@@ -314,7 +505,16 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         # Assume A is already in BCOO format (which it should be from the assembler)
         # Use pre-selected solver function (no conditionals in JAX-traced code)
         return linear_solve_fn(A, b, x0)
-    
+
+    # Create line search function once (outside the loop)
+    # Use JAX scan version (JIT-compatible, no early exit)
+    armijo_search = create_armijo_line_search_jax(
+        res_bc_applied,
+        c1=solver_options.line_search_c1,
+        rho=solver_options.line_search_rho,
+        max_backtracks=solver_options.line_search_max_backtracks
+    )
+
     def cond_fun(state):
         """Condition function for while loop."""
         sol, res_norm, rel_res_norm, iter_count = state
@@ -338,67 +538,12 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         
         # Solve linear system: J * delta_sol = -res
         delta_sol = linear_solve_jit(J, -res, x0=x0)
-        
-        # Efficient Armijo backtracking line search
-        # More efficient than vectorized evaluation for large problems
-        
-        initial_res_norm = jnp.linalg.norm(res)
-        grad_merit = -jnp.dot(res, res)  # Directional derivative
-        c1 = 1e-4  # Armijo constant
-        
-        # Define backtracking parameters
-        rho = 0.5  # Backtracking factor
-        max_backtracks = 30  # Allow many backtracks for hard problems
-        
-        def armijo_line_search_body(carry, _):
-            """Body function for line search loop."""
-            alpha, found_good, best_sol, best_norm = carry
-            
-            # Try current alpha
-            trial_sol = sol + alpha * delta_sol
-            if internal_vars is not None:
-                trial_res = res_bc_applied(trial_sol, internal_vars)
-            else:
-                trial_res = res_bc_applied(trial_sol)
-            trial_norm = jnp.linalg.norm(trial_res)
-            
-            # Check if valid (no NaN) and satisfies Armijo condition
-            is_valid = jnp.logical_not(jnp.any(jnp.isnan(trial_res)))
-            merit_decrease = 0.5 * (trial_norm**2 - initial_res_norm**2)
-            armijo_satisfied = merit_decrease <= c1 * alpha * grad_merit
-            
-            is_acceptable = is_valid & armijo_satisfied
-            
-            # Update carry: if acceptable and not found yet, use this
-            new_found = found_good | is_acceptable
-            new_sol = jnp.where(jnp.logical_not(found_good) & is_acceptable, trial_sol, best_sol)
-            new_norm = jnp.where(jnp.logical_not(found_good) & is_acceptable, trial_norm, best_norm)
-            new_alpha = jnp.where(is_acceptable, alpha, alpha * rho)
-            
-            return (new_alpha, new_found, new_sol, new_norm), None
-        
-        # Initialize with full Newton step
-        init_carry = (1.0, False, sol + delta_sol, jnp.inf)
-        
-        # Run line search
-        final_carry, _ = jax.lax.scan(
-            armijo_line_search_body, 
-            init_carry, 
-            jnp.arange(max_backtracks)
-        )
-        
-        _, found_good, new_sol, new_norm = final_carry
-        
-        # If no good step found, use very small step as fallback
-        fallback_sol = sol + 1e-8 * delta_sol
-        if internal_vars is not None:
-            fallback_res = res_bc_applied(fallback_sol, internal_vars)
-        else:
-            fallback_res = res_bc_applied(fallback_sol)
-        fallback_norm = jnp.linalg.norm(fallback_res)
-        
-        sol = jnp.where(found_good, new_sol, fallback_sol)
-        res_norm = jnp.where(found_good, new_norm, fallback_norm)
+
+        # Armijo backtracking line search (using function created outside loop)
+        new_sol, new_norm, _, _ = armijo_search(sol, delta_sol, res, res_norm, internal_vars)
+
+        sol = new_sol
+        res_norm = new_norm
         
         # Update iteration count
         iter_count = iter_count + 1
@@ -524,14 +669,22 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
     valid_solvers = {"cg", "bicgstab", "gmres"}
     if solver_options.linear_solver not in valid_solvers:
         raise ValueError(f"Unknown linear solver: {solver_options.linear_solver}. Choose from {valid_solvers}")
-    
+
     if solver_options.linear_solver == "cg":
         linear_solve_fn = solve_cg
     elif solver_options.linear_solver == "bicgstab":
         linear_solve_fn = solve_bicgstab
     else:
         linear_solve_fn = solve_gmres
-    
+
+    # Create line search function once (outside the loop)
+    armijo_search = create_armijo_line_search_jax(
+        res_bc_applied,
+        c1=solver_options.line_search_c1,
+        rho=solver_options.line_search_rho,
+        max_backtracks=solver_options.line_search_max_backtracks
+    )
+
     def newton_iteration(_, state):
         """Single Newton iteration for fori_loop."""
         sol, res_norm = state
@@ -546,70 +699,12 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
         
         # Compute initial guess for increment
         x0 = x0_fn(sol)
-        
+
         # Solve linear system: J * delta_sol = -res
         delta_sol = linear_solve_fn(J, -res, x0)
-        
-        # Efficient Armijo backtracking line search
-        # More efficient than vectorized evaluation for large problems
-        
-        initial_res_norm = jnp.linalg.norm(res)
-        grad_merit = -jnp.dot(res, res)  # Directional derivative
-        c1 = 1e-4  # Armijo constant
-        
-        # Define backtracking parameters
-        rho = 0.5  # Backtracking factor
-        max_backtracks = 30  # Allow many backtracks for hard problems
-        
-        def armijo_line_search_body(carry, _):
-            """Body function for line search loop."""
-            alpha, found_good, best_sol, best_norm = carry
-            
-            # Try current alpha
-            trial_sol = sol + alpha * delta_sol
-            if internal_vars is not None:
-                trial_res = res_bc_applied(trial_sol, internal_vars)
-            else:
-                trial_res = res_bc_applied(trial_sol)
-            trial_norm = jnp.linalg.norm(trial_res)
-            
-            # Check if valid (no NaN) and satisfies Armijo condition
-            is_valid = jnp.logical_not(jnp.any(jnp.isnan(trial_res)))
-            merit_decrease = 0.5 * (trial_norm**2 - initial_res_norm**2)
-            armijo_satisfied = merit_decrease <= c1 * alpha * grad_merit
-            
-            is_acceptable = is_valid & armijo_satisfied
-            
-            # Update carry: if acceptable and not found yet, use this
-            new_found = found_good | is_acceptable
-            new_sol = jnp.where(jnp.logical_not(found_good) & is_acceptable, trial_sol, best_sol)
-            new_norm = jnp.where(jnp.logical_not(found_good) & is_acceptable, trial_norm, best_norm)
-            new_alpha = jnp.where(is_acceptable, alpha, alpha * rho)
-            
-            return (new_alpha, new_found, new_sol, new_norm), None
-        
-        # Initialize with full Newton step
-        init_carry = (1.0, False, sol + delta_sol, jnp.inf)
-        
-        # Run line search
-        final_carry, _ = jax.lax.scan(
-            armijo_line_search_body, 
-            init_carry, 
-            jnp.arange(max_backtracks)
-        )
-        
-        _, found_good, new_sol, new_norm = final_carry
-        
-        # If no good step found, use very small step as fallback
-        fallback_sol = sol + 1e-8 * delta_sol
-        if internal_vars is not None:
-            fallback_res = res_bc_applied(fallback_sol, internal_vars)
-        else:
-            fallback_res = res_bc_applied(fallback_sol)
-        fallback_norm = jnp.linalg.norm(fallback_res)
-        
-        sol = jnp.where(found_good, new_sol, fallback_sol)
-        res_norm = jnp.where(found_good, new_norm, fallback_norm)
+
+        # Armijo backtracking line search using shared function
+        sol, res_norm, _, _ = armijo_search(sol, delta_sol, res, res_norm, internal_vars)
         
         return (sol, res_norm)
     
@@ -732,49 +827,21 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
     valid_solvers = {"cg", "bicgstab", "gmres"}
     if solver_options.linear_solver not in valid_solvers:
         raise ValueError(f"Unknown linear solver: {solver_options.linear_solver}. Choose from {valid_solvers}")
-    
+
     if solver_options.linear_solver == "cg":
         linear_solve_fn = solve_cg
     elif solver_options.linear_solver == "bicgstab":
         linear_solve_fn = solve_bicgstab
     else:
         linear_solve_fn = solve_gmres
-    
-    def armijo_line_search(sol, delta_sol, res, res_norm):
-        """Python version of Armijo backtracking line search."""
-        grad_merit = -jnp.dot(res, res)  # Directional derivative
-        c1 = 1e-4  # Armijo constant
-        rho = 0.5  # Backtracking factor
-        max_backtracks = 30
-        
-        alpha = 1.0
-        for _ in range(max_backtracks):
-            # Try current alpha
-            trial_sol = sol + alpha * delta_sol
-            if internal_vars is not None:
-                trial_res = res_bc_applied(trial_sol, internal_vars)
-            else:
-                trial_res = res_bc_applied(trial_sol)
-            trial_norm = jnp.linalg.norm(trial_res)
-            
-            # Check if valid (no NaN) and satisfies Armijo condition
-            is_valid = not jnp.any(jnp.isnan(trial_res))
-            merit_decrease = 0.5 * (trial_norm**2 - res_norm**2)
-            armijo_satisfied = merit_decrease <= c1 * alpha * grad_merit
-            
-            if is_valid and armijo_satisfied:
-                return trial_sol, trial_norm, alpha, True
-            
-            alpha *= rho
-        
-        # If no good step found, use very small step as fallback
-        fallback_sol = sol + 1e-8 * delta_sol
-        if internal_vars is not None:
-            fallback_res = res_bc_applied(fallback_sol, internal_vars)
-        else:
-            fallback_res = res_bc_applied(fallback_sol)
-        fallback_norm = jnp.linalg.norm(fallback_res)
-        return fallback_sol, fallback_norm, 1e-8, False
+
+    # Create line search function using shared Python version
+    armijo_line_search = create_armijo_line_search_python(
+        res_bc_applied,
+        c1=solver_options.line_search_c1,
+        rho=solver_options.line_search_rho,
+        max_backtracks=solver_options.line_search_max_backtracks
+    )
     
     # Initialize
     sol = initial_guess
@@ -804,10 +871,10 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
         
         # Solve linear system: J * delta_sol = -res
         delta_sol = linear_solve_fn(J, -res, x0)
-        
-        # Line search
+
+        # Line search using shared function
         new_sol, new_res_norm, _, _ = armijo_line_search(
-            sol, delta_sol, res, res_norm
+            sol, delta_sol, res, res_norm, internal_vars
         )
         
         # Update solution

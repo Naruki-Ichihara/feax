@@ -16,16 +16,8 @@ import jax.numpy as np
 from jax.experimental import sparse
 import jax.flatten_util
 import functools
-from typing import List, Tuple, Any, TYPE_CHECKING
+from typing import List, Tuple, Any, Callable
 from feax.internal_vars import InternalVars
-from feax.types import (
-    TensorMap, MassMap, SurfaceMap, LaplaceKernel, MassKernel, SurfaceKernel,
-    VolumeKernel, JacobianFunction, ResidualFunction
-)
-
-if TYPE_CHECKING:
-    from feax.problem import Problem
-    from feax.DCboundary import DirichletBC
 
 
 def interpolate_to_quad_points(var: np.ndarray, shape_vals: np.ndarray, num_cells: int, num_quads: int) -> np.ndarray:
@@ -72,7 +64,7 @@ def interpolate_to_quad_points(var: np.ndarray, shape_vals: np.ndarray, num_cell
         raise ValueError(f"Variable has unexpected shape: {var.shape}")
 
 
-def get_laplace_kernel(problem: 'Problem', tensor_map: TensorMap) -> LaplaceKernel:
+def get_laplace_kernel(problem: 'Problem', tensor_map: Callable) -> Callable:
     """Create Laplace kernel function for gradient-based physics.
     
     The Laplace kernel handles gradient-based terms in the weak form, such as
@@ -154,7 +146,7 @@ def get_laplace_kernel(problem: 'Problem', tensor_map: TensorMap) -> LaplaceKern
     return laplace_kernel
 
 
-def get_mass_kernel(problem: 'Problem', mass_map: MassMap) -> MassKernel:
+def get_mass_kernel(problem: 'Problem', mass_map: Callable) -> Callable:
     """Create mass kernel function for non-gradient terms.
     
     The mass kernel handles terms without derivatives in the weak form, such as
@@ -230,7 +222,7 @@ def get_mass_kernel(problem: 'Problem', mass_map: MassMap) -> MassKernel:
     return mass_kernel
 
 
-def get_surface_kernel(problem: 'Problem', surface_map: SurfaceMap) -> SurfaceKernel:
+def get_surface_kernel(problem: 'Problem', surface_map: Callable) -> Callable:
     """Create surface kernel function for boundary integrals.
     
     The surface kernel handles boundary integrals in the weak form, such as
@@ -281,7 +273,7 @@ def get_surface_kernel(problem: 'Problem', surface_map: SurfaceMap) -> SurfaceKe
     return surface_kernel
 
 
-def create_volume_kernel(problem: 'Problem') -> VolumeKernel:
+def create_volume_kernel(problem: 'Problem') -> Callable:
     """Create unified volume kernel combining all volume physics.
     
     This function creates a kernel that combines contributions from all volume
@@ -330,7 +322,7 @@ def create_volume_kernel(problem: 'Problem') -> VolumeKernel:
     return kernel
 
 
-def create_surface_kernel(problem: 'Problem', surface_index: int) -> VolumeKernel:
+def create_surface_kernel(problem: 'Problem', surface_index: int) -> Callable:
     """Create unified surface kernel for a specific boundary.
     
     This function creates a kernel that combines contributions from standard
@@ -411,7 +403,7 @@ def split_and_compute_cell(problem: 'Problem',
     issues with large meshes. This is particularly important for 3D problems.
     """
     
-    def value_and_jacfwd(f: VolumeKernel, x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def value_and_jacfwd(f: Callable, x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         pushfwd = functools.partial(jax.jvp, f, (x, ))
         basis = np.eye(len(x.reshape(-1)), dtype=x.dtype).reshape(-1, *x.shape)
         y, jac = jax.vmap(pushfwd, out_axes=(None, -1))((basis, ))
@@ -530,7 +522,7 @@ def compute_face(problem: 'Problem',
     handled through separate surface kernels and internal variables.
     """
     
-    def value_and_jacfwd(f: VolumeKernel, x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def value_and_jacfwd(f: Callable, x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         pushfwd = functools.partial(jax.jvp, f, (x, ))
         basis = np.eye(len(x.reshape(-1)), dtype=x.dtype).reshape(-1, *x.shape)
         y, jac = jax.vmap(pushfwd, out_axes=(None, -1))((basis, ))
@@ -727,7 +719,7 @@ def get_res(problem: 'Problem',
     return compute_residual_vars_helper(problem, weak_form_flat, weak_form_face_flat)
 
 
-def create_J_bc_function(problem: 'Problem', bc: 'DirichletBC') -> JacobianFunction:
+def create_J_bc_function(problem: 'Problem', bc: 'DirichletBC') -> Callable[[np.ndarray, InternalVars], sparse.BCOO]:
     """Create Jacobian function with Dirichlet BC applied.
     
     Returns a function that computes the Jacobian matrix with Dirichlet
@@ -762,7 +754,7 @@ def create_J_bc_function(problem: 'Problem', bc: 'DirichletBC') -> JacobianFunct
     return J_bc_func
 
 
-def create_res_bc_function(problem: 'Problem', bc: 'DirichletBC') -> ResidualFunction:
+def create_res_bc_function(problem: 'Problem', bc: 'DirichletBC') -> Callable[[np.ndarray, InternalVars], np.ndarray]:
     """Create residual function with Dirichlet BC applied.
     
     Returns a function that computes the residual vector with Dirichlet

@@ -10,29 +10,17 @@ import jax
 import jax.numpy as np
 import jax.flatten_util
 from dataclasses import dataclass
-from typing import List, Tuple, Union, Optional, Callable, Any, TYPE_CHECKING
+from typing import List, Tuple, Union, Optional, Callable, Any
 
 from feax.mesh import Mesh
 from feax.fe import FiniteElement
 
-if TYPE_CHECKING:
-    from feax.types import TensorMap, MassMap, SurfaceMap
-
-
 @dataclass
+@jax.tree_util.register_pytree_node_class
 class Problem:
-    """Finite element problem definition with separated structure and material parameters.
+    """Finite element problem definition.
     
-    This class defines the finite element problem structure (mesh, elements, quadrature)
-    independently of material parameters, enabling efficient optimization and parameter
-    studies through JAX transformations.
-    
-    The design separates:
-    - Structure: mesh, elements, boundary conditions (Problem class)
-    - Parameters: material properties, loads (InternalVars class)
-    
-    This separation allows the same Problem to be used with different material
-    parameters while maintaining efficiency through pre-computed geometric data.
+    This class defines the finite element problem structure.
     
     Parameters
     ----------
@@ -215,7 +203,7 @@ class Problem:
         """
         pass
 
-    def get_tensor_map(self) -> 'TensorMap':
+    def get_tensor_map(self) -> Callable:
         """Get tensor map function for gradient-based physics.
         
         This method must be implemented by subclasses to define the constitutive
@@ -241,7 +229,7 @@ class Problem:
         """
         raise NotImplementedError("Subclass must implement get_tensor_map")
     
-    def get_surface_maps(self) -> List['SurfaceMap']:
+    def get_surface_maps(self) -> List[Callable]:
         """Get surface map functions for boundary loads.
         
         Override this method to define surface tractions, pressures, or fluxes
@@ -260,7 +248,7 @@ class Problem:
         """
         return []
     
-    def get_mass_map(self) -> Optional['MassMap']:
+    def get_mass_map(self) -> Optional[Callable]:
         """Get mass map function for inertia/reaction terms.
         
         Override this method to define mass matrix contributions or reaction terms
@@ -275,72 +263,63 @@ class Problem:
         """
         return None
 
+    def tree_flatten(self) -> Tuple[Tuple, dict]:
+        """Flatten Problem object for JAX pytree registration.
 
-# Register as JAX PyTree for use with JAX transformations
-def _problem_tree_flatten(obj: Problem) -> Tuple[Tuple, dict]:
-    """Flatten Problem object for JAX pytree registration.
-    
-    Since Problem objects contain only static structure information
-    (no JAX arrays), all data goes into the static part.
-    
-    Parameters
-    ----------
-    obj : Problem
-        Problem object to flatten
-        
-    Returns
-    -------
-    Tuple[Tuple, dict]
-        (dynamic_data, static_data) where dynamic_data is empty
-        and static_data contains all Problem fields
-    """
-    # No dynamic parts - everything is static structure
-    dynamic = ()
-    
-    # All data is static geometric/structural information
-    static = {
-        'mesh': obj.mesh,
-        'vec': obj.vec,
-        'dim': obj.dim,
-        'ele_type': obj.ele_type,
-        'gauss_order': obj.gauss_order,
-        'location_fns': obj.location_fns,
-        'additional_info': obj.additional_info,
-    }
-    return dynamic, static
+        Since Problem objects contain only static structure information
+        (no JAX arrays), all data goes into the static part.
 
+        Parameters
+        ----------
+        self : Problem
+            Problem object to flatten
 
-def _problem_tree_unflatten(static: dict, dynamic: Tuple) -> Problem:
-    """Reconstruct Problem object from flattened parts.
-    
-    Parameters
-    ----------
-    static : dict
-        Static data containing Problem constructor arguments
-    dynamic : Tuple
-        Dynamic data (empty for Problem objects)
-        
-    Returns
-    -------
-    Problem
-        Reconstructed Problem instance
-    """
-    # Create instance with original constructor parameters
-    instance = Problem(
-        mesh=static['mesh'],
-        vec=static['vec'],
-        dim=static['dim'],
-        ele_type=static['ele_type'],
-        gauss_order=static['gauss_order'],
-        location_fns=static['location_fns'],
-        additional_info=static['additional_info'],
-    )
-    
-    return instance
+        Returns
+        -------
+        Tuple[Tuple, dict]
+            (dynamic_data, static_data) where dynamic_data is empty
+            and static_data contains all Problem fields
+        """
+        # No dynamic parts - everything is static structure
+        dynamic = ()
 
+        # All data is static geometric/structural information
+        static = {
+            'mesh': self.mesh,
+            'vec': self.vec,
+            'dim': self.dim,
+            'ele_type': self.ele_type,
+            'gauss_order': self.gauss_order,
+            'location_fns': self.location_fns,
+            'additional_info': self.additional_info,
+        }
+        return dynamic, static
 
-jax.tree_util.register_pytree_node(
-    Problem,
-    _problem_tree_flatten,
-    _problem_tree_unflatten
-)
+    @classmethod
+    def tree_unflatten(cls, static: dict, _dynamic: Tuple) -> 'Problem':
+        """Reconstruct Problem object from flattened parts.
+
+        Parameters
+        ----------
+        static : dict
+            Static data containing Problem constructor arguments
+        _dynamic : Tuple
+            Dynamic data (empty for Problem objects, unused)
+
+        Returns
+        -------
+        Problem
+            Reconstructed Problem instance
+        """
+        # Create instance with original constructor parameters
+        instance = cls(
+            mesh=static['mesh'],
+            vec=static['vec'],
+            dim=static['dim'],
+            ele_type=static['ele_type'],
+            gauss_order=static['gauss_order'],
+            location_fns=static['location_fns'],
+            additional_info=static['additional_info'],
+        )
+
+        return instance

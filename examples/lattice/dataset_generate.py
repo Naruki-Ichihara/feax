@@ -31,8 +31,8 @@ nu = 0.3
 radius = 0.1
 
 # Dataset generation parameters
-N = 3000 # Total number of samples to generate
-M = 10   # Batch size for processing (memory management)
+N = 100 # Total number of samples to generate
+M = 2   # Batch size for processing (memory management)
 
 # Problem setup
 class ElasticityProblem(Problem):

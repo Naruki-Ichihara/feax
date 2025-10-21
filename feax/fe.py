@@ -8,21 +8,11 @@ finite element problems.
 
 import jax
 import jax.numpy as np
-import sys
-import time
+from jax import Array
 from dataclasses import dataclass
-from typing import List, Tuple, Callable, Optional, Union, TYPE_CHECKING
+from typing import List, Tuple, Callable, Optional
 from feax.mesh import Mesh
 from feax.basis import get_face_shape_vals_and_grads, get_shape_vals_and_grads
-
-if TYPE_CHECKING:
-    from numpy.typing import NDArray
-
-
-np.set_printoptions(threshold=sys.maxsize,
-                     linewidth=1000,
-                     suppress=True,
-                     precision=5)
 
 
 @dataclass
@@ -32,10 +22,6 @@ class FiniteElement:
     This class handles all geometric and computational aspects for one variable in
     a finite element problem, including shape functions, quadrature rules, and
     transformations between reference and physical domains.
-    
-    The variable can be:
-    - Scalar-valued (vec=1): temperature, pressure, concentration
-    - Vector-valued (vec>1): displacement, velocity, electric field
     
     Parameters
     ----------
@@ -69,12 +55,6 @@ class FiniteElement:
         Shape function gradients in physical coordinates
     JxW : np.ndarray
         Jacobian determinant times quadrature weights
-        
-    Notes
-    -----
-    The class pre-computes shape functions, gradients, and Jacobian data for
-    efficient assembly operations. All computations are JAX-compatible for
-    automatic differentiation and JIT compilation.
     """
     mesh: Mesh
     vec: int
@@ -105,7 +85,7 @@ class FiniteElement:
         self.v_grads_JxW = self.shape_grads[:, :, :, None, :] * self.JxW[:, :, None, None, None]
         self.num_face_quads = self.face_quad_weights.shape[1]
 
-    def get_shape_grads(self) -> Tuple['NDArray', 'NDArray']:
+    def get_shape_grads(self) -> Tuple[Array, Array]:
         """Compute shape function gradients in physical coordinates.
 
         Transforms shape function gradients from reference coordinates to physical
@@ -140,7 +120,7 @@ class FiniteElement:
         JxW = jacobian_det * self.quad_weights[None, :]
         return shape_grads_physical, JxW
 
-    def get_face_shape_grads(self, boundary_inds: 'NDArray') -> Tuple['NDArray', 'NDArray']:
+    def get_face_shape_grads(self, boundary_inds: Array) -> Tuple[Array, Array]:
         """Compute face shape function gradients and surface integration scaling.
         
         Uses Nanson's formula to transform surface integrals from physical domain
@@ -189,7 +169,7 @@ class FiniteElement:
         nanson_scale = nanson_scale * jacobian_det * selected_weights
         return face_shape_grads_physical, nanson_scale
 
-    def get_physical_quad_points(self) -> 'NDArray':
+    def get_physical_quad_points(self) -> Array:
         """Compute physical coordinates of quadrature points.
         
         Maps quadrature points from reference element to physical coordinates
@@ -206,7 +186,7 @@ class FiniteElement:
         physical_quad_points = np.sum(self.shape_vals[None, :, :, None] * physical_coos[:, None, :, :], axis=2)
         return physical_quad_points
 
-    def get_physical_surface_quad_points(self, boundary_inds: 'NDArray') -> 'NDArray':
+    def get_physical_surface_quad_points(self, boundary_inds: Array) -> Array:
         """Compute physical coordinates of surface quadrature points.
         
         Maps surface quadrature points from reference faces to physical coordinates
@@ -231,7 +211,7 @@ class FiniteElement:
         physical_surface_quad_points = np.sum(selected_face_shape_vals[:, :, :, None] * selected_coos[:, None, :, :], axis=2)
         return physical_surface_quad_points
 
-    def Dirichlet_boundary_conditions(self, dirichlet_bc_info: Optional[List]) -> Tuple[List['NDArray'], List['NDArray'], List['NDArray']]:
+    def Dirichlet_boundary_conditions(self, dirichlet_bc_info: Optional[List]) -> Tuple[List[Array], List[Array], List[Array]]:
         """Extract node indices and values for Dirichlet boundary conditions.
         
         Note: This method is deprecated. Use DirichletBC class from DCboundary module instead.
@@ -285,7 +265,7 @@ class FiniteElement:
         """
         self.node_inds_list, self.vec_inds_list, self.vals_list = self.Dirichlet_boundary_conditions(dirichlet_bc_info)
 
-    def get_boundary_conditions_inds(self, location_fns: Optional[List[Callable]]) -> List['NDArray']:
+    def get_boundary_conditions_inds(self, location_fns: Optional[List[Callable]]) -> List[Array]:
         """Identify boundary faces that satisfy location function conditions.
         
         Determines which element faces lie on boundaries defined by location functions.
@@ -338,7 +318,7 @@ class FiniteElement:
 
         return boundary_inds_list
 
-    def convert_from_dof_to_quad(self, sol: 'NDArray') -> 'NDArray':
+    def convert_from_dof_to_quad(self, sol: Array) -> Array:
         """Interpolate nodal solution values to quadrature points.
         
         Uses shape functions to interpolate solution from nodes to quadrature
@@ -361,7 +341,7 @@ class FiniteElement:
         u = np.sum(cells_sol[:, None, :, :] * self.shape_vals[None, :, :, None], axis=2)
         return u
 
-    def convert_from_dof_to_face_quad(self, sol: 'NDArray', boundary_inds: 'NDArray') -> 'NDArray':
+    def convert_from_dof_to_face_quad(self, sol: Array, boundary_inds: Array) -> Array:
         """Interpolate nodal solution to surface quadrature points.
         
         Uses face shape functions to interpolate solution from nodes to
@@ -388,7 +368,7 @@ class FiniteElement:
         u = np.sum(selected_cell_sols[:, None, :, :] * selected_face_shape_vals[:, :, :, None], axis=2)
         return u
 
-    def sol_to_grad(self, sol: 'NDArray') -> 'NDArray':
+    def sol_to_grad(self, sol: Array) -> Array:
         """Compute solution gradients at quadrature points.
         
         Uses shape function gradients to compute spatial derivatives of the
