@@ -231,34 +231,6 @@ def create_armijo_line_search_jax(res_bc_applied, c1=1e-4, rho=0.5, max_backtrac
         (sol, delta_sol, initial_res_norm, internal_vars=None) -> (new_sol, new_norm, alpha, success)
     """
 
-    def armijo_line_search_body(carry, _):
-        """Body function for line search loop."""
-        alpha, found_good, best_sol, best_norm, internal_vars = carry
-
-        # Try current alpha
-        trial_sol = carry[2] - alpha * carry[1]  # best_sol stored separately, use delta from closure
-        if internal_vars is not None:
-            trial_res = res_bc_applied(trial_sol, internal_vars)
-        else:
-            trial_res = res_bc_applied(trial_sol)
-        trial_norm = jnp.linalg.norm(trial_res)
-
-        # Check if valid (no NaN) and satisfies Armijo condition
-        is_valid = jnp.logical_not(jnp.any(jnp.isnan(trial_res)))
-        merit_decrease = 0.5 * (trial_norm**2 - carry[3]**2)  # vs initial_res_norm
-        grad_merit = -jnp.dot(carry[4], carry[4])  # -||res||^2, res stored in closure
-        armijo_satisfied = merit_decrease <= c1 * alpha * grad_merit
-
-        is_acceptable = is_valid & armijo_satisfied
-
-        # Update carry: if acceptable and not found yet, use this
-        new_found = found_good | is_acceptable
-        new_sol = jnp.where(jnp.logical_not(found_good) & is_acceptable, trial_sol, best_sol)
-        new_norm = jnp.where(jnp.logical_not(found_good) & is_acceptable, trial_norm, best_norm)
-        new_alpha = jnp.where(is_acceptable, alpha, alpha * rho)
-
-        return (new_alpha, new_found, new_sol, new_norm, internal_vars), None
-
     def line_search(sol, delta_sol, res, res_norm, internal_vars=None):
         """Execute Armijo line search.
 
@@ -395,34 +367,28 @@ def create_armijo_line_search_python(res_bc_applied, c1=1e-4, rho=0.5, max_backt
 
 def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None, P_mat=None):
     """Newton solver using JAX while_loop for JIT compatibility.
-    
+
     Parameters
     ----------
     J_bc_applied : callable
-        Function that computes the Jacobian with BC applied. Takes solution vector and optionally internal_vars.
+        Jacobian function with BC applied
     res_bc_applied : callable
-        Function that computes the residual with BC applied. Takes solution vector and optionally internal_vars.
-    initial_guess : jax.numpy.ndarray
-        Initial solution guess for the Newton solver. For time-dependent problems, this can be
-        updated with the solution from the previous time step.
+        Residual function with BC applied
+    initial_guess : array
+        Initial solution guess
     bc : DirichletBC
         Boundary conditions
     solver_options : SolverOptions
-        Solver configuration options. For advanced usage, set linear_solver_x0_fn to provide
-        custom initial guess for linear solver following jax-fem approach.
+        Solver configuration
     internal_vars : InternalVars, optional
-        Internal variables (e.g., material properties) to pass to J_bc_applied and res_bc_applied.
-        If provided, these functions will be called with (sol, internal_vars).
+        Material properties and parameters
     P_mat : BCOO matrix, optional
-        Prolongation matrix for reduced problems (maps reduced to full DOFs)
-        
+        Prolongation matrix for MPC/periodic BC
+
     Returns
     -------
-    tuple of (sol, res_norm, rel_res_norm, iter_count)
-        sol : jax.numpy.ndarray - Solution vector
-        res_norm : float - Final residual norm
-        rel_res_norm : float - Relative residual norm
-        iter_count : int - Number of iterations performed
+    sol, res_norm, rel_res_norm, iter_count : tuple
+        Solution, residual norms, and iteration count
     """
     
     # Resolve x0 function based on options (at function definition time, not JAX-traced)
@@ -565,51 +531,32 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
 
 def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, num_iters: int, internal_vars=None, P_mat=None):
     """Newton solver using JAX fori_loop for fixed iterations - optimized for vmap.
-    
-    This solver is specifically designed for use with vmap where we need:
-    1. Fixed number of iterations (no early termination)
-    2. No print statements or side effects
-    3. Consistent computational graph across all vmapped instances
-    
+
+    Designed for vmap with fixed iterations and consistent computational graph.
+
     Parameters
     ----------
     J_bc_applied : callable
-        Function that computes the Jacobian with BC applied. Takes solution vector and optionally internal_vars.
+        Jacobian function with BC applied
     res_bc_applied : callable
-        Function that computes the residual with BC applied. Takes solution vector and optionally internal_vars.
-    initial_guess : jax.numpy.ndarray
-        Initial solution guess for the Newton solver. For time-dependent problems, this can be
-        updated with the solution from the previous time step.
+        Residual function with BC applied
+    initial_guess : array
+        Initial solution guess
     bc : DirichletBC
         Boundary conditions
     solver_options : SolverOptions
-        Solver configuration options
+        Solver configuration
     num_iters : int
-        Fixed number of Newton iterations to perform
+        Fixed number of iterations
     internal_vars : InternalVars, optional
-        Internal variables (e.g., material properties) to pass to J_bc_applied and res_bc_applied.
-        If provided, these functions will be called with (sol, internal_vars).
+        Material properties and parameters
     P_mat : BCOO matrix, optional
-        Prolongation matrix for reduced problems (maps reduced to full DOFs)
-        
+        Prolongation matrix for MPC/periodic BC
+
     Returns
     -------
-    tuple of (sol, final_res_norm, converged)
-        sol : jax.numpy.ndarray - Solution vector after num_iters iterations
-        final_res_norm : float - Final residual norm
-        converged : bool - Whether solution converged (res_norm < tol)
-        
-    Example
-    -------
-    >>> # Solve multiple problems in parallel
-    >>> def solve_single(params, init_guess):
-    >>>     J_fn = lambda sol: create_jacobian(sol, params)
-    >>>     res_fn = lambda sol: create_residual(sol, params)
-    >>>     sol, norm, converged = newton_solve_fori(J_fn, res_fn, init_guess, bc, options, 10)
-    >>>     return sol
-    >>> 
-    >>> # Vectorize over multiple parameter sets
-    >>> all_solutions = jax.vmap(solve_single)(parameter_array, initial_guesses)
+    sol, final_res_norm, converged : tuple
+        Solution, residual norm, and convergence flag
     """
     
     # Resolve x0 function based on options
@@ -730,44 +677,32 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
     return final_sol, final_res_norm, converged
 
 
-def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None):
+def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None, P_mat=None):
     """Newton solver using Python while loop - non-JIT version for debugging.
-    
-    This solver uses regular Python control flow instead of JAX control flow,
-    making it easier to debug and understand. It cannot be JIT compiled but
-    provides the same functionality as newton_solve with detailed introspection.
-    
+
+    Uses Python control flow for easier debugging. Not JIT-compatible.
+
     Parameters
     ----------
     J_bc_applied : callable
-        Function that computes the Jacobian with BC applied. Takes solution vector and optionally internal_vars.
+        Jacobian function with BC applied
     res_bc_applied : callable
-        Function that computes the residual with BC applied. Takes solution vector and optionally internal_vars.
-    initial_guess : jax.numpy.ndarray
-        Initial solution guess for the Newton solver. For time-dependent problems, this can be
-        updated with the solution from the previous time step.
+        Residual function with BC applied
+    initial_guess : array
+        Initial solution guess
     bc : DirichletBC
         Boundary conditions
     solver_options : SolverOptions
-        Solver configuration options
+        Solver configuration
     internal_vars : InternalVars, optional
-        Internal variables (e.g., material properties) to pass to J_bc_applied and res_bc_applied.
-        If provided, these functions will be called with (sol, internal_vars).
+        Material properties and parameters
     P_mat : BCOO matrix, optional
-        Prolongation matrix for reduced problems (maps reduced to full DOFs)
-        
+        Prolongation matrix for MPC/periodic BC
+
     Returns
     -------
-    tuple of (sol, final_res_norm, converged, num_iters)
-        sol : jax.numpy.ndarray - Solution vector
-        final_res_norm : float - Final residual norm
-        converged : bool - Whether solution converged
-        num_iters : int - Number of iterations performed
-        
-    Example
-    -------
-    >>> sol, res_norm, converged, iters = newton_solve_py(J_fn, res_fn, init_guess, bc, options)
-    >>> print(f"Converged: {converged} in {iters} iterations, residual: {res_norm:.2e}")
+    sol, final_res_norm, converged, num_iters : tuple
+        Solution, residual norm, convergence flag, and iteration count
     """
     
     # Resolve x0 function based on options
@@ -891,46 +826,31 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
 
 
 def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None, P_mat=None):
-    """Linear solver for problems that converge in one iteration (no while loop).
-    
-    This solver is optimized for linear elasticity problems where the solution
-    can be found in a single Newton iteration. By eliminating the while loop,
-    this solver is much more efficient for vmap operations.
-    
+    """Linear solver for problems that converge in one iteration.
+
+    Optimized for linear problems (e.g., linear elasticity). Performs single Newton step.
+
     Parameters
     ----------
     J_bc_applied : callable
-        Function that computes the Jacobian with BC applied. Takes solution vector and optionally internal_vars,
-        returns sparse matrix.
+        Jacobian function with BC applied
     res_bc_applied : callable
-        Function that computes the residual with BC applied. Takes solution vector and optionally internal_vars,
-        returns residual vector.
-    initial_guess : jax.numpy.ndarray
-        Initial solution guess (typically zeros with BC values set). For time-dependent problems,
-        this can be the solution from the previous time step.
+        Residual function with BC applied
+    initial_guess : array
+        Initial solution guess
     bc : DirichletBC
         Boundary conditions
     solver_options : SolverOptions
-        Solver configuration options
+        Solver configuration
     internal_vars : InternalVars, optional
-        Internal variables (e.g., material properties) to pass to J_bc_applied and res_bc_applied.
-        If provided, these functions will be called with (sol, internal_vars).
+        Material properties and parameters
     P_mat : BCOO matrix, optional
-        Prolongation matrix for reduced problems (maps reduced to full DOFs)
-        
+        Prolongation matrix for MPC/periodic BC
+
     Returns
     -------
-    tuple of (sol, None)
-        sol : jax.numpy.ndarray - Solution vector
-        None : placeholder for compatibility with other solver returns
-        
-    Notes
-    -----
-    This solver performs exactly one Newton iteration:
-    1. Compute residual: res = res_bc_applied(initial_guess)
-    2. Compute Jacobian: J = J_bc_applied(initial_guess)
-    3. Solve: J * delta_sol = -res
-    4. Update: sol = initial_guess + delta_sol
+    sol, None : tuple
+        Solution and None (for compatibility)
     
     For linear problems, this single iteration achieves the exact solution.
     """
@@ -1231,10 +1151,6 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
     For the first solve, you can pass zeros with BC values set:
         initial_guess = jnp.zeros(problem.num_total_dofs_all_vars)
         initial_guess = initial_guess.at[bc.bc_rows].set(bc.bc_vals)
-    
-    Based on the self-adjoint approach from the reference implementation in ref_solver.py.
-    The adjoint method is more efficient than forward-mode AD for optimization problems
-    where we need gradients w.r.t. many parameters but few outputs.
     
     When iter_num is specified (not None), the solver becomes vmappable as it uses fixed
     iterations without dynamic control flow. This is essential for parallel solving of
