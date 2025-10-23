@@ -44,8 +44,10 @@ def save_sol(
     # Get meshio cell type from mesh element type
     # We need to infer element type from the mesh structure
     n_nodes_per_element = mesh.cells.shape[1]
+    n_dim = mesh.points.shape[1]  # 2D or 3D
+
     if n_nodes_per_element == 4:
-        element_type = 'TET4'
+        element_type = 'QUAD4' if n_dim == 2 else 'TET4'
     elif n_nodes_per_element == 10:
         element_type = 'TET10'
     elif n_nodes_per_element == 8:

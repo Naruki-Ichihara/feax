@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(cp:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)",
+      "Bash(cat:*)",
+      "Bash(pip install:*)",
+      "Bash(python3:*)",
+      "Bash(git add:*)",
+      "Bash(git stash:*)",
+      "Bash(python examples/symbolic_examples.py:*)",
+      "Bash(python:*)",
+      "Bash(awk:*)",
+      "Bash(xargs:*)",
+      "Bash(JAX_TRACEBACK_FILTERING=off python:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

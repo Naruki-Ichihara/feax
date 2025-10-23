@@ -301,6 +301,17 @@ def create_volume_kernel(problem: 'Problem') -> Callable:
     """
     
     def kernel(cell_sol_flat, physical_quad_points, cell_shape_grads, cell_JxW, cell_v_grads_JxW, *cell_internal_vars):
+        # For multi-variable problems, only use universal kernel
+        # (laplace/mass kernels only support single variable)
+        if problem.num_vars > 1:
+            if hasattr(problem, 'get_universal_kernel'):
+                universal_kernel = problem.get_universal_kernel()
+                return universal_kernel(cell_sol_flat, physical_quad_points, cell_shape_grads, cell_JxW,
+                    cell_v_grads_JxW, *cell_internal_vars)
+            else:
+                raise ValueError("Multi-variable problems require get_universal_kernel() implementation")
+
+        # Single-variable: use laplace/mass/universal kernels
         mass_val = 0.
         if hasattr(problem, 'get_mass_map') and problem.get_mass_map() is not None:
             mass_kernel = get_mass_kernel(problem, problem.get_mass_map())
@@ -308,13 +319,15 @@ def create_volume_kernel(problem: 'Problem') -> Callable:
 
         laplace_val = 0.
         if hasattr(problem, 'get_tensor_map'):
-            laplace_kernel = get_laplace_kernel(problem, problem.get_tensor_map())
-            laplace_val = laplace_kernel(cell_sol_flat, cell_shape_grads, cell_v_grads_JxW, *cell_internal_vars)
+            tensor_map = problem.get_tensor_map()
+            if tensor_map is not None:
+                laplace_kernel = get_laplace_kernel(problem, tensor_map)
+                laplace_val = laplace_kernel(cell_sol_flat, cell_shape_grads, cell_v_grads_JxW, *cell_internal_vars)
 
         universal_val = 0.
         if hasattr(problem, 'get_universal_kernel'):
             universal_kernel = problem.get_universal_kernel()
-            universal_val = universal_kernel(cell_sol_flat, physical_quad_points, cell_shape_grads, cell_JxW, 
+            universal_val = universal_kernel(cell_sol_flat, physical_quad_points, cell_shape_grads, cell_JxW,
                 cell_v_grads_JxW, *cell_internal_vars)
 
         return laplace_val + mass_val + universal_val
