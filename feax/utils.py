@@ -46,12 +46,16 @@ def save_sol(
     n_nodes_per_element = mesh.cells.shape[1]
     n_dim = mesh.points.shape[1]  # 2D or 3D
 
-    if n_nodes_per_element == 4:
+    if n_nodes_per_element == 3:
+        element_type = 'TRI3'
+    elif n_nodes_per_element == 4:
         element_type = 'QUAD4' if n_dim == 2 else 'TET4'
-    elif n_nodes_per_element == 10:
-        element_type = 'TET10'
+    elif n_nodes_per_element == 6:
+        element_type = 'TRI6'
     elif n_nodes_per_element == 8:
         element_type = 'HEX8'
+    elif n_nodes_per_element == 10:
+        element_type = 'TET10'
     elif n_nodes_per_element == 20:
         element_type = 'HEX20'
     else:

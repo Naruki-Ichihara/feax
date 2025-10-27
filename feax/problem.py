@@ -190,18 +190,68 @@ class Problem:
         # Initialize without internal_vars - kernels will be created separately
         self.custom_init(*self.additional_info)
 
+        # Validate multi-variable problem setup
+        self._validate_multi_variable_setup()
+
     def custom_init(self, *args: Any) -> None:
         """Custom initialization for problem-specific setup.
-        
+
         Subclasses should override this method to perform additional
         initialization using the additional_info parameters.
-        
+
         Parameters
         ----------
         *args : Any
             Arguments passed from additional_info tuple
         """
         pass
+
+    def _validate_multi_variable_setup(self) -> None:
+        """Validate that multi-variable problems are set up correctly.
+
+        Checks that multi-variable problems (num_vars > 1) use universal kernels
+        instead of the single-variable laplace/mass/surface kernels.
+
+        Raises
+        ------
+        ValueError
+            If multi-variable problem incorrectly uses single-variable kernels
+        """
+        if self.num_vars <= 1:
+            return  # Single-variable - all kernels allowed
+
+        # Check for problematic kernel definitions
+        has_tensor_map = hasattr(self, 'get_tensor_map') and callable(getattr(self, 'get_tensor_map'))
+        has_mass_map = hasattr(self, 'get_mass_map') and callable(getattr(self, 'get_mass_map'))
+        has_surface_maps = hasattr(self, 'get_surface_maps') and callable(getattr(self, 'get_surface_maps'))
+        has_universal = hasattr(self, 'get_universal_kernel') and callable(getattr(self, 'get_universal_kernel'))
+
+        # For multi-var, must have universal kernel
+        if not has_universal:
+            raise ValueError(
+                f"Multi-variable problem (num_vars={self.num_vars}) requires get_universal_kernel() implementation. "
+                f"The standard laplace/mass/surface kernels only support single-variable problems. "
+                f"See examples/basic/kernel_stokes_2d.py for multi-variable example."
+            )
+
+        # Warn if single-variable kernels are defined (they will be ignored)
+        if has_tensor_map or has_mass_map or has_surface_maps:
+            import warnings as warn_module
+            warnings = []
+            if has_tensor_map:
+                warnings.append("get_tensor_map()")
+            if has_mass_map:
+                warnings.append("get_mass_map()")
+            if has_surface_maps:
+                warnings.append("get_surface_maps()")
+
+            warn_module.warn(
+                f"Multi-variable problem (num_vars={self.num_vars}) defines {', '.join(warnings)} "
+                f"which will be IGNORED. Only get_universal_kernel() is used for multi-variable problems. "
+                f"Remove these methods or move their logic into get_universal_kernel().",
+                UserWarning,
+                stacklevel=3
+            )
 
     def get_tensor_map(self) -> Callable:
         """Get tensor map function for gradient-based physics.

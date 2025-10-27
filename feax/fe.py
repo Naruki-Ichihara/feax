@@ -80,7 +80,7 @@ class FiniteElement:
         self.node_inds_list = []
         self.vec_inds_list = []
         self.vals_list = []
-        
+
         # (num_cells, num_quads, num_nodes, 1, dim)
         self.v_grads_JxW = self.shape_grads[:, :, :, None, :] * self.JxW[:, :, None, None, None]
         self.num_face_quads = self.face_quad_weights.shape[1]

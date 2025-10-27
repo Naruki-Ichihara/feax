@@ -245,9 +245,9 @@ def apply_boundary_to_res(bc: DirichletBC, res_vec: np.ndarray, sol_vec: np.ndar
 @dataclass
 class DirichletBCSpec:
     """Specification for a single Dirichlet boundary condition.
-    
+
     This dataclass provides a clear, type-safe way to specify boundary conditions.
-    
+
     Parameters
     ----------
     location : Callable[[np.ndarray], bool]
@@ -261,7 +261,11 @@ class DirichletBCSpec:
         The prescribed value, either:
         - A constant float value
         - A function that takes a point and returns the value at that point
-    
+    variable_index : Optional[int]
+        For multi-variable problems, specifies which variable this BC applies to.
+        If None (default), applies to all variables (backward compatible behavior).
+        For single-variable problems, this parameter is ignored.
+
     Examples
     --------
     >>> # Fix left boundary in x-direction to zero
@@ -270,24 +274,33 @@ class DirichletBCSpec:
     ...     component='x',  # or component=0
     ...     value=0.0
     ... )
-    
+
     >>> # Apply varying displacement on right boundary
     >>> bc2 = DirichletBCSpec(
     ...     location=lambda pt: np.isclose(pt[0], 1.0),
     ...     component='y',
     ...     value=lambda pt: 0.1 * pt[2]  # varies with z-coordinate
     ... )
-    
+
     >>> # Fix all components on a boundary
     >>> bc3 = DirichletBCSpec(
     ...     location=lambda pt: np.isclose(pt[1], 0.0),
     ...     component='all',
     ...     value=0.0
     ... )
+
+    >>> # Multi-variable: BC for variable 0 only
+    >>> bc4 = DirichletBCSpec(
+    ...     location=lambda pt: np.isclose(pt[0], 1.0),
+    ...     component=0,
+    ...     value=0.1,
+    ...     variable_index=0
+    ... )
     """
     location: Callable[[np.ndarray], bool]
     component: Union[int, str]
     value: Union[float, Callable[[np.ndarray], float]]
+    variable_index: Union[int, None] = None
     
     def __post_init__(self) -> None:
         """Validate and normalize the component specification.
@@ -418,25 +431,28 @@ class DirichletBCConfig:
                 total_dofs=problem.num_total_dofs_all_vars
             )
         
-        # Get vec from problem - handle both single and multi-variable problems
-        if hasattr(problem, 'vec') and not isinstance(problem.vec, list):
-            vec = problem.vec
-        else:
-            vec = problem.vec[0] if isinstance(problem.vec, list) else problem.vec
-            
         bc_rows_list = []
         bc_vals_list = []
-        
+
         for ind, fe in enumerate(problem.fes):
+            # Get vec for this specific finite element
+            vec = fe.vec
+
             for spec in self.specs:
+                # Skip this spec if it's for a different variable (multi-variable support)
+                if spec.variable_index is not None and spec.variable_index != ind:
+                    continue
+
                 # Handle 'all' component expansion
                 if spec.component == 'all':
                     components = list(range(vec))
                 else:
+                    # Skip this spec if component is out of range for this FE
+                    # This allows different variables to have different components
                     if spec.component >= vec:
-                        raise ValueError(f"Component {spec.component} is out of range for vec={vec} problem")
+                        continue
                     components = [spec.component]
-                
+
                 for component in components:
                     # Handle location functions with 1 or 2 arguments
                     num_args = spec.location.__code__.co_argcount

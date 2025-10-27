@@ -118,8 +118,12 @@ def get_laplace_kernel(problem: 'Problem', tensor_map: Callable) -> Callable:
                 # Scalar (cell-based): broadcast to all quad points
                 var_quad = np.full(num_quads, var)
             elif var.ndim == 1:
-                if var.shape[0] == problem.fes[0].num_nodes:
+                # Check if node-based by comparing with any FE's num_nodes
+                is_node_based = any(var.shape[0] == fe.num_nodes for fe in problem.fes)
+
+                if is_node_based:
                     # Node-based: interpolate using shape functions
+                    # For multi-var, this assumes all variables share same nodes (common case)
                     var_quad = np.dot(shape_vals, var)  # (num_quads, num_nodes) @ (num_nodes,) -> (num_quads,)
                 elif var.shape[0] == 1:
                     # Cell-based (single element): broadcast to all quad points
@@ -128,7 +132,7 @@ def get_laplace_kernel(problem: 'Problem', tensor_map: Callable) -> Callable:
                     # Quad-based (legacy): already has quad point values
                     var_quad = var
                 else:
-                    # Unknown, assume cell-based
+                    # Unknown, assume cell-based and broadcast first element
                     var_quad = np.full(num_quads, var[0])
             else:
                 # Unknown format, pass through
@@ -195,8 +199,12 @@ def get_mass_kernel(problem: 'Problem', mass_map: Callable) -> Callable:
                 # Scalar (cell-based): broadcast to all quad points
                 var_quad = np.full(num_quads, var)
             elif var.ndim == 1:
-                if var.shape[0] == problem.fes[0].num_nodes:
+                # Check if node-based by comparing with any FE's num_nodes
+                is_node_based = any(var.shape[0] == fe.num_nodes for fe in problem.fes)
+
+                if is_node_based:
                     # Node-based: interpolate using shape functions
+                    # For multi-var, this assumes all variables share same nodes (common case)
                     var_quad = np.dot(shape_vals, var)  # (num_quads, num_nodes) @ (num_nodes,) -> (num_quads,)
                 elif var.shape[0] == 1:
                     # Cell-based (single element): broadcast to all quad points
@@ -205,7 +213,7 @@ def get_mass_kernel(problem: 'Problem', mass_map: Callable) -> Callable:
                     # Quad-based (legacy): already has quad point values
                     var_quad = var
                 else:
-                    # Unknown, assume cell-based
+                    # Unknown, assume cell-based and broadcast first element
                     var_quad = np.full(num_quads, var[0])
             else:
                 # Unknown format, pass through
@@ -337,11 +345,11 @@ def create_volume_kernel(problem: 'Problem') -> Callable:
 
 def create_surface_kernel(problem: 'Problem', surface_index: int) -> Callable:
     """Create unified surface kernel for a specific boundary.
-    
+
     This function creates a kernel that combines contributions from standard
     surface maps and universal surface kernels for a specific boundary surface
     identified by surface_index.
-    
+
     Parameters
     ----------
     problem : Problem
@@ -350,19 +358,40 @@ def create_surface_kernel(problem: 'Problem', surface_index: int) -> Callable:
     surface_index : int
         Index identifying which boundary surface this kernel is for.
         Corresponds to the index in problem.location_fns.
-    
+
     Returns
     -------
     Callable
         Combined surface kernel function for the specified boundary.
-    
+
     Notes
     -----
     Multiple boundaries can have different physics. The surface_index
     parameter selects which surface map and universal kernel to use.
+
+    For multi-variable problems, only universal_kernels_surface should be used,
+    as get_surface_maps() only supports single-variable problems.
     """
-    
+
     def kernel(cell_sol_flat, physical_surface_quad_points, face_shape_vals, face_shape_grads, face_nanson_scale, *cell_internal_vars_surface):
+        # For multi-variable problems, only use universal kernel
+        # (surface_kernel only supports single variable, uses fes[0])
+        if problem.num_vars > 1:
+            if hasattr(problem, 'get_universal_kernels_surface') and len(problem.get_universal_kernels_surface()) > surface_index:
+                universal_kernel = problem.get_universal_kernels_surface()[surface_index]
+                return universal_kernel(cell_sol_flat, physical_surface_quad_points, face_shape_vals,
+                    face_shape_grads, face_nanson_scale, *cell_internal_vars_surface)
+            elif hasattr(problem, 'get_surface_maps') and len(problem.get_surface_maps()) > surface_index:
+                raise ValueError(
+                    f"Multi-variable problems (num_vars={problem.num_vars}) cannot use get_surface_maps(). "
+                    f"Please implement get_universal_kernels_surface() instead. "
+                    f"The standard surface kernel only works for single-variable problems."
+                )
+            else:
+                # No surface kernel defined - return zeros with proper shape
+                return np.zeros(problem.num_total_dofs_all_vars)
+
+        # Single-variable: use surface_maps and/or universal kernels
         surface_val = 0.
         if hasattr(problem, 'get_surface_maps') and len(problem.get_surface_maps()) > surface_index:
             surface_kernel = get_surface_kernel(problem, problem.get_surface_maps()[surface_index])
@@ -456,12 +485,39 @@ def split_and_compute_cell(problem: 'Problem',
                 internal_vars_per_cell.append(var)
             else:
                 # Node-based: extract nodes for each cell
+                # For multi-var: check which FE's nodes this corresponds to
+                # Assumes all variables share same mesh (common case)
                 # var shape: (num_nodes,), cells shape: (num_cells, num_nodes_per_elem)
-                var_per_cell = var[problem.fes[0].cells]  # (num_cells, num_nodes_per_elem)
+
+                # Try to find which FE this variable belongs to based on num_total_nodes
+                fe_idx = 0
+                for i, fe in enumerate(problem.fes):
+                    if var.shape[0] == fe.num_total_nodes:
+                        fe_idx = i
+                        break
+
+                var_per_cell = var[problem.fes[fe_idx].cells]  # (num_cells, num_nodes_per_elem)
                 internal_vars_per_cell.append(var_per_cell)
         elif var.ndim == 2:
-            # Quad-based (legacy): already (num_cells, num_quads)
-            internal_vars_per_cell.append(var)
+            # Could be quad-based (num_cells, num_quads) or node-based vector (num_nodes, vec)
+            # Check if first dimension matches num_cells (quad-based) or num_nodes (node-based vector)
+            if var.shape[0] == problem.num_cells:
+                # Quad-based (legacy): already (num_cells, num_quads)
+                internal_vars_per_cell.append(var)
+            else:
+                # Node-based vector: extract nodes for each cell
+                # var shape: (num_nodes, vec), cells shape: (num_cells, num_nodes_per_elem)
+                # Result: (num_cells, num_nodes_per_elem, vec)
+
+                # Find which FE this variable belongs to
+                fe_idx = 0
+                for i, fe in enumerate(problem.fes):
+                    if var.shape[0] == fe.num_total_nodes:
+                        fe_idx = i
+                        break
+
+                var_per_cell = var[problem.fes[fe_idx].cells]  # (num_cells, num_nodes_per_elem, vec)
+                internal_vars_per_cell.append(var_per_cell)
         else:
             # Unknown format, pass through
             internal_vars_per_cell.append(var)

@@ -22,18 +22,27 @@ from .symbolic import (
 
 
 def extract_forms(expr: Expr) -> List[Integral]:
-    """Extract all integral forms from symbolic expression."""
+    """Extract all integral forms from symbolic expression, tracking signs."""
     integrals = []
 
-    def collect(e):
+    def collect(e, sign=1):
         if isinstance(e, Integral):
-            integrals.append(e)
+            # If sign is negative, negate the integrand
+            if sign < 0:
+                negated_integrand = Mul(ScalarConstant(-1.0), e.integrand)
+                negated_integral = Integral(negated_integrand, e.measure, e.boundary_id)
+                integrals.append(negated_integral)
+            else:
+                integrals.append(e)
         elif isinstance(e, IntegralSum):
             for integral in e.integrals:
-                collect(integral)
-        elif isinstance(e, (Add, Sub)):
-            collect(e.left)
-            collect(e.right)
+                collect(integral, sign)
+        elif isinstance(e, Add):
+            collect(e.left, sign)
+            collect(e.right, sign)
+        elif isinstance(e, Sub):
+            collect(e.left, sign)
+            collect(e.right, -sign)  # Flip sign for subtraction!
 
     collect(expr)
     return integrals
@@ -309,8 +318,35 @@ def find_test_function(expr: Expr) -> Optional[TestFunction]:
     return None
 
 
+def has_trial_gradient(expr: Expr) -> bool:
+    """Check if expression involves gradients of trial function."""
+    if isinstance(expr, (Grad, Div)):
+        # Check if operand is or contains a TrialFunction
+        def find_trial(e):
+            if isinstance(e, TrialFunction):
+                return True
+            if hasattr(e, '__dict__'):
+                for v in e.__dict__.values():
+                    if isinstance(v, Expr) and find_trial(v):
+                        return True
+            return False
+        return find_trial(expr.operand)
+
+    if hasattr(expr, '__dict__'):
+        for v in expr.__dict__.values():
+            if isinstance(v, Expr) and has_trial_gradient(v):
+                return True
+    return False
+
+
 def is_gradient_based(expr: Expr) -> bool:
-    """Check if expression involves gradients of test function."""
+    """Check if expression involves gradients of TEST function.
+
+    This determines whether to use gradient-based assembly (contracting with v_grads_JxW)
+    or value-based assembly (contracting with shape_vals).
+
+    Key: Only test function gradients matter for assembly type!
+    """
     if isinstance(expr, Grad):
         if isinstance(expr.operand, TestFunction):
             return True
@@ -328,7 +364,9 @@ def is_gradient_based(expr: Expr) -> bool:
         return is_gradient_based(expr.left) or is_gradient_based(expr.right)
 
     if isinstance(expr, (Add, Sub, Mul, Division)):
-        return is_gradient_based(expr.left) or is_gradient_based(expr.right)
+        left_grad = is_gradient_based(expr.left) if hasattr(expr, 'left') and isinstance(expr.left, Expr) else False
+        right_grad = is_gradient_based(expr.right) if hasattr(expr, 'right') and isinstance(expr.right, Expr) else False
+        return left_grad or right_grad
 
     if isinstance(expr, (Sym, Transpose)):
         return is_gradient_based(expr.operand)
@@ -491,6 +529,7 @@ class SymbolicProblem(Problem):
                 u_list.append(u)
 
             # Interpolate constants to quad points
+            # For multi-var: use first FE's quad count (assumes same quadrature for all)
             num_quads = self.fes[0].num_quads
             shape_vals = self.fes[0].shape_vals
             const_dict = {}
@@ -505,8 +544,12 @@ class SymbolicProblem(Problem):
                         # Scalar (cell-based): broadcast to all quad points
                         var_quad = np.full(num_quads, var)
                     elif var.ndim == 1:
-                        if var.shape[0] == self.fes[0].num_nodes:
+                        # Check if node-based by comparing with any FE's num_nodes
+                        is_node_based = any(var.shape[0] == fe.num_nodes for fe in self.fes)
+
+                        if is_node_based:
                             # Node-based: interpolate using shape functions
+                            # For multi-var, assumes variables share same nodes (common case)
                             var_quad = np.dot(shape_vals, var)  # (num_quads, num_nodes) @ (num_nodes,) -> (num_quads,)
                         elif var.shape[0] == 1:
                             # Cell-based (single element): broadcast to all quad points
@@ -515,8 +558,25 @@ class SymbolicProblem(Problem):
                             # Quad-based (legacy): already has quad point values
                             var_quad = var
                         else:
-                            # Unknown, assume cell-based
+                            # Unknown, assume cell-based and broadcast first element
                             var_quad = np.full(num_quads, var[0])
+                    elif var.ndim == 2:
+                        # Vector constant: shape (num_nodes_per_elem, vec) or (num_quads, vec)
+                        # After assembler slicing, node-based becomes (num_nodes_per_elem, vec)
+
+                        # Check if this matches num_nodes for any FE (node-based)
+                        is_node_based = any(var.shape[0] == fe.num_nodes for fe in self.fes)
+
+                        if is_node_based:
+                            # Node-based vector: interpolate using shape functions
+                            # (num_quads, num_nodes) @ (num_nodes, vec) -> (num_quads, vec)
+                            var_quad = np.dot(shape_vals, var)
+                        elif var.shape[0] == num_quads:
+                            # Quad-based vector: already at quad points
+                            var_quad = var
+                        else:
+                            # Unknown format, pass through
+                            var_quad = var
                     else:
                         # Unknown format, pass through
                         var_quad = var
@@ -587,12 +647,20 @@ class SymbolicProblem(Problem):
                     # Value-based: f * v
                     integrand_val = self._eval_value_integrand(integral.integrand, evaluator, test_func)
 
+                    # Handle Python scalars/floats
+                    if isinstance(integrand_val, (int, float)):
+                        integrand_val = np.array(integrand_val)
+
                     # Assembly: sum(integrand[:, None, :] * shape_vals[:, :, None] * JxW[:, None, None], axis=0)
-                    if integrand_val.ndim == 2:
+                    if hasattr(integrand_val, 'ndim') and integrand_val.ndim == 2:
                         val = np.sum(integrand_val[:, None, :] * shape_vals_test[:, :, None] * JxW[:, None, None], axis=0)
-                    else:
-                        # Scalar
+                    elif hasattr(integrand_val, 'ndim') and integrand_val.ndim == 1:
+                        # Scalar at quad points
                         val = np.sum(integrand_val[:, None] * shape_vals_test * JxW[:, None], axis=0)
+                        val = val[:, None]
+                    else:
+                        # Scalar constant
+                        val = np.sum(integrand_val * shape_vals_test * JxW[:, None], axis=0)
                         val = val[:, None]
 
                     weak_form_vals[test_idx] += val
@@ -621,16 +689,34 @@ class SymbolicProblem(Problem):
             left_has_test = find_test_function(expr.left) is not None
             right_has_test = find_test_function(expr.right) is not None
 
-            # Special case: p * div(v) where p is scalar, div(v) involves test function gradient
+            # Special case 1: p * div(v) where p is scalar, div(v) involves test function gradient
             if isinstance(expr.right, Div) and isinstance(expr.right.operand, TestFunction):
                 # Return p with marker that we need divergence contraction
                 return ('div_test', evaluator.eval(expr.left))
             elif isinstance(expr.left, Div) and isinstance(expr.left.operand, TestFunction):
                 return ('div_test', evaluator.eval(expr.right))
+
             elif right_has_test and not left_has_test:
-                return evaluator.eval(expr.left)
+                # Check for nested Mul with div(v): scalar * (p * div(v))
+                if isinstance(expr.right, Mul):
+                    inner_val = self._eval_gradient_integrand(expr.right, evaluator, test_func)
+                    if isinstance(inner_val, tuple) and inner_val[0] == 'div_test':
+                        # Multiply the pressure by the scalar
+                        return ('div_test', evaluator.eval(expr.left) * inner_val[1])
+                    else:
+                        return evaluator.eval(expr.left) * inner_val
+                else:
+                    return evaluator.eval(expr.left)
             elif left_has_test and not right_has_test:
-                return evaluator.eval(expr.right)
+                # Symmetric case
+                if isinstance(expr.left, Mul):
+                    inner_val = self._eval_gradient_integrand(expr.left, evaluator, test_func)
+                    if isinstance(inner_val, tuple) and inner_val[0] == 'div_test':
+                        return ('div_test', inner_val[1] * evaluator.eval(expr.right))
+                    else:
+                        return inner_val * evaluator.eval(expr.right)
+                else:
+                    return evaluator.eval(expr.right)
             else:
                 # Both sides might have structure - evaluate recursively
                 return evaluator.eval(expr.left)
@@ -656,10 +742,25 @@ class SymbolicProblem(Problem):
             right_has_test = find_test_function(expr.right) is not None
 
             if right_has_test and not left_has_test:
-                return evaluator.eval(expr.left)
+                # Left side doesn't have test function - evaluate it
+                # But right side might be nested (e.g., -1.0 * (f * v))
+                # So we need to recursively extract the value part from right
+                if isinstance(expr.right, Mul):
+                    # Nested multiplication: scalar * (f * v)
+                    # Extract f from inner Mul, then multiply by scalar
+                    inner_val = self._eval_value_integrand(expr.right, evaluator, test_func)
+                    return evaluator.eval(expr.left) * inner_val
+                else:
+                    return evaluator.eval(expr.left)
             elif left_has_test and not right_has_test:
-                return evaluator.eval(expr.right)
+                # Symmetric case
+                if isinstance(expr.left, Mul):
+                    inner_val = self._eval_value_integrand(expr.left, evaluator, test_func)
+                    return inner_val * evaluator.eval(expr.right)
+                else:
+                    return evaluator.eval(expr.right)
             else:
+                # Both or neither have test function
                 return evaluator.eval(expr.left)
 
         elif isinstance(expr, Inner):

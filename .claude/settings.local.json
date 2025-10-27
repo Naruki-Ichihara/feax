@@ -14,7 +14,10 @@
       "Bash(python:*)",
       "Bash(awk:*)",
       "Bash(xargs:*)",
-      "Bash(JAX_TRACEBACK_FILTERING=off python:*)"
+      "Bash(JAX_TRACEBACK_FILTERING=off python:*)",
+      "Read(//usr/local/lib/python3.12/dist-packages/jax_fem/**)",
+      "Bash(timeout 30 python:*)",
+      "Bash(timeout 60 python:*)"
     ],
     "deny": [],
     "ask": []
