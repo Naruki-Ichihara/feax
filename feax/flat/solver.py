@@ -12,8 +12,8 @@ Key Functions:
 Example:
     Basic homogenization solver usage:
     
-    >>> from feax.lattice_toolkit.solver import create_homogenization_solver
-    >>> from feax.lattice_toolkit.pbc import periodic_bc_3D, prolongation_matrix
+    >>> from feax.flat.solver import create_homogenization_solver
+    >>> from feax.flat.pbc import periodic_bc_3D, prolongation_matrix
     >>> 
     >>> # Setup periodic boundary conditions
     >>> pbc = periodic_bc_3D(unitcell, vec=3, dim=3)
@@ -221,7 +221,7 @@ def create_homogenization_solver(
         
     Example:
         >>> # 3D homogenization
-        >>> from feax.lattice_toolkit.pbc import periodic_bc_3D, prolongation_matrix
+        >>> from feax.flat.pbc import periodic_bc_3D, prolongation_matrix
         >>> pbc = periodic_bc_3D(unitcell, vec=3, dim=3)
         >>> P = prolongation_matrix(pbc, mesh, vec=3)
         >>> 

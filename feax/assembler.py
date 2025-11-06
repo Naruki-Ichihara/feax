@@ -16,7 +16,12 @@ import jax.numpy as np
 from jax.experimental import sparse
 import jax.flatten_util
 import functools
-from typing import List, Tuple, Any, Callable
+from typing import List, Tuple, Any, Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from feax.problem import Problem
+    from feax.DCboundary import DirichletBC
+
 from feax.internal_vars import InternalVars
 
 

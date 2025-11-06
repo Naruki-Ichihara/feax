@@ -1,20 +1,35 @@
 [build-system]
-requires = ["setuptools", "setuptools-scm"]
+requires = ["setuptools>=61.0", "setuptools-scm>=8.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "feax"
-authors = [
-    {name = "Naruki-Ichihara", email = "ichihara.naruki@gmail.com"},
-]
+dynamic = ["version"]
 description = "A GPU-accelerated finite element analysis framework with JAX."
 readme = "README.md"
 requires-python = ">=3.9"
-keywords = ["JAX", "CUDA", "Simulation", "PINN"]
-classifiers = [
-    "Programming Language :: Python :: 3",
+license = {text = "MIT"}
+authors = [
+    {name = "Naruki-Ichihara", email = "ichihara.naruki@nihon-u.ac.jp"},
 ]
-version = "0.0.5"
+maintainers = [
+    {name = "Naruki-Ichihara", email = "ichihara.naruki@nihon-u.ac.jp"},
+]
+keywords = ["JAX", "CUDA", "Simulation", "PINN", "finite-element", "FEA", "GPU"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Physics",
+]
 
 dependencies = [
     "numpy",
@@ -24,5 +39,89 @@ dependencies = [
     "meshio",
     "pytest",
     "fenics-basix",
-    "gmsh"
+    "gmsh",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "black",
+    "ruff",
+    "mypy",
+]
+docs = [
+    "sphinx",
+    "sphinx-rtd-theme",
+]
+
+[project.urls]
+Homepage = "https://github.com/Naruki-Ichihara/feax"
+Documentation = "https://github.com/Naruki-Ichihara/feax"
+Repository = "https://github.com/Naruki-Ichihara/feax.git"
+Issues = "https://github.com/Naruki-Ichihara/feax/issues"
+
+[tool.setuptools]
+zip-safe = false
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["feax*"]
+exclude = ["tests*", "examples*", "docs*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311", "py312"]
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4", # flake8-comprehensions
+]
+ignore = [
+    "E501",  # line too long (handled by black)
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = false
+ignore_missing_imports = true
+
+[tool.setuptools_scm]
+write_to = "feax/_version.py"
+version_scheme = "python-simplified-semver"
+local_scheme = "no-local-version"

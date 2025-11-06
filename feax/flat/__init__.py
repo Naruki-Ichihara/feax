@@ -1,4 +1,4 @@
-"""FEAX Lattice Toolkit - Periodic structures and homogenization utilities.
+"""FEAX Flat - Periodic structures and homogenization utilities.
 
 This subpackage provides tools for working with periodic lattice structures,
 unit cell analysis, and computational homogenization.

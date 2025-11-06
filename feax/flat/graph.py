@@ -1,34 +1,42 @@
-"""Graph-based lattice density field generation for FEAX.
+"""Graph-based density field generation for periodic structures.
 
-This module provides functions for creating density fields from lattice structures
-for finite element analysis and computational homogenization. It includes various
-lattice topologies that can be evaluated on finite element meshes to create 
+This module provides generic tools for creating density fields from user-defined
+node-edge graphs for finite element analysis and computational homogenization.
+It evaluates graph-based structures on finite element meshes to create
 heterogeneous material distributions.
 
 Key Features:
-    - Multiple lattice structure types (FCC, BCC, simple cubic, etc.)
+    - Generic node-edge graph evaluation
     - Element-based density field generation
     - JAX-compatible for GPU acceleration and differentiation
     - Integration with FEAX Problem and mesh structures
+    - Support for both edge-list and adjacency matrix representations
 
-Supported Lattice Structures:
-    - FCC (Face-Centered Cubic): High stiffness, common metallic structure
-    - BCC (Body-Centered Cubic): Good strength-to-weight ratio
-    - Simple Cubic: Basic cubic lattice structure
-    - Custom: User-defined node/edge graphs
+Main Functions:
+    - create_lattice_function: Create evaluation function from nodes/edges
+    - create_lattice_function_from_adjmat: Create function from adjacency matrix
+    - create_lattice_density_field: Generate density field for FEAX problem
+    - edges2adjcentMat / adjcentMat2edges: Convert between representations
 
 Example:
-    Creating FCC lattice density field for FEAX problem:
-    
-    >>> from feax.lattice_toolkit.graph import create_fcc_density
+    Creating density field from custom node-edge graph:
+
+    >>> from feax.flat.graph import create_lattice_function, create_lattice_density_field
     >>> from feax import InternalVars
-    >>> 
-    >>> # Create FCC density field
-    >>> rho_fcc = create_fcc_density(problem, radius=0.1, 
-    ...                              density_solid=1.0, density_void=0.1)
-    >>> 
+    >>>
+    >>> # Define nodes and edges for your structure
+    >>> nodes = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]])
+    >>> edges = np.array([[0, 1], [0, 2], [0, 3]])
+    >>>
+    >>> # Create lattice function
+    >>> lattice_func = create_lattice_function(nodes, edges, radius=0.1)
+    >>>
+    >>> # Create density field
+    >>> rho = create_lattice_density_field(problem, lattice_func,
+    ...                                    density_solid=1.0, density_void=0.1)
+    >>>
     >>> # Use in FEAX simulation
-    >>> internal_vars = InternalVars(volume_vars=(rho_fcc,), surface_vars=[])
+    >>> internal_vars = InternalVars(volume_vars=(rho,), surface_vars=[])
 """
 
 import jax.numpy as np

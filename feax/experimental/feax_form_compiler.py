@@ -1,13 +1,27 @@
 """
-Simplified SymbolicProblem with direct runtime evaluation.
+FEAX Form Compiler: Compiles symbolic weak forms to JAX kernels.
 
-This is a working implementation that evaluates symbolic expressions directly.
+This module implements a form compiler that translates mathematical weak form
+expressions (similar to UFL/FEniCS) into efficient JAX kernel functions. It
+uses runtime evaluation of the symbolic expression tree to generate the finite
+element residual and Jacobian calculations.
+
+Architecture:
+    Symbolic Expression → Expression Tree → RuntimeEvaluator → JAX Kernel
+
+Key Components:
+    - SymbolicProblem: Main problem class that manages compilation
+    - RuntimeEvaluator: Runtime evaluator for symbolic expressions
+    - extract_forms(): Extracts integrals from expression trees
 """
 
 import jax
 import jax.numpy as np
 import jax.flatten_util
-from typing import Union, List, Optional, Dict, Any
+from typing import Union, List, Optional, Dict, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from feax.internal_vars import InternalVars
 
 from feax.problem import Problem
 from feax.mesh import Mesh

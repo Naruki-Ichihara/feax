@@ -39,6 +39,10 @@ To install the latest commit from the main branch:
 pip install git+https://github.com/Naruki-Ichihara/feax.git@main
 ```
 
+## feax.flat
+
+Flat (Feax Lattice) is a utility for asymptotic homogenization of lattice unit cell.
+
 ## License
 
 FEAX is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for the full license text.

@@ -13,7 +13,10 @@ import os
 
 from feax.mesh import get_meshio_cell_type, Mesh
 from feax.DCboundary import DirichletBC
-from typing import Optional, List, Tuple, Union
+from typing import Optional, List, Tuple, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from feax.problem import Problem
 
 
 def save_sol(
