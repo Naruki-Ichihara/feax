@@ -50,5 +50,7 @@ FEAX builds upon the excellent work of:
 - [JAX-FEM](https://github.com/tianjuxue/jax_fem) for inspiration and reference implementations
 
 ---
+<div align="center">
+<img src="assets/logo.svg" alt="logo" width=150></img>
+</div>
 
-*FEAX: Automatic differentiation for finite element analysis.*
