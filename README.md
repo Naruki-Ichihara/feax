@@ -1,5 +1,5 @@
 
-# FEAX <img src="assets/logo.svg" alt="logo" width=200 align="right"></img>
+# FEAX <img src="assets/logo.svg" alt="logo" width=200 align="left"></img>
 
 [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
