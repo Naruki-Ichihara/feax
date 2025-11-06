@@ -1,20 +1,20 @@
 
-# FEAX <img src="assets/logo.svg" alt="logo" width=200 align="left"></img>
+# FEAX 
 
 [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![JAX](https://img.shields.io/badge/JAX-0.7%2B-green.svg)](https://github.com/google/jax)
+[![JAX](https://img.shields.io/badge/JAX-0.7%2B-green.svg)](https://github.com/google/jax) <img src="assets/logo.svg" alt="logo" width=150 align="right"></img>
 
 **FEAX** (Finite Element Analysis with JAX) is a compact, high-performance finite element analysis engine built on JAX. It provides an API for solving partial differential equations on XLA.
 
 
 
-## What is FEAX?
+## What is FEAX? 
 
-FEAX combines automatic differentiation with finite element methods. It's designed for:
+FEAX combines automatic differentiation with finite element methods. It's designed for: 
 
 - **Differentiable Physics**: Compute gradients through entire FE simulations for optimization, inverse problems, and machine learning
-- **High Performance**: JIT compilation and vectorization through JAX for maximum computational efficiency
+- **High Performance**: JIT compilation and vectorization through JAX for maximum computational efficiency 
 
 ## JAX Transformations in FEAX
 
