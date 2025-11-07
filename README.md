@@ -3,7 +3,7 @@
 
 [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![JAX](https://img.shields.io/badge/JAX-0.7%2B-green.svg)](https://github.com/google/jax) <img src="assets/logo.svg" alt="logo" width=150 align="left"></img>
+[![JAX](https://img.shields.io/badge/JAX-0.7%2B-green.svg)](https://github.com/google/jax) <img src="assets/logo.svg" alt="logo" width=150 align="right"></img>
 
 **FEAX** (Finite Element Analysis with JAX) is a compact, high-performance finite element analysis engine built on JAX. It provides an API for solving partial differential equations on XLA.
 
@@ -38,6 +38,8 @@ To install the latest commit from the main branch:
 ```bash
 pip install git+https://github.com/Naruki-Ichihara/feax.git@main
 ```
+
+## [Documentation](https://naruki-ichihara.github.io/feax/docs/api/)
 
 ## feax.flat
 
