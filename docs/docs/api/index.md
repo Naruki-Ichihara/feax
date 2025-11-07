@@ -32,13 +32,19 @@ Complete API documentation for FEAX (Finite Element Analysis with JAX).
 
 ## Flat Toolkit
 
-### Advanced Tools
-- **[feax.flat](./reference/feax/flat)** - Advanced FE analysis tools
+Advanced tools for finite element analysis:
+
+- **[feax.flat.graph](./reference/feax/flat/graph)** - Graph-based density field generation
+- **[feax.flat.pbc](./reference/feax/flat/pbc)** - Periodic boundary conditions
+- **[feax.flat.solver](./reference/feax/flat/solver)** - Homogenization solvers
+- **[feax.flat.unitcell](./reference/feax/flat/unitcell)** - Unit cell definitions
+- **[feax.flat.utils](./reference/feax/flat/utils)** - Visualization utilities
 
 ## Experimental Features
 
-### Symbolic DSL
-- **[feax.experimental](./reference/feax/experimental)** - Symbolic interface for defining physics
+Experimental symbolic DSL for defining physics:
+
+- **[feax.experimental.symbolic](./reference/feax/experimental/symbolic)** - Symbolic interface for defining physics
 
 ## Browse All
 
