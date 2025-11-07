@@ -1,0 +1,214 @@
+/**
+ * Any CSS included here will be global. The classic template
+ * bundles Infima by default. Infima is a CSS framework designed to
+ * work well for content-centric websites.
+ */
+
+/* You can override the default Infima variables here. */
+:root {
+  --ifm-color-primary: #2e8555;
+  --ifm-color-primary-dark: #29784c;
+  --ifm-color-primary-darker: #277148;
+  --ifm-color-primary-darkest: #205d3b;
+  --ifm-color-primary-light: #33925d;
+  --ifm-color-primary-lighter: #359962;
+  --ifm-color-primary-lightest: #3cad6e;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+}
+
+/* For readability concerns, you should choose a lighter palette in dark mode. */
+[data-theme='dark'] {
+  --ifm-color-primary: #25c2a0;
+  --ifm-color-primary-dark: #21af90;
+  --ifm-color-primary-darker: #1fa588;
+  --ifm-color-primary-darkest: #1a8870;
+  --ifm-color-primary-light: #29d5b0;
+  --ifm-color-primary-lighter: #32d8b4;
+  --ifm-color-primary-lightest: #4fddbf;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+}
+
+/* API Documentation Styling Improvements */
+
+/* Make module/page titles larger and more prominent */
+article h1 {
+  font-size: 3rem;
+  font-weight: 700;
+  margin-bottom: 1.5rem;
+}
+
+article h2 {
+  font-size: 2rem;
+  font-weight: 600;
+  margin-top: 2rem;
+  margin-bottom: 1rem;
+}
+
+/* Make documentation section headers (Parameters, Returns, etc.) much smaller */
+/* Target by ID and also by text content */
+article h2#parameters,
+article h2#returns,
+article h2#arguments,
+article h2#attributes,
+article h2#raises,
+article h2#notes,
+article h2#example,
+article h2#examples,
+article h2#see-also,
+article h2#references,
+/* Also match underscored versions */
+article h2[id*="parameter"],
+article h2[id*="return"],
+article h2[id*="argument"],
+article h2[id*="attribute"],
+article h2[id*="raise"],
+article h2[id*="note"],
+article h2[id*="example"],
+/* Match h3 versions too */
+article h3#parameters,
+article h3#returns,
+article h3#arguments,
+article h3#attributes,
+article h3#raises,
+article h3#notes,
+article h3#example,
+article h3#examples,
+article h3[id*="parameter"],
+article h3[id*="return"],
+article h3[id*="argument"],
+article h3[id*="attribute"],
+article h3[id*="raise"],
+article h3[id*="note"],
+article h3[id*="example"] {
+  font-size: 1.1rem !important;
+  font-weight: 600 !important;
+  margin-top: 1rem !important;
+  margin-bottom: 0.5rem !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.5px !important;
+  color: var(--ifm-color-emphasis-600) !important;
+}
+
+/* Make function/class names more prominent */
+article h3 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+}
+
+article h4 {
+  font-size: 1.75rem;
+  font-weight: 600;
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+  color: var(--ifm-color-primary);
+}
+
+/* Make sub-headers (Parameters, Returns, etc.) smaller and less prominent */
+article strong {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--ifm-font-color-base);
+}
+
+/* Special styling for common API section headers */
+article p > strong:only-child {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ifm-color-emphasis-600);
+}
+
+/* Code blocks styling */
+article pre {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 1rem 0;
+  border-radius: 6px;
+}
+
+/* Inline code styling */
+article code {
+  font-size: 0.9em;
+  padding: 0.15rem 0.3rem;
+  border-radius: 3px;
+  background-color: rgba(0, 0, 0, 0.05);
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+
+[data-theme='dark'] article code {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Code in headings should be styled but not have background */
+article h1 code,
+article h2 code,
+article h3 code,
+article h4 code {
+  background-color: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+/* Function signature code blocks */
+article h4 + pre {
+  margin-top: 0.5rem;
+  border-left: 3px solid var(--ifm-color-primary);
+  padding-left: 1rem;
+}
+
+/* Improve spacing for parameter lists */
+article ul {
+  margin-top: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+article li {
+  margin-bottom: 0.25rem;
+}
+
+/* Blockquote (example sections) styling */
+article blockquote {
+  border-left: 4px solid var(--ifm-color-primary);
+  padding: 0.75rem 1rem;
+  background-color: rgba(0, 0, 0, 0.02);
+  border-radius: 4px;
+  margin: 1rem 0;
+}
+
+[data-theme='dark'] article blockquote {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+/* Hide documentation section headers from Table of Contents */
+/* Only show function/method names (h4) in the TOC */
+.table-of-contents li a[href*="#parameters"],
+.table-of-contents li a[href*="#returns"],
+.table-of-contents li a[href*="#arguments"],
+.table-of-contents li a[href*="#attributes"],
+.table-of-contents li a[href*="#raises"],
+.table-of-contents li a[href*="#notes"],
+.table-of-contents li a[href*="#example"],
+.table-of-contents li a[href*="#see-also"],
+.table-of-contents li a[href*="#references"] {
+  display: none;
+}
+
+/* Hide the parent li if it only contains hidden links */
+.table-of-contents li:has(> a[href*="#parameters"]),
+.table-of-contents li:has(> a[href*="#returns"]),
+.table-of-contents li:has(> a[href*="#arguments"]),
+.table-of-contents li:has(> a[href*="#attributes"]),
+.table-of-contents li:has(> a[href*="#raises"]),
+.table-of-contents li:has(> a[href*="#notes"]),
+.table-of-contents li:has(> a[href*="#example"]),
+.table-of-contents li:has(> a[href*="#see-also"]),
+.table-of-contents li:has(> a[href*="#references"]) {
+  display: none;
+}

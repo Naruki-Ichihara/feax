@@ -1,0 +1,18 @@
+loaders:
+  - type: python
+    search_path: [..]
+    packages: ['feax']
+
+processors:
+  - type: filter
+    documented_only: true
+    exclude_private: true
+    exclude_special: true
+    skip_empty_modules: true
+  - type: smart
+  - type: crossref
+
+renderer:
+  type: docusaurus
+  docs_base_path: docs/api
+  sidebar_top_level_label: API Reference
