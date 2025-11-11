@@ -57,7 +57,7 @@ determinant times quadrature weights for integration.
 
 References
 ----------
-Hughes, Thomas JR. The finite element method: linear static and dynamic 
+Hughes, Thomas JR. The finite element method: linear static and dynamic
 finite element analysis. Courier Corporation, 2012. Page 147, Eq. (3.9.3)
 
 Returns
@@ -129,45 +129,6 @@ Parameters
 Returns
 -------
 - **physical_surface_quad_points** (*np.ndarray*): Physical coordinates of surface quadrature points. Shape: (num_selected_faces, num_face_quads, dim)
-
-
-#### Dirichlet\_boundary\_conditions
-
-```python
-def Dirichlet_boundary_conditions(
-    dirichlet_bc_info: Optional[List]
-) -> Tuple[List[Array], List[Array], List[Array]]
-```
-
-Extract node indices and values for Dirichlet boundary conditions.
-
-Note: This method is deprecated. Use DirichletBC class from DCboundary module instead.
-
-Parameters
-----------
-- **dirichlet_bc_info** (*list or None*)
-
-
-Returns
--------
-- **node_inds_list** (*list[np.ndarray]*)
-- **vec_inds_list** (*list[np.ndarray]*)
-- **vals_list** (*list[np.ndarray]*)
-
-
-#### update\_Dirichlet\_boundary\_conditions
-
-```python
-def update_Dirichlet_boundary_conditions(dirichlet_bc_info: List) -> None
-```
-
-Update Dirichlet boundary conditions for time-dependent problems.
-
-Note: This method is deprecated. Use DirichletBC class from DCboundary module instead.
-
-Parameters
-----------
-- **dirichlet_bc_info** (*list*)
 
 
 #### get\_boundary\_conditions\_inds

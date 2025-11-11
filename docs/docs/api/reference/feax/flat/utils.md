@@ -20,7 +20,7 @@ and S is the compliance tensor in full 3x3x3x3 form.
 
 - `C` - 6x6 stiffness matrix in Voigt notation
 - `n` - Direction vector (3,)
-  
+
 
 **Returns**:
 
@@ -43,7 +43,7 @@ The surface is shaped by E(n) values - a perfect sphere indicates isotropy.
 - `output_file` - Path to output VTK file (e.g., &#x27;stiffness_sphere.vtu&#x27;)
 - `n_theta` - Number of theta divisions (default 30)
 - `n_phi` - Number of phi divisions (default 60)
-  
+
 
 **Returns**:
 

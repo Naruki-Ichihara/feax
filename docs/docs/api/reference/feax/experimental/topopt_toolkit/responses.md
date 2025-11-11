@@ -22,7 +22,7 @@ where u is displacement and f is traction on each loaded boundary.
   If None, defaults to scalar 1.0 for each surface.
   If single value, applies to all surfaces.
   If list/array, must match number of surfaces.
-  
+
 
 **Returns**:
 
@@ -40,7 +40,7 @@ Returns a function that computes the volume fraction of material in the domain.
 **Arguments**:
 
 - `problem` - FEAX Problem instance
-  
+
 
 **Returns**:
 

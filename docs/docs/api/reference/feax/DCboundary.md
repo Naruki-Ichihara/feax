@@ -5,11 +5,11 @@ title: feax.DCboundary
 
 Dirichlet boundary condition implementation for FEAX finite element framework.
 
-This module provides the core DirichletBC class for efficient boundary condition
+This module provides the core DirichletBC class for boundary condition
 application and dataclass-based BC specification classes for type-safe definition.
 
 Key Classes:
-- DirichletBC: JAX-compatible BC class with efficient apply methods  
+- DirichletBC: JAX-compatible BC class with apply methods
 - DirichletBCSpec: Dataclass for specifying individual boundary conditions
 - DirichletBCConfig: Container for multiple BC specifications with convenience methods
 
@@ -47,7 +47,7 @@ def from_specs(problem: 'Problem',
 
 Create DirichletBC directly from a list of DirichletBCSpec objects.
 
-This is a convenient factory method that creates a DirichletBC without 
+This is a convenient factory method that creates a DirichletBC without
 needing to create an intermediate DirichletBCConfig object.
 
 Parameters
@@ -172,28 +172,6 @@ Examples
 ... )
 ```
 
-&gt;&gt;&gt; # Apply varying displacement on right boundary
-&gt;&gt;&gt; bc2 = DirichletBCSpec(
-...     location=lambda pt: np.isclose(pt[0], 1.0),
-...     component=&#x27;y&#x27;,
-...     value=lambda pt: 0.1 * pt[2]  # varies with z-coordinate
-... )
-
-&gt;&gt;&gt; # Fix all components on a boundary
-&gt;&gt;&gt; bc3 = DirichletBCSpec(
-...     location=lambda pt: np.isclose(pt[1], 0.0),
-...     component=&#x27;all&#x27;,
-...     value=0.0
-... )
-
-&gt;&gt;&gt; # Multi-variable: BC for variable 0 only
-&gt;&gt;&gt; bc4 = DirichletBCSpec(
-...     location=lambda pt: np.isclose(pt[0], 1.0),
-...     component=0,
-...     value=0.1,
-...     variable_index=0
-... )
-
 #### \_\_post\_init\_\_
 
 ```python
@@ -202,9 +180,8 @@ def __post_init__() -> None
 
 Validate and normalize the component specification.
 
-This method is automatically called after __init__ to:
 1. Convert string component names (&#x27;x&#x27;, &#x27;y&#x27;, &#x27;z&#x27;, &#x27;all&#x27;) to integers
-2. Validate integer component indices are non-negative  
+2. Validate integer component indices are non-negative
 3. Convert constant values to functions for uniform interface
 
 Raises
@@ -240,12 +217,12 @@ Examples
 ...         value=0.0
 ...     ),
 ...     DirichletBCSpec(
-...         location=lambda pt: np.isclose(pt[0], 1.0), 
+...         location=lambda pt: np.isclose(pt[0], 1.0),
 ...         component=&#x27;x&#x27;,
 ...         value=0.1
 ...     )
 ... ])
->>> 
+>>>
 >>> # Create DirichletBC from config
 >>> bc = bc_config.create_bc(problem)
 ```
@@ -339,7 +316,6 @@ Examples
 ... )
 >>> bc = config.create_bc(problem)
 ```
-
 See Also
 --------
 DirichletBCConfig : The main configuration class

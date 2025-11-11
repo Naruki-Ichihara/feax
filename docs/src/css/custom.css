@@ -106,25 +106,6 @@ article h4 {
   color: var(--ifm-color-primary);
 }
 
-/* Make sub-headers (Parameters, Returns, etc.) smaller and less prominent */
-article strong {
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: var(--ifm-font-color-base);
-}
-
-/* Special styling for common API section headers */
-article p > strong:only-child {
-  display: block;
-  font-size: 0.85rem;
-  font-weight: 600;
-  margin-top: 1rem;
-  margin-bottom: 0.5rem;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--ifm-color-emphasis-600);
-}
-
 /* Code blocks styling */
 article pre {
   font-size: 0.9rem;

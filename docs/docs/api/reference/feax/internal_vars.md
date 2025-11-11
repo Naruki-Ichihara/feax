@@ -42,19 +42,11 @@ required for functional programming patterns.
 
 Examples
 --------
-Creating material parameters for elasticity (node-based):
-&gt;&gt;&gt; E = InternalVars.create_node_var(problem, 210e9)  # Young&#x27;s modulus at nodes
-&gt;&gt;&gt; nu = InternalVars.create_node_var(problem, 0.3)   # Poisson&#x27;s ratio at nodes
-&gt;&gt;&gt; internal_vars = InternalVars(volume_vars=(E, nu))
-
-Creating cell-based material properties:
-&gt;&gt;&gt; rho = InternalVars.create_cell_var(problem, 0.5)  # Density per element
-&gt;&gt;&gt; internal_vars = InternalVars(volume_vars=(rho,))
-
-Adding spatial variation:
-&gt;&gt;&gt; def E_field(x): return 200e9 + 50e9 * x[0]  # Varies with x-coordinate
-&gt;&gt;&gt; E_varying = InternalVars.create_node_var_from_fn(problem, E_field)
-&gt;&gt;&gt; internal_vars = InternalVars(volume_vars=(E_varying,))
+```python
+>>> E = InternalVars.create_node_var(problem, 210e9)  # Young&#x27;s modulus at nodes
+>>> nu = InternalVars.create_node_var(problem, 0.3)   # Poisson&#x27;s ratio at nodes
+>>> internal_vars = InternalVars(volume_vars=(E, nu))
+```
 
 #### \_\_post\_init\_\_
 
@@ -97,8 +89,10 @@ Returns
 Examples
 --------
 Create uniform material properties:
-&gt;&gt;&gt; E = InternalVars.create_node_var(problem, 210e9)  # Young&#x27;s modulus
-&gt;&gt;&gt; rho = InternalVars.create_node_var(problem, 7800)  # Density
+```python
+>>> E = InternalVars.create_node_var(problem, 210e9)  # Young&#x27;s modulus
+>>> rho = InternalVars.create_node_var(problem, 7800)  # Density
+```
 
 #### create\_cell\_var
 
@@ -130,8 +124,10 @@ Returns
 Examples
 --------
 Create uniform element properties:
-&gt;&gt;&gt; rho = InternalVars.create_cell_var(problem, 0.5)  # Topology density per element
-&gt;&gt;&gt; E = InternalVars.create_cell_var(problem, 70e3)  # Young&#x27;s modulus per element
+```python
+>>> rho = InternalVars.create_cell_var(problem, 0.5)  # Topology density per element
+>>> E = InternalVars.create_cell_var(problem, 70e3)  # Young&#x27;s modulus per element
+```
 
 #### create\_uniform\_volume\_var
 
@@ -162,8 +158,10 @@ Returns
 Examples
 --------
 Create uniform material properties:
-&gt;&gt;&gt; E = InternalVars.create_uniform_volume_var(problem, 210e9)  # Young&#x27;s modulus
-&gt;&gt;&gt; rho = InternalVars.create_uniform_volume_var(problem, 7800)  # Density
+```python
+>>> E = InternalVars.create_uniform_volume_var(problem, 210e9)  # Young&#x27;s modulus
+>>> rho = InternalVars.create_uniform_volume_var(problem, 7800)  # Density
+```
 
 #### create\_uniform\_surface\_var
 
@@ -194,8 +192,10 @@ Returns
 Examples
 --------
 Create uniform surface loads:
-&gt;&gt;&gt; pressure = InternalVars.create_uniform_surface_var(problem, -1000)  # Pressure load
-&gt;&gt;&gt; heat_flux = InternalVars.create_uniform_surface_var(problem, 50.0)  # Heat flux
+```python
+>>> pressure = InternalVars.create_uniform_surface_var(problem, -1000)  # Pressure load
+>>> heat_flux = InternalVars.create_uniform_surface_var(problem, 50.0)  # Heat flux
+```
 
 #### create\_node\_var\_from\_fn
 
@@ -226,11 +226,14 @@ Returns
 Examples
 --------
 Create spatially varying material properties:
-&gt;&gt;&gt; def E_gradient(x): return 200e9 + 50e9 * x[0]  # Varies with x-coordinate
-&gt;&gt;&gt; E_varying = InternalVars.create_node_var_from_fn(problem, E_gradient)
-
-&gt;&gt;&gt; def density_field(x): return 7800 * (1 + 0.1 * np.sin(x[0]))  # Sinusoidal variation
-&gt;&gt;&gt; rho_varying = InternalVars.create_node_var_from_fn(problem, density_field)
+```python
+>>> def E_gradient(x): return 200e9 + 50e9 * x[0]  # Varies with x-coordinate
+>>> E_varying = InternalVars.create_node_var_from_fn(problem, E_gradient)
+```
+```python
+>>> def density_field(x): return 7800 * (1 + 0.1 * np.sin(x[0]))  # Sinusoidal variation
+>>> rho_varying = InternalVars.create_node_var_from_fn(problem, density_field)
+```
 
 #### create\_cell\_var\_from\_fn
 
@@ -261,8 +264,10 @@ Returns
 Examples
 --------
 Create spatially varying material properties:
-&gt;&gt;&gt; def density_field(x): return 0.5 * (1 + np.tanh(x[0]))  # Smooth transition
-&gt;&gt;&gt; rho_varying = InternalVars.create_cell_var_from_fn(problem, density_field)
+```python
+>>> def density_field(x): return 0.5 * (1 + np.tanh(x[0]))  # Smooth transition
+>>> rho_varying = InternalVars.create_cell_var_from_fn(problem, density_field)
+```
 
 #### create\_spatially\_varying\_volume\_var
 
@@ -296,11 +301,14 @@ Returns
 Examples
 --------
 Create spatially varying material properties:
-&gt;&gt;&gt; def E_gradient(x): return 200e9 + 50e9 * x[0]  # Varies with x-coordinate
-&gt;&gt;&gt; E_varying = InternalVars.create_spatially_varying_volume_var(problem, E_gradient)
-
-&gt;&gt;&gt; def density_field(x): return 7800 * (1 + 0.1 * np.sin(x[0]))  # Sinusoidal variation
-&gt;&gt;&gt; rho_varying = InternalVars.create_spatially_varying_volume_var(problem, density_field)
+```python
+>>> def E_gradient(x): return 200e9 + 50e9 * x[0]  # Varies with x-coordinate
+>>> E_varying = InternalVars.create_spatially_varying_volume_var(problem, E_gradient)
+```
+```python
+>>> def density_field(x): return 7800 * (1 + 0.1 * np.sin(x[0]))  # Sinusoidal variation
+>>> rho_varying = InternalVars.create_spatially_varying_volume_var(problem, density_field)
+```
 
 #### create\_spatially\_varying\_surface\_var
 
@@ -331,11 +339,14 @@ Returns
 Examples
 --------
 Create spatially varying surface loads:
-&gt;&gt;&gt; def pressure_gradient(x): return 1000 * x[1]  # Hydrostatic pressure
-&gt;&gt;&gt; pressure = InternalVars.create_spatially_varying_surface_var(problem, pressure_gradient)
-
-&gt;&gt;&gt; def traction_field(x): return 500 * np.sin(np.pi * x[0])  # Sinusoidal traction
-&gt;&gt;&gt; traction = InternalVars.create_spatially_varying_surface_var(problem, traction_field)
+```python
+>>> def pressure_gradient(x): return 1000 * x[1]  # Hydrostatic pressure
+>>> pressure = InternalVars.create_spatially_varying_surface_var(problem, pressure_gradient)
+```
+```python
+>>> def traction_field(x): return 500 * np.sin(np.pi * x[0])  # Sinusoidal traction
+>>> traction = InternalVars.create_spatially_varying_surface_var(problem, traction_field)
+```
 
 #### replace\_volume\_var
 

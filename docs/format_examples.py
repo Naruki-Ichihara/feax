@@ -10,22 +10,110 @@ def format_examples_in_file(file_path):
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # Pattern to match Examples/Example sections followed by lines starting with >>> (HTML-escaped as &gt;&gt;&gt;)
-    # This regex finds "Examples\n--------\n" followed by example code
-    pattern = r'(Examples?)\n-+\n((?:(?:&gt;&gt;&gt;|\.\.\.).*\n?)+)'
+    # Pattern 1: Match entire "Examples" section until next heading or end
+    # Captures everything from "Examples\n--------" until next "####" or other section
+    pattern1 = r'(Examples?)\n(-+)\n((?:(?!^#{1,4}\s|^[A-Z][a-z]+\n-+).*\n?)*?)(?=^#{1,4}\s|^[A-Z][a-z]+\n-+|\Z)'
 
-    def replace_example(match):
+    def replace_example_underline(match):
         header = match.group(1)
-        example_code = match.group(2).strip()
-        # Decode HTML entities: &gt; -> >, &lt; -> <, &amp; -> &
-        example_code = example_code.replace('&gt;', '>')
-        example_code = example_code.replace('&lt;', '<')
-        example_code = example_code.replace('&amp;', '&')
-        # Wrap in Python code block
-        return f'{header}\n{"-" * len(header)}\n```python\n{example_code}\n```\n'
+        underline = match.group(2)
+        section_content = match.group(3).strip()
 
-    # Apply the transformation
-    new_content = re.sub(pattern, replace_example, content)
+        if not section_content:
+            return f'{header}\n{underline}\n\n'
+
+        # Split into lines and process
+        lines = section_content.split('\n')
+        result_lines = []
+        in_code_block = False
+        code_lines = []
+
+        for line in lines:
+            # Check if line is a code line (starts with >>> or ...)
+            is_code = line.lstrip().startswith(('&gt;&gt;&gt;', '...'))
+
+            if is_code:
+                if not in_code_block:
+                    # Start new code block
+                    in_code_block = True
+                    code_lines = []
+                # Decode HTML entities
+                decoded_line = line.replace('&gt;', '>').replace('&lt;', '<').replace('&amp;', '&')
+                code_lines.append(decoded_line)
+            else:
+                if in_code_block:
+                    # End code block and wrap it
+                    result_lines.append('```python')
+                    result_lines.extend(code_lines)
+                    result_lines.append('```')
+                    in_code_block = False
+                    code_lines = []
+                # Add non-code line
+                if line.strip():  # Only add non-empty lines
+                    result_lines.append(line)
+
+        # Close any remaining code block
+        if in_code_block:
+            result_lines.append('```python')
+            result_lines.extend(code_lines)
+            result_lines.append('```')
+
+        return f'{header}\n{underline}\n' + '\n'.join(result_lines) + '\n\n'
+
+    # Pattern 2: Match "**Example**:\n\n" format (flat/experimental modules)
+    # Captures everything from **Example**: until next heading or end
+    pattern2 = r'\*\*Example\*\*:\n\n((?:(?!^#{1,4}\s).*\n?)*?)(?=^#{1,4}\s|\Z)'
+
+    def replace_example_bold(match):
+        section_content = match.group(1).strip()
+
+        if not section_content:
+            return '**Example**:\n\n'
+
+        # Split into lines and process
+        lines = section_content.split('\n')
+        result_lines = []
+        in_code_block = False
+        code_lines = []
+
+        for line in lines:
+            # Remove leading 2-space indentation if present
+            dedented = line[2:] if line.startswith('  ') else line
+
+            # Check if line is a code line (starts with >>> or ... after dedenting)
+            is_code = dedented.lstrip().startswith(('&gt;&gt;&gt;', '...'))
+
+            if is_code:
+                if not in_code_block:
+                    # Start new code block
+                    in_code_block = True
+                    code_lines = []
+                # Decode HTML entities
+                decoded_line = dedented.replace('&gt;', '>').replace('&lt;', '<').replace('&amp;', '&')
+                code_lines.append(decoded_line)
+            else:
+                if in_code_block:
+                    # End code block and wrap it
+                    result_lines.append('```python')
+                    result_lines.extend(code_lines)
+                    result_lines.append('```')
+                    in_code_block = False
+                    code_lines = []
+                # Add non-code line (descriptive text)
+                if dedented.strip():  # Only add non-empty lines
+                    result_lines.append(dedented)
+
+        # Close any remaining code block
+        if in_code_block:
+            result_lines.append('```python')
+            result_lines.extend(code_lines)
+            result_lines.append('```')
+
+        return '**Example**:\n\n' + '\n'.join(result_lines) + '\n\n'
+
+    # Apply both transformations
+    new_content = re.sub(pattern1, replace_example_underline, content, flags=re.MULTILINE)
+    new_content = re.sub(pattern2, replace_example_bold, new_content, flags=re.MULTILINE)
 
     # Only write if content changed
     if new_content != content:

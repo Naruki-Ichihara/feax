@@ -27,7 +27,7 @@ update.
 **Arguments**:
 
   A pytree containing the original gradient descent update.
-  
+
 
 **Returns**:
 
@@ -89,7 +89,7 @@ Represents an equality constraint, g(x) = 0.
   loss function&#x27;s value.
 - `reduction` - The function that is used to aggregate the constraints
   if the constraint function outputs more than one element.
-  
+
 
 **Returns**:
 
@@ -115,7 +115,7 @@ variable internally to convert it to an equality constraint.
   loss function&#x27;s value.
 - `reduction` - The function that is used to aggregate the constraints
   if the constraint function outputs more than one element.
-  
+
 
 **Returns**:
 
@@ -132,7 +132,7 @@ Combines multiple constraint tuples into a single constraint tuple.
 **Arguments**:
 
 - `*args` - A series of constraint (init_fn, loss_fn) tuples.
-  
+
 
 **Returns**:
 

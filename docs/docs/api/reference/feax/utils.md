@@ -34,7 +34,7 @@ Save mesh and solution data to VTK format.
   - (3, 3) for tensor data (will be flattened to (9,))
 - `point_infos` - List of (name, data) tuples for point-based data.
   Data shape should be (n_nodes, ...)
-  
+
 
 **Raises**:
 
@@ -70,11 +70,12 @@ Examples
 >>> initial_guess = zero_like_initial_guess(problem, bc)
 >>> solution = solver(internal_vars, initial_guess)
 ```
-
 For time-dependent problems:
-&gt;&gt;&gt; # First timestep
-&gt;&gt;&gt; solution = solver(internal_vars_t0, zero_like_initial_guess(problem, bc))
-&gt;&gt;&gt; # Subsequent timesteps use previous solution
-&gt;&gt;&gt; for t in timesteps[1:]:
-&gt;&gt;&gt;     solution = solver(internal_vars_t, solution)
+```python
+>>> # First timestep
+>>> solution = solver(internal_vars_t0, zero_like_initial_guess(problem, bc))
+>>> # Subsequent timesteps use previous solution
+>>> for t in timesteps[1:]:
+>>>     solution = solver(internal_vars_t, solution)
+```
 

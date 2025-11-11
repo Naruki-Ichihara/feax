@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        INSTALL_CLAUDE: "true"
+        INSTALL_CLAUDE: "false"
     image: fealax:latest
     container_name: feax
     restart: always

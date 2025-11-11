@@ -37,17 +37,19 @@ that relates their coordinates.
   Essential for establishing the periodic relationship.
 - `vec` _int_ - Index of the degree-of-freedom component affected by this pairing.
   For vector problems: 0=x-component, 1=y-component, 2=z-component, etc.
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; # Create a pairing for x-direction periodicity
-  &gt;&gt;&gt; pairing = PeriodicPairing(
-  ...     location_master=lambda p: np.isclose(p[0], 0.0),  # Left face
-  ...     location_slave=lambda p: np.isclose(p[0], 1.0),   # Right face
-  ...     mapping=lambda p: p + np.array([1.0, 0.0, 0.0]),  # Translate by 1 in x
-  ...     vec=0  # Apply to x-component of displacement
-  ... )
+```python
+>>> # Create a pairing for x-direction periodicity
+>>> pairing = PeriodicPairing(
+...     location_master=lambda p: np.isclose(p[0], 0.0),  # Left face
+...     location_slave=lambda p: np.isclose(p[0], 1.0),   # Right face
+...     mapping=lambda p: p + np.array([1.0, 0.0, 0.0]),  # Translate by 1 in x
+...     vec=0  # Apply to x-component of displacement
+... )
+```
 
 #### prolongation\_matrix
 
@@ -77,7 +79,7 @@ while maintaining periodicity. Given reduced DoFs ū, the full DoF vector is u =
 - `vec` _int_ - Number of degrees of freedom per node (e.g., 2 for 2D elasticity,
   3 for 3D elasticity).
 - `offset` _int_ - Global DoF offset for constructing the matrix. Defaults to 0.
-  
+
 
 **Returns**:
 
@@ -85,30 +87,29 @@ while maintaining periodicity. Given reduced DoFs ū, the full DoF vector is u =
   - N = total number of DoFs before applying constraints
   - M = number of independent DoFs after applying constraints
   JAX BCOO sparse matrix format for compatibility with FEAX ecosystem.
-  
+
 
 **Raises**:
 
 - `AssertionError` - If master and slave boundary node counts don&#x27;t match.
 - `ValueError` - If the DoF reduction is inconsistent with the pairing structure.
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; # Create prolongation matrix for 3D periodic unit cell
-  &gt;&gt;&gt; pairings = periodic_bc_3D(unit_cell, vec=3, dim=3)
-  &gt;&gt;&gt; P = prolongation_matrix(pairings, mesh, vec=3)
-  &gt;&gt;&gt; print(f&quot;DoF reduction: {`P.shape[0]`} -&gt; {`P.shape[1]`}&quot;)
-  
-
+```python
+>>> # Create prolongation matrix for 3D periodic unit cell
+>>> pairings = periodic_bc_3D(unit_cell, vec=3, dim=3)
+>>> P = prolongation_matrix(pairings, mesh, vec=3)
+>>> print(f&quot;DoF reduction: {`P.shape[0]`} -> {`P.shape[1]`}&quot;)
+```
 **Notes**:
-
-  The matrix construction process:
-  1. Identifies master and slave nodes for each pairing
-  2. Establishes point-to-point correspondence using geometric mapping
-  3. Builds sparse matrix entries to enforce u_slave = u_master
-  4. Results in a rectangular matrix for DoF space transformation
-  5. Returns JAX BCOO sparse matrix for JAX transformations compatibility
+The matrix construction process:
+1. Identifies master and slave nodes for each pairing
+2. Establishes point-to-point correspondence using geometric mapping
+3. Builds sparse matrix entries to enforce u_slave = u_master
+4. Results in a rectangular matrix for DoF space transformation
+5. Returns JAX BCOO sparse matrix for JAX transformations compatibility
 
 #### periodic\_bc\_3D
 
@@ -135,7 +136,7 @@ The function systematically pairs:
   functions and geometric mapping capabilities.
 - `vec` _int_ - Number of degrees of freedom per node. Defaults to 1.
 - `dim` _int_ - Spatial dimension of the problem. Defaults to 3.
-  
+
 
 **Returns**:
 
@@ -143,20 +144,19 @@ The function systematically pairs:
   1. Corner pairings (excluding origin as master)
   2. Edge pairings (excluding corners)
   3. Face pairings (excluding edges and corners)
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; unit_cell = UnitCell()
-  &gt;&gt;&gt; ...
-  &gt;&gt;&gt; pairings = periodic_bc_3D(unit_cell, vec=3)  # 3D elasticity
-  &gt;&gt;&gt; print(f&quot;Total pairings: {`len(pairings)`}&quot;)
-  &gt;&gt;&gt; # Should be: 7 corners + 12 edges + 6 faces = 25 per DoF component
-  
-
+```python
+>>> unit_cell = UnitCell()
+>>> ...
+>>> pairings = periodic_bc_3D(unit_cell, vec=3)  # 3D elasticity
+>>> print(f&quot;Total pairings: {`len(pairings)`}&quot;)
+>>> # Should be: 7 corners + 12 edges + 6 faces = 25 per DoF component
+```
 **Notes**:
-
-  - The origin corner serves as the master for all other corners
-  - Edge and face exclusions prevent double-counting of constraints
-  - Each geometric pairing is replicated for each DoF component
+- The origin corner serves as the master for all other corners
+- Edge and face exclusions prevent double-counting of constraints
+- Each geometric pairing is replicated for each DoF component
 

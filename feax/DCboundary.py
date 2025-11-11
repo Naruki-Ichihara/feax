@@ -1,11 +1,11 @@
 """
 Dirichlet boundary condition implementation for FEAX finite element framework.
 
-This module provides the core DirichletBC class for efficient boundary condition
+This module provides the core DirichletBC class for boundary condition
 application and dataclass-based BC specification classes for type-safe definition.
 
 Key Classes:
-- DirichletBC: JAX-compatible BC class with efficient apply methods  
+- DirichletBC: JAX-compatible BC class with apply methods  
 - DirichletBCSpec: Dataclass for specifying individual boundary conditions
 - DirichletBCConfig: Container for multiple BC specifications with convenience methods
 """
@@ -277,28 +277,6 @@ class DirichletBCSpec:
     ...     component='x',  # or component=0
     ...     value=0.0
     ... )
-
-    >>> # Apply varying displacement on right boundary
-    >>> bc2 = DirichletBCSpec(
-    ...     location=lambda pt: np.isclose(pt[0], 1.0),
-    ...     component='y',
-    ...     value=lambda pt: 0.1 * pt[2]  # varies with z-coordinate
-    ... )
-
-    >>> # Fix all components on a boundary
-    >>> bc3 = DirichletBCSpec(
-    ...     location=lambda pt: np.isclose(pt[1], 0.0),
-    ...     component='all',
-    ...     value=0.0
-    ... )
-
-    >>> # Multi-variable: BC for variable 0 only
-    >>> bc4 = DirichletBCSpec(
-    ...     location=lambda pt: np.isclose(pt[0], 1.0),
-    ...     component=0,
-    ...     value=0.1,
-    ...     variable_index=0
-    ... )
     """
     location: Callable[[np.ndarray], bool]
     component: Union[int, str]
@@ -308,7 +286,6 @@ class DirichletBCSpec:
     def __post_init__(self) -> None:
         """Validate and normalize the component specification.
         
-        This method is automatically called after __init__ to:
         1. Convert string component names ('x', 'y', 'z', 'all') to integers
         2. Validate integer component indices are non-negative  
         3. Convert constant values to functions for uniform interface

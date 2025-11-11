@@ -5,10 +5,6 @@ This module provides the main assembler API for finite element analysis with
 separated internal variables. It handles the assembly of residual vectors and
 Jacobian matrices for both volume and surface integrals, supporting various
 physics kernels (Laplace, mass, surface, and universal).
-
-The assembler separates the finite element structure (Problem) from material
-properties and loading parameters (InternalVars), enabling efficient
-optimization and sensitivity analysis.
 """
 
 import jax

@@ -1,13 +1,35 @@
 import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
 const config: Config = {
   title: 'FEAX',
   tagline: 'Finite Element Analysis with JAX',
-  favicon: 'img/favicon.ico',
+  favicon: 'img/favicon.svg',
+
+  // Custom head tags for multiple favicon formats
+  headTags: [
+    {
+      tagName: 'link',
+      attributes: {
+        rel: 'icon',
+        type: 'image/svg+xml',
+        href: 'img/favicon.svg',
+      },
+    },
+    {
+      tagName: 'link',
+      attributes: {
+        rel: 'alternate icon',
+        type: 'image/x-icon',
+        href: 'img/favicon.ico',
+      },
+    },
+  ],
 
   // Future flags disabled for better performance
   // future: {
@@ -46,6 +68,8 @@ const config: Config = {
           // Remove this to remove the "edit this page" links.
           editUrl:
             'https://github.com/Naruki-Ichihara/feax/tree/main/docs/',
+          remarkPlugins: [remarkMath],
+          rehypePlugins: [rehypeKatex],
         },
         blog: {
           showReadingTime: true,
@@ -70,11 +94,25 @@ const config: Config = {
   ],
 
 
+  stylesheets: [
+    {
+      href: 'https://cdn.jsdelivr.net/npm/katex@0.13.24/dist/katex.min.css',
+      type: 'text/css',
+      integrity: 'sha384-odtC+0UGzzFL/6PNoE8rX/SPcQDXBJ+uRepguP4QkPCm2LBxH3FA3y+fKSiJ+AmM',
+      crossorigin: 'anonymous',
+    },
+  ],
+
   themeConfig: {
     // Replace with your project's social card
     image: 'img/docusaurus-social-card.jpg',
     colorMode: {
       respectPrefersColorScheme: true,
+    },
+    // Include h4 headers in table of contents for API docs
+    tableOfContents: {
+      minHeadingLevel: 2,
+      maxHeadingLevel: 4,
     },
     navbar: {
       title: 'FEAX',

@@ -32,7 +32,7 @@ Complete API documentation for FEAX (Finite Element Analysis with JAX).
 
 ## Flat Toolkit
 
-Advanced tools for finite element analysis:
+Flat (Feax Lattice) is toolkit to analyze of lattice materials:
 
 - **[feax.flat.graph](./reference/feax/flat/graph)** - Graph-based density field generation
 - **[feax.flat.pbc](./reference/feax/flat/pbc)** - Periodic boundary conditions

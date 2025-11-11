@@ -8,29 +8,7 @@ Key Functions:
     create_homogenization_solver: Create solver for unit cell homogenization
     create_affine_displacement_solver: Create solver for affine displacement using JAX linear solvers
     create_macro_displacement_field: Generate macro displacement from strain
-    
-Example:
-    Basic homogenization solver usage:
-    
-    >>> from feax.flat.solver import create_homogenization_solver
-    >>> from feax.flat.pbc import periodic_bc_3D, prolongation_matrix
-    >>> 
-    >>> # Setup periodic boundary conditions
-    >>> pbc = periodic_bc_3D(unitcell, vec=3, dim=3)
-    >>> P = prolongation_matrix(pbc, mesh, vec=3)
-    >>> 
-    >>> # Define macroscopic strain
-    >>> epsilon_macro = np.array([[0.01, 0.0, 0.0],
-    >>>                          [0.0, 0.0, 0.0], 
-    >>>                          [0.0, 0.0, 0.0]])
-    >>> 
-    >>> # Create homogenization solver
-    >>> solver = create_homogenization_solver(
-    >>>     problem, bc, P, epsilon_macro, solver_options, mesh
-    >>> )
-    >>> 
-    >>> # Solve for total displacement (fluctuation + macro)
-    >>> solution = solver(internal_vars, initial_guess)
+
 """
 
 import jax.numpy as np

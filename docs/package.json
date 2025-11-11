@@ -14,7 +14,7 @@
     "write-translations": "docusaurus write-translations",
     "write-heading-ids": "docusaurus write-heading-ids",
     "typecheck": "tsc",
-    "api:generate": "pydoc-markdown && rm -f docs/api/reference/feax/experimental/feax_form_compiler.md && find docs/api/reference -name '*.md' -exec sed -i 's/{\\([^}]*\\)}/{`\\1`}/g' {} \\; && python3 format_examples.py && python3 format_parameters.py",
+    "api:generate": "pydoc-markdown && rm -f docs/api/reference/feax/experimental/feax_form_compiler.md && find docs/api/reference -name '*.md' -exec sed -i 's/{\\([^}]*\\)}/{`\\1`}/g' {} \\; && python3 format_examples.py && python3 format_parameters.py && find docs/api/reference -name '*.md' -exec sed -i 's/[[:space:]]*$//' {} \\;",
     "api:clean": "rm -rf docs/api/reference"
   },
   "dependencies": {
@@ -24,7 +24,9 @@
     "clsx": "^2.0.0",
     "prism-react-renderer": "^2.3.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "rehype-katex": "^7.0.1",
+    "remark-math": "^6.0.0"
   },
   "devDependencies": {
     "@docusaurus/module-type-aliases": "3.9.2",

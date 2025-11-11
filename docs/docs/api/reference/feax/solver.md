@@ -103,7 +103,7 @@ Notes
 -----
 Implements the exact x0 computation from the row elimination solver:
 x0_1 = assign_bc(zeros, problem) - sets BC values at BC locations, 0 elsewhere
-x0_2 = copy_bc(current_sol, problem) - copies current solution values at BC locations, 0 elsewhere  
+x0_2 = copy_bc(current_sol, problem) - copies current solution values at BC locations, 0 elsewhere
 x0 = x0_1 - x0_2 - the correct initial guess computation
 
 For reduced problems (when P_mat is provided):
@@ -114,12 +114,13 @@ Examples
 --------
 ```python
 >>> # Usage with BC information
->>> x0_fn = create_x0(bc_rows=[0, 1, 2], bc_vals=[1.0, 0.0, 2.0]) 
+>>> x0_fn = create_x0(bc_rows=[0, 1, 2], bc_vals=[1.0, 0.0, 2.0])
 >>> solver_options = SolverOptions(linear_solver_x0_fn=x0_fn)
 ```
-
-&gt;&gt;&gt; # Usage with reduced problem
-&gt;&gt;&gt; x0_fn = create_x0(bc_rows, bc_vals, P_mat=P)
+```python
+>>> # Usage with reduced problem
+>>> x0_fn = create_x0(bc_rows, bc_vals, P_mat=P)
+```
 
 #### create\_armijo\_line\_search\_jax
 

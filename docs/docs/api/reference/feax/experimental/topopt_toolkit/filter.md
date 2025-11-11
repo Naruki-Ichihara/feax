@@ -44,7 +44,7 @@ Create a Helmholtz filter function for quadrature point design variables.
 
 - `base_problem` - Base FE problem defining mesh and element structure
 - `radius` - Filter radius controlling smoothing length scale
-  
+
 
 **Returns**:
 
@@ -68,20 +68,22 @@ Helmholtz filtering to specific design variable updates with no conditional over
 - `problem` - Base FE problem defining mesh and element structure
 - `key` - Key name for the design variable to filter (e.g., &#x27;rho&#x27;, &#x27;density&#x27;)
 - `radius` - Filter radius controlling smoothing length scale
-  
+
 
 **Returns**:
 
   Optax gradient transformation that applies Helmholtz filtering
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; filter_transform = create_helmholtz_transform(problem, &#x27;rho&#x27;, radius=0.05)
-  &gt;&gt;&gt; optimizer = optax.chain(
-  ...     optax.adam(0.01),
-  ...     filter_transform
-  ... )
+```python
+>>> filter_transform = create_helmholtz_transform(problem, &#x27;rho&#x27;, radius=0.05)
+>>> optimizer = optax.chain(
+...     optax.adam(0.01),
+...     filter_transform
+... )
+```
 
 #### create\_box\_projection\_transform
 
@@ -103,21 +105,23 @@ The transform clips the update such that param + update stays within [lower, upp
 - `key` - Key name for the design variable to project (e.g., &#x27;rho&#x27;, &#x27;density&#x27;)
 - `lower` - Lower bound for projection
 - `upper` - Upper bound for projection
-  
+
 
 **Returns**:
 
   Optax gradient transformation that clips updates to maintain bounds
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; box_transform = create_box_projection_transform(&#x27;rho&#x27;, lower=0.0, upper=1.0)
-  &gt;&gt;&gt; optimizer = optax.chain(
-  ...     optax.adam(0.01),
-  ...     create_helmholtz_transform(problem, &#x27;rho&#x27;, radius=0.05),
-  ...     box_transform
-  ... )
+```python
+>>> box_transform = create_box_projection_transform(&#x27;rho&#x27;, lower=0.0, upper=1.0)
+>>> optimizer = optax.chain(
+...     optax.adam(0.01),
+...     create_helmholtz_transform(problem, &#x27;rho&#x27;, radius=0.05),
+...     box_transform
+... )
+```
 
 #### create\_sigmoid\_transform
 
@@ -138,20 +142,22 @@ where x is the unconstrained variable.
 
 - `key` - Key name for the design variable (e.g., &#x27;rho&#x27;)
 - `scale` - Scaling factor for sigmoid steepness (higher = steeper transition)
-  
+
 
 **Returns**:
 
   Optax gradient transformation that handles sigmoid reparameterization
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; sigmoid_transform = create_sigmoid_transform(&#x27;rho&#x27;, scale=5.0)
-  &gt;&gt;&gt; optimizer = optax.chain(
-  ...     optax.adam(0.01),
-  ...     mdmm.optax_prepare_update(),
-  ...     sigmoid_transform,
-  ...     filter_transform
-  ... )
+```python
+>>> sigmoid_transform = create_sigmoid_transform(&#x27;rho&#x27;, scale=5.0)
+>>> optimizer = optax.chain(
+...     optax.adam(0.01),
+...     mdmm.optax_prepare_update(),
+...     sigmoid_transform,
+...     filter_transform
+... )
+```
 

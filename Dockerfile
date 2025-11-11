@@ -1,7 +1,7 @@
 FROM nvcr.io/nvidia/jax:25.08-py3
 
 # Build argument to control Claude Code installation
-ARG INSTALL_CLAUDE=true
+ARG INSTALL_CLAUDE=false
 ARG INSTALL_FENICSX=false
 
 RUN apt update

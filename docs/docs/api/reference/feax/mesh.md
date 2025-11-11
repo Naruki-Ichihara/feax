@@ -71,12 +71,15 @@ ValueError
 Examples
 --------
 Read Gmsh .msh file and convert:
-&gt;&gt;&gt; import meshio
-&gt;&gt;&gt; gmsh_mesh = meshio.read(&quot;mesh.msh&quot;)
-&gt;&gt;&gt; mesh = Mesh.from_gmsh(gmsh_mesh)
-
+```python
+>>> import meshio
+>>> gmsh_mesh = meshio.read(&quot;mesh.msh&quot;)
+>>> mesh = Mesh.from_gmsh(gmsh_mesh)
+```
 Convert meshio mesh with specific element type:
-&gt;&gt;&gt; mesh = Mesh.from_gmsh(gmsh_mesh, element_type=&#x27;HEX8&#x27;)
+```python
+>>> mesh = Mesh.from_gmsh(gmsh_mesh, element_type=&#x27;HEX8&#x27;)
+```
 
 Notes
 -----
@@ -167,7 +170,7 @@ Notes
 -----
 Supported element types include:
 - TET4, TET10: Tetrahedral elements
-- HEX8, HEX20, HEX27: Hexahedral elements  
+- HEX8, HEX20, HEX27: Hexahedral elements
 - TRI3, TRI6: Triangular elements
 - QUAD4, QUAD8: Quadrilateral elements
 
@@ -210,10 +213,13 @@ ValueError
 Examples
 --------
 Create structured HEX8 mesh:
-&gt;&gt;&gt; mesh = box_mesh_gmsh(1.0, mesh_size=0.1, element_type=&#x27;HEX8&#x27;)
-
+```python
+>>> mesh = box_mesh_gmsh(1.0, mesh_size=0.1, element_type=&#x27;HEX8&#x27;)
+```
 Create unstructured TET4 mesh:
-&gt;&gt;&gt; mesh = box_mesh_gmsh((2.0, 1.0, 0.5), mesh_size=0.05, element_type=&#x27;TET4&#x27;)
+```python
+>>> mesh = box_mesh_gmsh((2.0, 1.0, 0.5), mesh_size=0.05, element_type=&#x27;TET4&#x27;)
+```
 
 Notes
 -----
@@ -255,7 +261,9 @@ Returns
 Examples
 --------
 Create 32x32 mesh on unit square:
-&gt;&gt;&gt; mesh = rectangle_mesh(Nx=32, Ny=32, domain_x=1.0, domain_y=1.0)
+```python
+>>> mesh = rectangle_mesh(Nx=32, Ny=32, domain_x=1.0, domain_y=1.0)
+```
 
 Notes
 -----
@@ -299,7 +307,9 @@ If gmsh is not installed
 Examples
 --------
 Create TET4 sphere mesh:
-&gt;&gt;&gt; mesh = sphere_mesh_gmsh(1.0, mesh_size=0.1)
+```python
+>>> mesh = sphere_mesh_gmsh(1.0, mesh_size=0.1)
+```
 
 Notes
 -----
@@ -344,8 +354,11 @@ ImportError
 Examples
 --------
 Create TET4 cylinder mesh:
-&gt;&gt;&gt; mesh = cylinder_mesh_gmsh(0.5, 2.0, mesh_size=0.1)
-
+```python
+>>> mesh = cylinder_mesh_gmsh(0.5, 2.0, mesh_size=0.1)
+```
 Create HEX8 cylinder mesh:
-&gt;&gt;&gt; mesh = cylinder_mesh_gmsh(0.5, 2.0, mesh_size=0.1, element_type=&#x27;HEX8&#x27;)
+```python
+>>> mesh = cylinder_mesh_gmsh(0.5, 2.0, mesh_size=0.1, element_type=&#x27;HEX8&#x27;)
+```
 

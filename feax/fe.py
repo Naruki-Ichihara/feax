@@ -210,60 +210,7 @@ class FiniteElement:
         # (num_selected_faces, num_face_quads, num_nodes, 1) * (num_selected_faces, 1, num_nodes, dim) -> (num_selected_faces, num_face_quads, dim)
         physical_surface_quad_points = np.sum(selected_face_shape_vals[:, :, :, None] * selected_coos[:, None, :, :], axis=2)
         return physical_surface_quad_points
-
-    def Dirichlet_boundary_conditions(self, dirichlet_bc_info: Optional[List]) -> Tuple[List[Array], List[Array], List[Array]]:
-        """Extract node indices and values for Dirichlet boundary conditions.
-        
-        Note: This method is deprecated. Use DirichletBC class from DCboundary module instead.
-
-        Parameters
-        ----------
-        dirichlet_bc_info : list or None
-            Legacy BC specification: [location_fns, vecs, value_fns]
-
-        Returns
-        -------
-        node_inds_list : list[np.ndarray]
-            Node indices for each BC. Values range from 0 to num_total_nodes - 1
-        vec_inds_list : list[np.ndarray]  
-            Vector component indices for each BC. Values range from 0 to vec - 1
-        vals_list : list[np.ndarray]
-            Prescribed values for each BC
-        """
-        node_inds_list = []
-        vec_inds_list = []
-        vals_list = []
-        if dirichlet_bc_info is not None:
-            location_fns, vecs, value_fns = dirichlet_bc_info
-            assert len(location_fns) == len(value_fns) and len(value_fns) == len(vecs)
-            for i in range(len(location_fns)):
-                num_args = location_fns[i].__code__.co_argcount
-                if num_args == 1:
-                    location_fn = lambda point, ind: location_fns[i](point)
-                elif num_args == 2:
-                    location_fn = location_fns[i]
-                else:
-                    raise ValueError(f"Wrong number of arguments for location_fn: must be 1 or 2, get {num_args}")
-
-                node_inds = np.argwhere(jax.vmap(location_fn)(self.mesh.points, np.arange(self.num_total_nodes))).reshape(-1)
-                vec_inds = np.ones_like(node_inds, dtype=np.int32) * vecs[i]
-                values = jax.vmap(value_fns[i])(self.mesh.points[node_inds].reshape(-1, self.dim)).reshape(-1)
-                node_inds_list.append(node_inds)
-                vec_inds_list.append(vec_inds)
-                vals_list.append(values)
-        return node_inds_list, vec_inds_list, vals_list
-
-    def update_Dirichlet_boundary_conditions(self, dirichlet_bc_info: List) -> None:
-        """Update Dirichlet boundary conditions for time-dependent problems.
-        
-        Note: This method is deprecated. Use DirichletBC class from DCboundary module instead.
-        
-        Parameters
-        ----------
-        dirichlet_bc_info : list
-            Legacy BC specification: [location_fns, vecs, value_fns]
-        """
-        self.node_inds_list, self.vec_inds_list, self.vals_list = self.Dirichlet_boundary_conditions(dirichlet_bc_info)
+    
 
     def get_boundary_conditions_inds(self, location_fns: Optional[List[Callable]]) -> List[Array]:
         """Identify boundary faces that satisfy location function conditions.

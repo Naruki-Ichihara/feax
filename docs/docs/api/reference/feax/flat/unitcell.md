@@ -22,7 +22,7 @@ Initialize the unit cell with mesh construction and geometric setup.
 - `atol` _float, optional_ - Absolute tolerance for geometric comparisons.
   Used for boundary detection and point classification. Defaults to 1e-6.
 - `**kwargs` - Additional keyword arguments passed to mesh_build().
-  
+
 
 **Raises**:
 
@@ -49,7 +49,7 @@ of the unit cell with appropriate element connectivity and boundary definition.
   - Geometric dimensions
   - Element type specifications
   - Boundary condition requirements
-  
+
 
 **Returns**:
 
@@ -57,19 +57,20 @@ of the unit cell with appropriate element connectivity and boundary definition.
   - points: Node coordinates
   - cells: Element connectivity
   - ele_type: Element type identifier
-  
+
 
 **Raises**:
 
 - `NotImplementedError` - Always raised as this is an abstract method.
-  
+
 
 **Example**:
 
-  Implementation for a structured cube mesh:
-  
-  &gt;&gt;&gt; def mesh_build(self, nx=10, ny=10, nz=10, **kwargs):
-  ...     return box_mesh(nx, ny, nz, 1.0, 1.0, 1.0)
+Implementation for a structured cube mesh:
+```python
+>>> def mesh_build(self, nx=10, ny=10, nz=10, **kwargs):
+...     return box_mesh(nx, ny, nz, 1.0, 1.0, 1.0)
+```
 
 #### cell\_centers
 
@@ -88,12 +89,14 @@ visualization, and material property assignment.
 
 - `np.ndarray` - Element centers with shape (num_elements, spatial_dim).
   Each row contains the [x, y, z, ...] coordinates of one element center.
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; centers = unit_cell.cell_centers
-  &gt;&gt;&gt; print(f&quot;First element center: {`centers[0]`}&quot;)
+```python
+>>> centers = unit_cell.cell_centers
+>>> print(f&quot;First element center: {`centers[0]`}&quot;)
+```
 
 #### bounds
 
@@ -113,13 +116,15 @@ domain boundaries for periodic boundary conditions and coordinate mapping.
   Tuple[np.ndarray, np.ndarray]: A tuple containing:
   - Lower bound: minimum coordinates [x_min, y_min, z_min, ...]
   - Upper bound: maximum coordinates [x_max, y_max, z_max, ...]
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; lb, ub = unit_cell.bounds
-  &gt;&gt;&gt; print(f&quot;Unit cell spans from {`lb`} to {`ub`}&quot;)
-  &gt;&gt;&gt; volume = np.prod(ub - lb)
+```python
+>>> lb, ub = unit_cell.bounds
+>>> print(f&quot;Unit cell spans from {`lb`} to {`ub`}&quot;)
+>>> volume = np.prod(ub - lb)
+```
 
 #### corners
 
@@ -139,14 +144,16 @@ condition enforcement and geometric transformations.
 - `np.ndarray` - Array of shape (2^N, N) containing all corner coordinates.
   Each row represents one corner point in N-dimensional space.
   For a 3D box: 8 corners, for 2D: 4 corners, etc.
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; corners = unit_cell.corners  # For 3D unit cell
-  &gt;&gt;&gt; print(f&quot;3D unit cell has {`len(corners)`} corners&quot;)
-  &gt;&gt;&gt; print(f&quot;Corner coordinates:
-  {`corners`}&quot;)
+```python
+>>> corners = unit_cell.corners  # For 3D unit cell
+>>> print(f&quot;3D unit cell has {`len(corners)`} corners&quot;)
+>>> print(f&quot;Corner coordinates:
+```
+{`corners`}&quot;)
 
 #### is\_corner
 
@@ -163,18 +170,20 @@ condition identification and constraint application.
 **Arguments**:
 
 - `point` _np.ndarray_ - Point coordinates to test with shape (spatial_dim,).
-  
+
 
 **Returns**:
 
 - `bool` - True if the point is at a unit cell corner, False otherwise.
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; # Test if origin is a corner
-  &gt;&gt;&gt; is_corner = unit_cell.is_corner(np.array([0.0, 0.0, 0.0]))
-  &gt;&gt;&gt; print(f&quot;Origin is corner: {`is_corner`}&quot;)
+```python
+>>> # Test if origin is a corner
+>>> is_corner = unit_cell.is_corner(np.array([0.0, 0.0, 0.0]))
+>>> print(f&quot;Origin is corner: {`is_corner`}&quot;)
+```
 
 #### is\_edge
 
@@ -192,19 +201,21 @@ condition enforcement.
 **Arguments**:
 
 - `point` _np.ndarray_ - Point coordinates to test with shape (spatial_dim,).
-  
+
 
 **Returns**:
 
 - `bool` - True if the point is on a unit cell edge (but not a corner),
   False otherwise.
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; # Test if point is on an edge
-  &gt;&gt;&gt; test_point = np.array([0.5, 0.0, 0.0])  # Middle of bottom edge
-  &gt;&gt;&gt; is_edge = unit_cell.is_edge(test_point)
+```python
+>>> # Test if point is on an edge
+>>> test_point = np.array([0.5, 0.0, 0.0])  # Middle of bottom edge
+>>> is_edge = unit_cell.is_edge(test_point)
+```
 
 #### is\_face
 
@@ -222,19 +233,21 @@ surface-based boundary conditions.
 **Arguments**:
 
 - `point` _np.ndarray_ - Point coordinates to test with shape (spatial_dim,).
-  
+
 
 **Returns**:
 
 - `bool` - True if the point is on a unit cell face (but not on edges
   or corners), False otherwise.
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; # Test if point is on a face interior
-  &gt;&gt;&gt; test_point = np.array([0.5, 0.5, 0.0])  # Center of bottom face
-  &gt;&gt;&gt; is_face = unit_cell.is_face(test_point)
+```python
+>>> # Test if point is on a face interior
+>>> test_point = np.array([0.5, 0.5, 0.0])  # Center of bottom face
+>>> is_face = unit_cell.is_face(test_point)
+```
 
 #### corner\_mask
 
@@ -253,13 +266,15 @@ conditions and constraints specifically to corner nodes.
 
 - `np.ndarray` - Boolean array with shape (num_nodes,) where True indicates
   the corresponding node is at a unit cell corner.
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; corner_mask = unit_cell.corner_mask
-  &gt;&gt;&gt; corner_nodes = unit_cell.points[corner_mask]
-  &gt;&gt;&gt; print(f&quot;Found {`np.sum(corner_mask)`} corner nodes&quot;)
+```python
+>>> corner_mask = unit_cell.corner_mask
+>>> corner_nodes = unit_cell.points[corner_mask]
+>>> print(f&quot;Found {`np.sum(corner_mask)`} corner nodes&quot;)
+```
 
 #### edge\_mask
 
@@ -278,13 +293,15 @@ is useful for applying periodic boundary conditions along edges.
 
 - `np.ndarray` - Boolean array with shape (num_nodes,) where True indicates
   the corresponding node is on a unit cell edge (excluding corners).
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; edge_mask = unit_cell.edge_mask
-  &gt;&gt;&gt; edge_nodes = unit_cell.points[edge_mask]
-  &gt;&gt;&gt; print(f&quot;Found {`np.sum(edge_mask)`} edge nodes&quot;)
+```python
+>>> edge_mask = unit_cell.edge_mask
+>>> edge_nodes = unit_cell.points[edge_mask]
+>>> print(f&quot;Found {`np.sum(edge_mask)`} edge nodes&quot;)
+```
 
 #### face\_mask
 
@@ -304,13 +321,15 @@ This mask is useful for applying surface-based boundary conditions.
 - `np.ndarray` - Boolean array with shape (num_nodes,) where True indicates
   the corresponding node is on a unit cell face (excluding edges
   and corners).
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; face_mask = unit_cell.face_mask
-  &gt;&gt;&gt; face_nodes = unit_cell.points[face_mask]
-  &gt;&gt;&gt; print(f&quot;Found {`np.sum(face_mask)`} face nodes&quot;)
+```python
+>>> face_mask = unit_cell.face_mask
+>>> face_nodes = unit_cell.points[face_mask]
+>>> print(f&quot;Found {`np.sum(face_mask)`} face nodes&quot;)
+```
 
 #### face\_function
 
@@ -338,25 +357,27 @@ can optionally exclude edge and corner points from the face definition.
   edges of the unit cell. Defaults to False.
 - `excluding_corner` _bool, optional_ - If True, exclude points that lie at
   corners of the unit cell. Defaults to False.
-  
+
 
 **Returns**:
 
   Callable[[np.ndarray], bool]: A function that takes a point coordinate
   array and returns True if the point lies on the specified face.
-  
+
 
 **Raises**:
 
 - `ValueError` - If axis is out of range for the mesh dimensionality.
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; # Create function for left face (x=0), excluding corners
-  &gt;&gt;&gt; left_face = unit_cell.face_function(axis=0, value=0.0, excluding_corner=True)
-  &gt;&gt;&gt; test_point = np.array([0.0, 0.5, 0.5])
-  &gt;&gt;&gt; on_face = left_face(test_point)
+```python
+>>> # Create function for left face (x=0), excluding corners
+>>> left_face = unit_cell.face_function(axis=0, value=0.0, excluding_corner=True)
+>>> test_point = np.array([0.0, 0.5, 0.5])
+>>> on_face = left_face(test_point)
+```
 
 #### edge\_function
 
@@ -383,20 +404,22 @@ function can optionally exclude corner points from the edge definition.
 - `Example` - [0.0, 0.0] for the edge at x=0, y=0.
 - `excluding_corner` _bool, optional_ - If True, exclude points that lie at
   corners of the unit cell. Defaults to False.
-  
+
 
 **Returns**:
 
   Callable[[np.ndarray], bool]: A function that takes a point coordinate
   array and returns True if the point lies on the specified edge.
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; # Create function for bottom-left edge (x=0, y=0) in 3D
-  &gt;&gt;&gt; bottom_left_edge = unit_cell.edge_function([0, 1], [0.0, 0.0])
-  &gt;&gt;&gt; test_point = np.array([0.0, 0.0, 0.5])
-  &gt;&gt;&gt; on_edge = bottom_left_edge(test_point)
+```python
+>>> # Create function for bottom-left edge (x=0, y=0) in 3D
+>>> bottom_left_edge = unit_cell.edge_function([0, 1], [0.0, 0.0])
+>>> test_point = np.array([0.0, 0.0, 0.5])
+>>> on_edge = bottom_left_edge(test_point)
+```
 
 #### corner\_function
 
@@ -415,25 +438,27 @@ defined by specific coordinate values in all spatial dimensions.
   Must contain exactly spatial_dim values corresponding to the
   [x, y, z, ...] coordinates of the corner.
 - `Example` - [0.0, 0.0, 0.0] for the origin corner in 3D.
-  
+
 
 **Returns**:
 
   Callable[[np.ndarray], bool]: A function that takes a point coordinate
   array and returns True if the point lies at the specified corner.
-  
+
 
 **Raises**:
 
 - `ValueError` - If the number of values doesn&#x27;t match mesh dimensionality.
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; # Create function for origin corner
-  &gt;&gt;&gt; origin_corner = unit_cell.corner_function([0.0, 0.0, 0.0])
-  &gt;&gt;&gt; test_point = np.array([0.0, 0.0, 0.0])
-  &gt;&gt;&gt; at_corner = origin_corner(test_point)
+```python
+>>> # Create function for origin corner
+>>> origin_corner = unit_cell.corner_function([0.0, 0.0, 0.0])
+>>> test_point = np.array([0.0, 0.0, 0.0])
+>>> at_corner = origin_corner(test_point)
+```
 
 #### mapping
 
@@ -462,29 +487,31 @@ that relates corresponding points on the master and slave boundaries.
 - `slave` _Callable[[np.ndarray], bool]_ - Boolean filter function that
   identifies points on the slave boundary. Must identify the same
   number of points as the master function.
-  
+
 
 **Returns**:
 
   Callable[[np.ndarray], np.ndarray]: A mapping function that takes a
   point on the master boundary and returns the corresponding point
   on the slave boundary.
-  
+
 
 **Raises**:
 
 - `ValueError` - If master and slave boundaries contain different numbers
   of points, indicating incompatible boundary definitions.
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; # Map left face to right face for periodic BC
-  &gt;&gt;&gt; left_face = unit_cell.face_function(0, 0.0)  # x = 0
-  &gt;&gt;&gt; right_face = unit_cell.face_function(0, 1.0)  # x = 1
-  &gt;&gt;&gt; mapper = unit_cell.mapping(left_face, right_face)
-  &gt;&gt;&gt;
-  &gt;&gt;&gt; # Map a point from left to right
-  &gt;&gt;&gt; left_point = np.array([0.0, 0.5, 0.5])
-  &gt;&gt;&gt; right_point = mapper(left_point)  # Should be [1.0, 0.5, 0.5]
+```python
+>>> # Map left face to right face for periodic BC
+>>> left_face = unit_cell.face_function(0, 0.0)  # x = 0
+>>> right_face = unit_cell.face_function(0, 1.0)  # x = 1
+>>> mapper = unit_cell.mapping(left_face, right_face)
+>>>
+>>> # Map a point from left to right
+>>> left_point = np.array([0.0, 0.5, 0.5])
+>>> right_point = mapper(left_point)  # Should be [1.0, 0.5, 0.5]
+```
 

@@ -45,7 +45,7 @@ Attributes
 Notes
 -----
 Subclasses should implement:
-- get_tensor_map(): Returns function for gradient-based physics 
+- get_tensor_map(): Returns function for gradient-based physics
 - get_mass_map(): Returns function for mass/reaction terms (optional)
 - get_surface_maps(): Returns functions for surface loads (optional)
 - custom_init(): Additional initialization if needed (optional)
@@ -64,7 +64,7 @@ indices, and pre-computes geometric data for efficient assembly.
 
 The initialization process:
 1. Normalizes input parameters to list format
-2. Creates FiniteElement objects for each variable  
+2. Creates FiniteElement objects for each variable
 3. Computes sparse matrix assembly indices (I, J)
 4. Pre-computes shape functions and Jacobian data
 5. Sets up boundary condition data structures
@@ -111,9 +111,11 @@ NotImplementedError
 Examples
 --------
 For linear elasticity:
-&gt;&gt;&gt; def tensor_map(u_grad, E, nu):
+```python
+>>> def tensor_map(u_grad, E, nu):
 ...     # Compute stress from displacement gradient
 ...     return stress_tensor
+```
 
 #### get\_surface\_maps
 

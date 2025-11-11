@@ -48,19 +48,9 @@ class InternalVars:
 
     Examples
     --------
-    Creating material parameters for elasticity (node-based):
     >>> E = InternalVars.create_node_var(problem, 210e9)  # Young's modulus at nodes
     >>> nu = InternalVars.create_node_var(problem, 0.3)   # Poisson's ratio at nodes
     >>> internal_vars = InternalVars(volume_vars=(E, nu))
-
-    Creating cell-based material properties:
-    >>> rho = InternalVars.create_cell_var(problem, 0.5)  # Density per element
-    >>> internal_vars = InternalVars(volume_vars=(rho,))
-
-    Adding spatial variation:
-    >>> def E_field(x): return 200e9 + 50e9 * x[0]  # Varies with x-coordinate
-    >>> E_varying = InternalVars.create_node_var_from_fn(problem, E_field)
-    >>> internal_vars = InternalVars(volume_vars=(E_varying,))
     """
     volume_vars: Tuple[np.ndarray, ...] = ()
     surface_vars: Optional[List[Tuple[np.ndarray, ...]]] = None

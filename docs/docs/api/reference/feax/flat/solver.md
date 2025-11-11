@@ -10,33 +10,9 @@ homogenization with periodic boundary conditions. It implements the macro term
 approach for handling prescribed macroscopic strains without rigid body motion.
 
 Key Functions:
-create_homogenization_solver: Create solver for unit cell homogenization
-create_affine_displacement_solver: Create solver for affine displacement using JAX linear solvers
-create_macro_displacement_field: Generate macro displacement from strain
-
-**Example**:
-
-  Basic homogenization solver usage:
-  
-  &gt;&gt;&gt; from feax.flat.solver import create_homogenization_solver
-  &gt;&gt;&gt; from feax.flat.pbc import periodic_bc_3D, prolongation_matrix
-  &gt;&gt;&gt;
-  &gt;&gt;&gt; # Setup periodic boundary conditions
-  &gt;&gt;&gt; pbc = periodic_bc_3D(unitcell, vec=3, dim=3)
-  &gt;&gt;&gt; P = prolongation_matrix(pbc, mesh, vec=3)
-  &gt;&gt;&gt;
-  &gt;&gt;&gt; # Define macroscopic strain
-  &gt;&gt;&gt; epsilon_macro = np.array([[0.01, 0.0, 0.0],
-  &gt;&gt;&gt;                          [0.0, 0.0, 0.0],
-  &gt;&gt;&gt;                          [0.0, 0.0, 0.0]])
-  &gt;&gt;&gt;
-  &gt;&gt;&gt; # Create homogenization solver
-  &gt;&gt;&gt; solver = create_homogenization_solver(
-  &gt;&gt;&gt;     problem, bc, P, epsilon_macro, solver_options, mesh
-  &gt;&gt;&gt; )
-  &gt;&gt;&gt;
-  &gt;&gt;&gt; # Solve for total displacement (fluctuation + macro)
-  &gt;&gt;&gt; solution = solver(internal_vars, initial_guess)
+    create_homogenization_solver: Create solver for unit cell homogenization
+    create_affine_displacement_solver: Create solver for affine displacement using JAX linear solvers
+    create_macro_displacement_field: Generate macro displacement from strain
 
 #### create\_macro\_displacement\_field
 
@@ -55,20 +31,22 @@ occur under pure macroscopic deformation without any fluctuations.
 
 - `mesh` - FEAX mesh object with points attribute
 - `epsilon_macro` _np.ndarray_ - Macroscopic strain tensor of shape (3, 3)
-  
+
 
 **Returns**:
 
 - `np.ndarray` - Flattened displacement field of shape (num_nodes * 3,)
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; # Pure extension in x-direction
-  &gt;&gt;&gt; epsilon_macro = np.array([[0.01, 0.0, 0.0],
-  &gt;&gt;&gt;                          [0.0, 0.0, 0.0],
-  &gt;&gt;&gt;                          [0.0, 0.0, 0.0]])
-  &gt;&gt;&gt; u_macro = create_macro_displacement_field(mesh, epsilon_macro)
+```python
+>>> # Pure extension in x-direction
+>>> epsilon_macro = np.array([[0.01, 0.0, 0.0],
+>>>                          [0.0, 0.0, 0.0],
+>>>                          [0.0, 0.0, 0.0]])
+>>> u_macro = create_macro_displacement_field(mesh, epsilon_macro)
+```
 
 #### create\_affine\_displacement\_solver
 
@@ -103,20 +81,22 @@ the stiffness tensor is constant.
 - `epsilon_macro` _np.ndarray_ - Macroscopic strain tensor of shape (3, 3)
 - `mesh` - FEAX mesh object for computing macro displacement field
 - `solver_options` _SolverOptions, optional_ - Linear solver configuration
-  
+
 
 **Returns**:
 
 - `Callable` - Differentiable solver (internal_vars, initial_guess) -&gt; total displacement
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; pbc = periodic_bc_3D(unitcell, vec=3, dim=3)
-  &gt;&gt;&gt; P = prolongation_matrix(pbc, mesh, vec=3)
-  &gt;&gt;&gt; epsilon_macro = np.array([[0.01, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
-  &gt;&gt;&gt; solver = create_affine_displacement_solver(problem, bc, P, epsilon_macro, mesh)
-  &gt;&gt;&gt; u_total = solver(internal_vars, initial_guess)
+```python
+>>> pbc = periodic_bc_3D(unitcell, vec=3, dim=3)
+>>> P = prolongation_matrix(pbc, mesh, vec=3)
+>>> epsilon_macro = np.array([[0.01, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+>>> solver = create_affine_displacement_solver(problem, bc, P, epsilon_macro, mesh)
+>>> u_total = solver(internal_vars, initial_guess)
+```
 
 #### create\_homogenization\_solver
 
@@ -158,34 +138,36 @@ optimization with homogenized properties as objectives.
 - `solver_options` _SolverOptions_ - Linear solver configuration
 - `mesh` - FEAX mesh object for computing macro displacement field
 - `dim` _int_ - Problem dimension (2 or 3). Defaults to 3.
-  
+
 
 **Returns**:
 
 - `Callable` - Differentiable function that takes internal_vars and returns homogenized stiffness matrix
 - `Shape` - (3, 3) for 2D in Voigt notation, (6, 6) for 3D in Voigt notation
-  
+
 
 **Raises**:
 
 - `ValueError` - If dim is not 2 or 3
-  
+
 
 **Example**:
 
-  &gt;&gt;&gt; # 3D homogenization
-  &gt;&gt;&gt; from feax.flat.pbc import periodic_bc_3D, prolongation_matrix
-  &gt;&gt;&gt; pbc = periodic_bc_3D(unitcell, vec=3, dim=3)
-  &gt;&gt;&gt; P = prolongation_matrix(pbc, mesh, vec=3)
-  &gt;&gt;&gt;
-  &gt;&gt;&gt; # Create homogenization solver
-  &gt;&gt;&gt; compute_C_hom = create_homogenization_solver(
-  &gt;&gt;&gt;     problem, bc, P, solver_options, mesh, dim=3
-  &gt;&gt;&gt; )
-  &gt;&gt;&gt;
-  &gt;&gt;&gt; # Compute homogenized stiffness
-  &gt;&gt;&gt; C_hom = compute_C_hom(internal_vars)
-  &gt;&gt;&gt; print(f&quot;Homogenized stiffness matrix: {`C_hom.shape`}&quot;)  # (6, 6) for 3D
+```python
+>>> # 3D homogenization
+>>> from feax.flat.pbc import periodic_bc_3D, prolongation_matrix
+>>> pbc = periodic_bc_3D(unitcell, vec=3, dim=3)
+>>> P = prolongation_matrix(pbc, mesh, vec=3)
+>>>
+>>> # Create homogenization solver
+>>> compute_C_hom = create_homogenization_solver(
+>>>     problem, bc, P, solver_options, mesh, dim=3
+>>> )
+>>>
+>>> # Compute homogenized stiffness
+>>> C_hom = compute_C_hom(internal_vars)
+>>> print(f&quot;Homogenized stiffness matrix: {`C_hom.shape`}&quot;)  # (6, 6) for 3D
+```
 
 #### create\_unit\_cell\_solver
 
@@ -218,33 +200,36 @@ as FEAX&#x27;s main create_solver but specialized for unit cell problems.
   adds affine displacement term.
 - `mesh` _optional_ - FEAX mesh object. Required if epsilon_macro is provided.
 - `iter_num` _int_ - Number of iterations (default 1 for linear problems)
-  
+
 
 **Returns**:
 
 - `Callable` - Differentiable unit cell solver function with signature
   (internal_vars, initial_guess) -&gt; solution
-  
+
 
 **Raises**:
 
 - `ValueError` - If epsilon_macro is provided but mesh is None
-  
+
 
 **Example**:
 
-  Standard periodic solver (no macro strain):
-  &gt;&gt;&gt; solver = create_unit_cell_solver(problem, bc, P, solver_options)
-  &gt;&gt;&gt; sol = solver(internal_vars, initial_guess)
-  
-  With macro strain (affine displacement):
-  &gt;&gt;&gt; epsilon = np.array([[0.01, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
-  &gt;&gt;&gt; solver = create_unit_cell_solver(problem, bc, P, solver_options,
-  &gt;&gt;&gt;                                  epsilon_macro=epsilon, mesh=mesh)
-  &gt;&gt;&gt;
-  &gt;&gt;&gt; # Use in optimization with gradients
-  &gt;&gt;&gt; def loss_fn(internal_vars):
-  &gt;&gt;&gt;     sol = solver(internal_vars, initial_guess)
-  &gt;&gt;&gt;     return compute_compliance(sol)
-  &gt;&gt;&gt; grad_fn = jax.grad(loss_fn)
+Standard periodic solver (no macro strain):
+```python
+>>> solver = create_unit_cell_solver(problem, bc, P, solver_options)
+>>> sol = solver(internal_vars, initial_guess)
+```
+With macro strain (affine displacement):
+```python
+>>> epsilon = np.array([[0.01, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+>>> solver = create_unit_cell_solver(problem, bc, P, solver_options,
+>>>                                  epsilon_macro=epsilon, mesh=mesh)
+>>>
+>>> # Use in optimization with gradients
+>>> def loss_fn(internal_vars):
+>>>     sol = solver(internal_vars, initial_guess)
+>>>     return compute_compliance(sol)
+>>> grad_fn = jax.grad(loss_fn)
+```
 
