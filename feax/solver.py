@@ -17,8 +17,11 @@ import jax
 import jax.numpy as jnp
 from dataclasses import dataclass
 from typing import Optional, Callable
+import logging
 from .assembler import create_J_bc_function, create_res_bc_function
 from .DCboundary import DirichletBC
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -55,6 +58,9 @@ class SolverOptions:
         Armijo constant for sufficient decrease condition
     line_search_rho : float, default 0.5
         Backtracking factor for line search (alpha *= rho each iteration)
+    verbose : bool, default False
+        Whether to print convergence information during iterations
+        Uses jax.debug.print() for JIT/vmap compatibility
     """
 
     tol: float = 1e-6
@@ -71,6 +77,7 @@ class SolverOptions:
     line_search_max_backtracks: int = 30
     line_search_c1: float = 1e-4
     line_search_rho: float = 0.5
+    verbose: bool = False
 
 
 def create_jacobi_preconditioner(A: jax.experimental.sparse.BCOO, shift: float = 1e-12) -> jax.experimental.sparse.BCOO:
@@ -490,7 +497,7 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
     def body_fun(state):
         """Body function for while loop - performs one Newton iteration."""
         sol, res_norm, rel_res_norm, iter_count = state
-        
+
         # Compute residual and Jacobian
         if internal_vars is not None:
             res = res_bc_applied(sol, internal_vars)
@@ -498,22 +505,29 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         else:
             res = res_bc_applied(sol)
             J = J_bc_applied(sol)
-        
+
         # Compute initial guess for increment
         x0 = x0_fn(sol)
-        
+
         # Solve linear system: J * delta_sol = -res
         delta_sol = linear_solve_jit(J, -res, x0=x0)
 
         # Armijo backtracking line search (using function created outside loop)
-        new_sol, new_norm, _, _ = armijo_search(sol, delta_sol, res, res_norm, internal_vars)
+        new_sol, new_norm, alpha, success = armijo_search(sol, delta_sol, res, res_norm, internal_vars)
+
+        # Print iteration info if verbose (uses jax.debug.print for JIT compatibility)
+        if solver_options.verbose:
+            jax.debug.print(
+                "Newton iter {i:3d}: res_norm = {r:.6e}, alpha = {a:.4f}, success = {s}",
+                i=iter_count, r=new_norm, a=alpha, s=success
+            )
 
         sol = new_sol
         res_norm = new_norm
-        
+
         # Update iteration count
         iter_count = iter_count + 1
-        
+
         return (sol, res_norm, rel_res_norm, iter_count)
     
     # Initial state
@@ -523,9 +537,22 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         initial_res = res_bc_applied(initial_guess)
     initial_res_norm = jnp.linalg.norm(initial_res)
     initial_state = (initial_guess, initial_res_norm, 1.0, 0)
-    
+
+    # Print initial residual if verbose
+    if solver_options.verbose:
+        jax.debug.print("Newton solver starting: initial res_norm = {r:.6e}", r=initial_res_norm)
+
     # Run Newton iterations using while_loop
     final_state = jax.lax.while_loop(cond_fun, body_fun, initial_state)
+
+    # Print final convergence info if verbose
+    if solver_options.verbose:
+        final_sol, final_res_norm, final_rel_res_norm, final_iter = final_state
+        jax.debug.print(
+            "Newton solver converged: final_iter = {i}, final_res_norm = {r:.6e}",
+            i=final_iter, r=final_res_norm
+        )
+
     return final_state
 
 
@@ -632,10 +659,10 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
         max_backtracks=solver_options.line_search_max_backtracks
     )
 
-    def newton_iteration(_, state):
+    def newton_iteration(i, state):
         """Single Newton iteration for fori_loop."""
         sol, res_norm = state
-        
+
         # Compute residual and Jacobian
         if internal_vars is not None:
             res = res_bc_applied(sol, internal_vars)
@@ -643,7 +670,7 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
         else:
             res = res_bc_applied(sol)
             J = J_bc_applied(sol)
-        
+
         # Compute initial guess for increment
         x0 = x0_fn(sol)
 
@@ -651,9 +678,16 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
         delta_sol = linear_solve_fn(J, -res, x0)
 
         # Armijo backtracking line search using shared function
-        sol, res_norm, _, _ = armijo_search(sol, delta_sol, res, res_norm, internal_vars)
-        
-        return (sol, res_norm)
+        new_sol, new_res_norm, alpha, success = armijo_search(sol, delta_sol, res, res_norm, internal_vars)
+
+        # Print iteration info if verbose (uses jax.debug.print for JIT compatibility)
+        if solver_options.verbose:
+            jax.debug.print(
+                "Newton iter {iter:3d}: res_norm = {r:.6e}, alpha = {a:.4f}, success = {s}",
+                iter=i, r=new_res_norm, a=alpha, s=success
+            )
+
+        return (new_sol, new_res_norm)
     
     # Initial residual norm
     if internal_vars is not None:
@@ -661,19 +695,30 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
     else:
         initial_res = res_bc_applied(initial_guess)
     initial_res_norm = jnp.linalg.norm(initial_res)
-    
+
+    # Print initial residual if verbose
+    if solver_options.verbose:
+        jax.debug.print("Newton solver (fori) starting: initial res_norm = {r:.6e}", r=initial_res_norm)
+
     # Run fixed number of iterations using fori_loop
     final_state = jax.lax.fori_loop(
         0, num_iters,
         newton_iteration,
         (initial_guess, initial_res_norm)
     )
-    
+
     final_sol, final_res_norm = final_state
-    
+
     # Check convergence
     converged = final_res_norm < solver_options.tol
-    
+
+    # Print final convergence info if verbose
+    if solver_options.verbose:
+        jax.debug.print(
+            "Newton solver (fori) finished: {n} iterations, final_res_norm = {r:.6e}, converged = {c}",
+            n=num_iters, r=final_res_norm, c=converged
+        )
+
     return final_sol, final_res_norm, converged
 
 
@@ -787,12 +832,16 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
     initial_res_norm = jnp.linalg.norm(initial_res)
     res_norm = initial_res_norm
     iter_count = 0
-    
+
+    # Print initial residual if verbose
+    if solver_options.verbose:
+        logger.info(f"Newton solver (py) starting: initial res_norm = {initial_res_norm:.6e}")
+
     # Main Newton loop
-    while (res_norm > solver_options.tol and 
-           res_norm / initial_res_norm > solver_options.rel_tol and 
+    while (res_norm > solver_options.tol and
+           res_norm / initial_res_norm > solver_options.rel_tol and
            iter_count < solver_options.max_iter):
-        
+
         # Compute residual and Jacobian
         if internal_vars is not None:
             res = res_bc_applied(sol, internal_vars)
@@ -800,28 +849,35 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
         else:
             res = res_bc_applied(sol)
             J = J_bc_applied(sol)
-        
+
         # Compute initial guess for increment
         x0 = x0_fn(sol)
-        
+
         # Solve linear system: J * delta_sol = -res
         delta_sol = linear_solve_fn(J, -res, x0)
 
         # Line search using shared function
-        new_sol, new_res_norm, _, _ = armijo_line_search(
+        new_sol, new_res_norm, alpha, success = armijo_line_search(
             sol, delta_sol, res, res_norm, internal_vars
         )
-        
+
+        # Print iteration info if verbose
+        if solver_options.verbose:
+            logger.info(f"Newton iter {iter_count:3d}: res_norm = {new_res_norm:.6e}, alpha = {alpha:.4f}, success = {success}")
+
         # Update solution
         sol = new_sol
         res_norm = new_res_norm
         iter_count += 1
-        
-    
+
     # Check convergence
-    converged = (res_norm <= solver_options.tol or 
+    converged = (res_norm <= solver_options.tol or
                 res_norm / initial_res_norm <= solver_options.rel_tol)
-    
+
+    # Print final convergence info if verbose
+    if solver_options.verbose:
+        logger.info(f"Newton solver (py) finished: iter_count = {iter_count}, final_res_norm = {res_norm:.6e}, converged = {converged}")
+
     return sol, res_norm, converged, iter_count
 
 

@@ -36,6 +36,9 @@ const sidebars: SidebarsConfig = {
       },
       items: [
         'basic/linear_elasticity',
+        'basic/jit_transform',
+        'basic/vmap_transform',
+        'basic/hyperelasticity',
       ],
     },
     'advanced/index',
