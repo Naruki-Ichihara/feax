@@ -363,6 +363,6 @@ compute_C_hom = flat.solver.create_homogenization_solver(
 ## Further Reading
 
 - [Periodic Boundary Conditions](periodic_boundary_conditions.md) - Detailed PBC tutorial
-- [examples/advance/lattice_homogenization.py](../../examples/advance/lattice_homogenization.py) - Complete working example
+- `examples/advance/lattice_homogenization.py` - Complete working example
 - [API: flat.graph](../api/reference/feax/flat/graph.md) - Graph-based structure generation
 - [API: flat.solver](../api/reference/feax/flat/solver.md) - Homogenization solvers
