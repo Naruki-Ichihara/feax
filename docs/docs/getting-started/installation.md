@@ -216,4 +216,4 @@ JAX 64-bit enabled: True
 
 - Try the [Basic Tutorial](../basic/index.md) to get started
 - Check out [example scripts](https://github.com/Naruki-Ichihara/feax/tree/main/examples)
-- Read the [API documentation](../../api/index.md)
+- Read the [API documentation](../api/index.md)

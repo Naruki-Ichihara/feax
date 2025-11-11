@@ -27,7 +27,17 @@ const sidebars: SidebarsConfig = {
         'getting-started/installation',
       ],
     },
-    'basic/index',
+    {
+      type: 'category',
+      label: 'Basic Tutorials',
+      link: {
+        type: 'doc',
+        id: 'basic/index',
+      },
+      items: [
+        'basic/linear_elasticity',
+      ],
+    },
     'advanced/index',
   ],
 
