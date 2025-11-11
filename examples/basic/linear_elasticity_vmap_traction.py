@@ -129,7 +129,6 @@ for batch_size in batch_sizes:
         diffs = [np.max(np.abs(s - v)) for s, v in zip(for_loop_solutions, vmap_solutions)]
         max_diff = max(diffs)
         print(f"  Max difference: {max_diff:.2e}")
-        print(f"  ✅ Results match!" if max_diff < 1e-10 else "  ❌ Results differ!")
     
     # Store results
     results['batch_size'].append(batch_size)

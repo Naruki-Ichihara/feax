@@ -41,7 +41,18 @@ const sidebars: SidebarsConfig = {
         'basic/hyperelasticity',
       ],
     },
-    'advanced/index',
+    {
+      type: 'category',
+      label: 'Advanced Tutorials',
+      link: {
+        type: 'doc',
+        id: 'advanced/index',
+      },
+      items: [
+        'advanced/periodic_boundary_conditions',
+        'advanced/lattice_homogenization',
+      ],
+    },
   ],
 
   // API Reference sidebar - manually configured
