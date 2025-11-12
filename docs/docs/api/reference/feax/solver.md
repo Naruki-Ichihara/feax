@@ -41,6 +41,7 @@ Parameters
 - **line_search_max_backtracks** (*int, default 30*): Maximum number of backtracking steps in Armijo line search
 - **line_search_c1** (*float, default 1e-4*): Armijo constant for sufficient decrease condition
 - **line_search_rho** (*float, default 0.5*): Backtracking factor for line search (alpha *= rho each iteration)
+- **verbose** (*bool, default False*): Whether to print convergence information during iterations Uses jax.debug.print() for JIT/vmap compatibility
 
 
 #### linear\_solver

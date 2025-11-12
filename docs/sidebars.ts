@@ -51,6 +51,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'advanced/periodic_boundary_conditions',
         'advanced/lattice_homogenization',
+        'advanced/spinodoid_metamaterials',
       ],
     },
   ],
@@ -78,6 +79,7 @@ const sidebars: SidebarsConfig = {
         'api/reference/feax/flat/graph',
         'api/reference/feax/flat/pbc',
         'api/reference/feax/flat/solver',
+        'api/reference/feax/flat/spinodoid',
         'api/reference/feax/flat/unitcell',
         'api/reference/feax/flat/utils',
       ],

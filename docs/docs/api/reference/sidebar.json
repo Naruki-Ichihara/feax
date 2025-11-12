@@ -21,9 +21,11 @@
         },
         {
           "items": [
+            "reference/feax/flat/filters",
             "reference/feax/flat/graph",
             "reference/feax/flat/pbc",
             "reference/feax/flat/solver",
+            "reference/feax/flat/spinodoid",
             "reference/feax/flat/unitcell",
             "reference/feax/flat/utils"
           ],

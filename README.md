@@ -39,7 +39,7 @@ To install the latest commit from the main branch:
 pip install git+https://github.com/Naruki-Ichihara/feax.git@main
 ```
 
-## [Documentation](https://naruki-ichihara.github.io/feax/docs/)
+## [Documentation](https://naruki-ichihara.github.io/feax/docs/intro)
 
 ## feax.flat
 
