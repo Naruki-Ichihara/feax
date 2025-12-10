@@ -18,7 +18,10 @@
       "Read(//usr/local/lib/python3.12/dist-packages/jax_fem/**)",
       "Bash(timeout 30 python:*)",
       "Bash(timeout 60 python:*)",
-      "Bash(npm start)"
+      "Bash(npm start)",
+      "Bash(timeout 120 python:*)",
+      "Bash(timeout 180 python:*)",
+      "Bash(timeout 300 python:*)"
     ],
     "deny": [],
     "ask": []

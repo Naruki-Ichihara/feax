@@ -28,36 +28,44 @@ class HelmholtzFilterProblem(fe.problem.Problem):
         return mass_map
 
 
-def helmholtz_filter(rho_source, mesh, radius, P=None, solver_options=None):
+def create_helmholtz_filter(mesh, radius, P=None, solver_options=None):
     """
-    Apply Helmholtz filter to density field with optional periodic boundary conditions.
+    Create a differentiable Helmholtz filter function (node-based).
+
+    This factory function creates the filter problem and solver once, returning
+    a pure function that can be used with jax.jit, jax.vmap, and jax.grad.
 
     Solves: ρ̃ - r² ∇²ρ̃ = ρ_source
 
-    This function is pure (no side effects) and can be used with jax.jit and jax.vmap
-    when P and solver_options are provided as static arguments.
-
     Args:
-        rho_source: (num_cells,) array of source density field
         mesh: Mesh object
         radius: Filter radius (controls smoothness - larger = smoother)
         P: Optional prolongation matrix for periodic boundary conditions (default None)
         solver_options: Optional SolverOptions (default: tol=1e-8, cg solver)
 
     Returns:
-        (num_nodes,) array of filtered density field
+        filter_fn: A pure function (rho_source) -> rho_filtered that can be
+                   used with JAX transformations (jit, vmap, grad)
+                   Input: (num_nodes,) node-based density field
+                   Output: (num_nodes,) filtered node-based density field
 
     Example:
-        >>> # Without periodic BCs
-        >>> rho_filtered = helmholtz_filter(rho_source, mesh, radius=0.1)
-
+        >>> # Create filter function once
+        >>> filter_fn = create_helmholtz_filter(mesh, radius=0.1)
+        >>>
+        >>> # Use in differentiable objective
+        >>> def objective(rho):
+        ...     rho_filtered = filter_fn(rho)
+        ...     # ... use rho_filtered in FE solve
+        ...     return compliance
+        >>>
+        >>> # Compute gradients
+        >>> grad_fn = jax.grad(objective)
+        >>> gradient = grad_fn(rho)
+        >>>
         >>> # With periodic BCs
         >>> P = flat.pbc.prolongation_matrix(pairings, mesh, vec=1)
-        >>> rho_filtered = helmholtz_filter(rho_source, mesh, radius=0.1, P=P)
-
-        >>> # Vectorized filtering with vmap
-        >>> filter_fn = lambda rho: helmholtz_filter(rho, mesh, radius=0.1, P=P)
-        >>> rho_batch_filtered = jax.vmap(filter_fn)(rho_batch)
+        >>> filter_fn = create_helmholtz_filter(mesh, radius=0.1, P=P)
     """
     # Default solver options
     if solver_options is None:
@@ -67,12 +75,22 @@ def helmholtz_filter(rho_source, mesh, radius, P=None, solver_options=None):
             verbose=False
         )
 
-    # Create problem
+    # Detect element type
+    if mesh.points.shape[1] == 2:
+        # 2D mesh
+        ele_type = 'QUAD4' if mesh.cells.shape[1] == 4 else 'TRI3'
+        dim = 2
+    else:
+        # 3D mesh
+        ele_type = 'HEX8' if mesh.cells.shape[1] == 8 else 'TET4'
+        dim = 3
+
+    # Create problem (done once)
     problem = HelmholtzFilterProblem(
         mesh=mesh,
         vec=1,  # Scalar field
-        dim=3,
-        ele_type=mesh.cells.shape[1] == 8 and mesh.points.shape[1] == 3 and 'HEX8' or 'TET4',
+        dim=dim,
+        ele_type=ele_type,
         location_fns=[]
     )
 
@@ -80,27 +98,73 @@ def helmholtz_filter(rho_source, mesh, radius, P=None, solver_options=None):
     bc_config = fe.DCboundary.DirichletBCConfig([])
     bc = bc_config.create_bc(problem)
 
-    # Internal variables
-    r_squared = radius ** 2
-    rho_source_array = fe.internal_vars.InternalVars.create_cell_var(problem, rho_source)
-    r_sq_array = fe.internal_vars.InternalVars.create_cell_var(problem, r_squared)
-    internal_vars = fe.internal_vars.InternalVars(
-        volume_vars=(rho_source_array, r_sq_array),
-        surface_vars=()
-    )
-
-    # Create solver
+    # Create solver (done once)
     solver = fe.solver.create_solver(
         problem, bc, solver_options,
         iter_num=1,  # Linear problem
         P=P  # Optional periodic boundary conditions
     )
 
-    # Solve
+    # Pre-compute constants
+    r_squared = radius ** 2
     initial_guess = np.zeros(problem.num_total_dofs_all_vars)
-    rho_filtered = solver(internal_vars, initial_guess)
+    num_nodes = mesh.points.shape[0]
 
-    return rho_filtered
+    def filter_fn(rho_source):
+        """
+        Apply Helmholtz filter to density field.
+
+        Args:
+            rho_source: (num_nodes,) array of node-based source density field
+
+        Returns:
+            (num_nodes,) array of filtered node-based density field
+        """
+        # Create internal variables with rho_source as node-based variable
+        r_sq_array = np.full(num_nodes, r_squared)
+        internal_vars = fe.internal_vars.InternalVars(
+            volume_vars=(rho_source, r_sq_array),
+            surface_vars=()
+        )
+
+        # Solve
+        rho_filtered = solver(internal_vars, initial_guess)
+        return rho_filtered
+
+    return filter_fn
+
+
+def helmholtz_filter(rho_source, mesh, radius, P=None, solver_options=None):
+    """
+    Apply Helmholtz filter to node-based density field.
+
+    WARNING: This function creates problem/solver each call. For use inside jax.grad,
+    use create_helmholtz_filter() instead to create the filter function once.
+
+    Solves: ρ̃ - r² ∇²ρ̃ = ρ_source
+
+    Args:
+        rho_source: (num_nodes,) array of node-based source density field
+        mesh: Mesh object
+        radius: Filter radius (controls smoothness - larger = smoother)
+        P: Optional prolongation matrix for periodic boundary conditions (default None)
+        solver_options: Optional SolverOptions (default: tol=1e-8, cg solver)
+
+    Returns:
+        (num_nodes,) array of filtered node-based density field
+
+    Example:
+        >>> # For one-time use (NOT inside jax.grad)
+        >>> rho_filtered = helmholtz_filter(rho_source, mesh, radius=0.1)
+
+        >>> # For use with jax.grad, use create_helmholtz_filter instead:
+        >>> filter_fn = create_helmholtz_filter(mesh, radius=0.1)
+        >>> def objective(rho):
+        ...     return jnp.sum(filter_fn(rho))
+        >>> grad_fn = jax.grad(objective)
+    """
+    filter_fn = create_helmholtz_filter(mesh, radius, P, solver_options)
+    return filter_fn(rho_source)
 
 
 @jax.jit

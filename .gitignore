@@ -1,6 +1,11 @@
 jax-fem/
 CLAUDE.md
 
+*.vtu
+*.vtk
+*.h5
+*.xdmf
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

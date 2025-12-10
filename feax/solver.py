@@ -15,6 +15,7 @@ Key Features:
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from dataclasses import dataclass
 from typing import Optional, Callable
 import logging
@@ -22,6 +23,33 @@ from .assembler import create_J_bc_function, create_res_bc_function
 from .DCboundary import DirichletBC
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_negate(x):
+    """Negate array, handling JAX's float0 type for zero gradients.
+
+    When differentiating through computations where some parameters don't
+    affect the output, JAX uses a special 'float0' dtype to represent
+    zero gradients efficiently. This function handles negation properly
+    for both regular arrays and float0 arrays.
+
+    Parameters
+    ----------
+    x : jax.Array or np.ndarray
+        Array to negate. May have float0 dtype.
+
+    Returns
+    -------
+    jax.Array or np.ndarray
+        Negated array, or unchanged if float0 dtype.
+    """
+    # Check for float0 dtype (JAX's zero gradient type)
+    if hasattr(x, 'dtype'):
+        dtype_str = str(x.dtype)
+        if 'float0' in dtype_str or 'V' in dtype_str:
+            # float0 represents zero gradient, negation is still zero
+            return x
+    return -x
 
 
 @dataclass(frozen=True)
@@ -61,6 +89,13 @@ class SolverOptions:
     verbose : bool, default False
         Whether to print convergence information during iterations
         Uses jax.debug.print() for JIT/vmap compatibility
+    check_convergence : bool, default False
+        Whether to verify linear solver convergence by checking residual.
+        If True and residual is too large, returns NaN to signal failure.
+        Useful for detecting ill-conditioned problems.
+    convergence_threshold : float, default 0.1
+        Maximum allowable relative residual for convergence check.
+        Only used when check_convergence=True.
     """
 
     tol: float = 1e-6
@@ -78,6 +113,8 @@ class SolverOptions:
     line_search_c1: float = 1e-4
     line_search_rho: float = 0.5
     verbose: bool = False
+    check_convergence: bool = False
+    convergence_threshold: float = 0.1
 
 
 def create_jacobi_preconditioner(A: jax.experimental.sparse.BCOO, shift: float = 1e-12) -> jax.experimental.sparse.BCOO:
@@ -989,16 +1026,63 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
     x0 = x0_fn(initial_guess)
     
     # Step 3: Solve linear system: J * delta_sol = -res
-    delta_sol = linear_solve_fn(J, -res, x0)
-    
-    # Step 4: Update solution
+    b = -res
+    delta_sol = linear_solve_fn(J, b, x0)
+
+    # Step 4: Verify convergence if requested
+    if solver_options.check_convergence:
+        # Compute residual: r = A*x - b
+        residual = J @ delta_sol - b
+        residual_norm = jnp.linalg.norm(residual)
+        b_norm = jnp.linalg.norm(b)
+        rel_residual = residual_norm / (b_norm + 1e-12)
+
+        if solver_options.verbose:
+            jax.debug.print(
+                "Linear solver residual: abs={r:.6e}, rel={rr:.6e}",
+                r=residual_norm, rr=rel_residual
+            )
+
+        # Return NaN if convergence failed (signals problem to user)
+        delta_sol = jnp.where(
+            rel_residual < solver_options.convergence_threshold,
+            delta_sol,
+            jnp.full_like(delta_sol, jnp.nan)
+        )
+
+    # Step 5: Update solution
     sol = initial_guess + delta_sol
-    
+
     return sol, None
 
 
-def __linear_solve_adjoint(A, b, solver_options: SolverOptions):
-    
+def __linear_solve_adjoint(A, b, solver_options: SolverOptions, bc=None):
+    """Solve linear system for adjoint problem.
+
+    Parameters
+    ----------
+    A : BCOO sparse matrix
+        The transposed Jacobian matrix (J^T)
+    b : jax.numpy.ndarray
+        Right-hand side vector (cotangent vector from VJP)
+    solver_options : SolverOptions
+        Solver configuration for adjoint solve
+    bc : DirichletBC, optional
+        Boundary conditions for computing initial guess
+
+    Returns
+    -------
+    sol : jax.numpy.ndarray
+        Solution to the adjoint system: A @ sol = b
+
+    Notes
+    -----
+    For the adjoint problem, boundary conditions are already incorporated into
+    the transposed Jacobian matrix. The initial guess uses BC-aware computation
+    when bc is provided, which can improve convergence for problems with
+    Dirichlet boundary conditions.
+    """
+
     # Define solver functions
     def solve_cg(A, b, x0):
         if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
@@ -1006,14 +1090,14 @@ def __linear_solve_adjoint(A, b, solver_options: SolverOptions):
         else:
             M = solver_options.preconditioner
         x, _ = jax.scipy.sparse.linalg.cg(
-            A, b, x0=x0, 
+            A, b, x0=x0,
             M=M,
             tol=solver_options.linear_solver_tol,
             atol=solver_options.linear_solver_atol,
             maxiter=solver_options.linear_solver_maxiter
         )
         return x
-    
+
     def solve_bicgstab(A, b, x0):
         if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
             M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
@@ -1028,7 +1112,7 @@ def __linear_solve_adjoint(A, b, solver_options: SolverOptions):
         )
 
         return x
-    
+
     def solve_gmres(A, b, x0):
         if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
             M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
@@ -1042,22 +1126,54 @@ def __linear_solve_adjoint(A, b, solver_options: SolverOptions):
             maxiter=solver_options.linear_solver_maxiter
         )
         return x
-    
+
     # Validate and select solver
     valid_solvers = {"cg", "bicgstab", "gmres"}
     if solver_options.linear_solver not in valid_solvers:
         raise ValueError(f"Unknown linear solver: {solver_options.linear_solver}. Choose from {valid_solvers}")
-    
+
     if solver_options.linear_solver == "cg":
         linear_solve_fn = solve_cg
     elif solver_options.linear_solver == "bicgstab":
         linear_solve_fn = solve_bicgstab
     else:
         linear_solve_fn = solve_gmres
-    
-    x0 = None
+
+    # Compute initial guess for adjoint solve
+    # For adjoint problem, BC rows have identity on diagonal of J^T,
+    # so the solution at BC rows should be the RHS values at those rows
+    if bc is not None and hasattr(bc, 'bc_rows') and hasattr(bc, 'bc_vals'):
+        # Start with zeros
+        x0 = jnp.zeros_like(b)
+        # Set BC row values from RHS (since J^T has identity at BC rows)
+        bc_rows_array = jnp.array(bc.bc_rows) if not isinstance(bc.bc_rows, jnp.ndarray) else bc.bc_rows
+        x0 = x0.at[bc_rows_array].set(b[bc_rows_array])
+    else:
+        # Fallback to zero initial guess
+        x0 = jnp.zeros_like(b)
+
     sol = linear_solve_fn(A, b, x0)
-    
+
+    # Verify convergence if requested
+    if solver_options.check_convergence:
+        residual = A @ sol - b
+        residual_norm = jnp.linalg.norm(residual)
+        b_norm = jnp.linalg.norm(b)
+        rel_residual = residual_norm / (b_norm + 1e-12)
+
+        if solver_options.verbose:
+            jax.debug.print(
+                "Adjoint solver residual: abs={r:.6e}, rel={rr:.6e}",
+                r=residual_norm, rr=rel_residual
+            )
+
+        # Return NaN if convergence failed
+        sol = jnp.where(
+            rel_residual < solver_options.convergence_threshold,
+            sol,
+            jnp.full_like(sol, jnp.nan)
+        )
+
     return sol
 
 
@@ -1116,19 +1232,27 @@ def _create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_option
     def f_bwd(res, v):
         """Backward function using matrix-free adjoint."""
         internal_vars, sol = res
-        
+
         # Create adjoint matvec operator: (P.T @ J.T @ P) @ adjoint = P.T @ v
         J_full = J_bc_func(sol, internal_vars)
         rhs_reduced = P.T @ v
-        
+
         def adjoint_matvec(adjoint_reduced):
             adjoint_full = P @ adjoint_reduced    # Expand to full space
             Jt_adjoint_full = J_full.T @ adjoint_full  # Apply transpose Jacobian
             return P.T @ Jt_adjoint_full          # Reduce back
-        
+
+        # Initialize with zero vector for better convergence
+        x0_reduced = jnp.zeros_like(rhs_reduced)
+
         # Solve adjoint system: J_reduced.T @ adjoint_reduced = rhs_reduced
-        adjoint_reduced, _ = jax.scipy.sparse.linalg.cg(adjoint_matvec, rhs_reduced,
-                                                        tol=adjoint_solver_options.tol)
+        adjoint_reduced, _ = jax.scipy.sparse.linalg.cg(
+            adjoint_matvec, rhs_reduced,
+            x0=x0_reduced,
+            tol=adjoint_solver_options.linear_solver_tol,
+            atol=adjoint_solver_options.linear_solver_atol,
+            maxiter=adjoint_solver_options.linear_solver_maxiter
+        )
         
         # Compute VJP for internal variables
         adjoint_full = P @ adjoint_reduced
@@ -1157,7 +1281,7 @@ def _create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_option
         sol_list = problem.unflatten_fn_sol_list(sol)
         vjp_linear_fn = get_vjp_contraint_fn_params(internal_vars, sol_list)
         vjp_result = vjp_linear_fn(problem.unflatten_fn_sol_list(adjoint_full))
-        vjp_result = jax.tree_util.tree_map(lambda x: -x, vjp_result)
+        vjp_result = jax.tree_util.tree_map(_safe_negate, vjp_result)
 
         return (vjp_result, None)  # No gradient w.r.t. initial_guess
     
@@ -1253,8 +1377,11 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
     if adjoint_solver_options is None:
         adjoint_solver_options = SolverOptions(
             linear_solver="bicgstab",  # More robust than CG
-            tol=1e-10,
-            use_jacobi_preconditioner=True
+            tol=1e-6,  # Relaxed tolerance for better convergence
+            linear_solver_tol=1e-8,  # Tolerance for iterative linear solver
+            linear_solver_atol=1e-10,  # Absolute tolerance for iterative linear solver
+            use_jacobi_preconditioner=True,
+            linear_solver_maxiter=10000  # Sufficient iterations for adjoint solve
         )
 
     # Branch between standard and reduced solver
@@ -1334,13 +1461,13 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
         
         J = J_bc_func(sol, internal_vars)
         v_vec = jax.flatten_util.ravel_pytree(v)[0]
-        adjoint_vec = __linear_solve_adjoint(J.transpose(), v_vec, adjoint_solver_options)
+        adjoint_vec = __linear_solve_adjoint(J.transpose(), v_vec, adjoint_solver_options, bc)
         sol_list = problem.unflatten_fn_sol_list(sol)
         vjp_linear_fn = get_vjp_contraint_fn_params(internal_vars, sol_list)
         vjp_result = vjp_linear_fn(problem.unflatten_fn_sol_list(adjoint_vec))
-        vjp_result = jax.tree_util.tree_map(lambda x: -x, vjp_result)
+        vjp_result = jax.tree_util.tree_map(_safe_negate, vjp_result)
 
         return (vjp_result, None)  # No gradient w.r.t. initial_guess
-    
+
     differentiable_solve.defvjp(f_fwd, f_bwd)
     return differentiable_solve

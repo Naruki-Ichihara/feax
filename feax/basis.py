@@ -182,6 +182,7 @@ def get_shape_vals_and_grads(ele_type: str, gauss_order: Optional[int] = None) -
 
     quad_points, weights = basix.make_quadrature(basix_ele, gauss_order)
     element = basix.create_element(element_family, basix_ele, degree)
+    # Tabulate shape function values and gradients, shape: (derivative, point, basis fn index, value index)
     vals_and_grads = element.tabulate(1, quad_points)[:, :, re_order, :]
     shape_values = vals_and_grads[0, :, :, 0]
     shape_grads_ref = onp.transpose(vals_and_grads[1:, :, :, 0], axes=(1, 2, 0))

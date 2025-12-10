@@ -20,8 +20,8 @@ P = flat.pbc.prolongation_matrix(pairings, mesh, vec=1)
 cell_centers = np.mean(mesh.points[mesh.cells], axis=1)
 
 # Dataset generation parameters
-total_samples = 10  # Total number of samples to generate
-batch_size = 1  # Number of samples per batch
+total_samples = 100  # Total number of samples to generate
+batch_size = 10  # Number of samples per batch
 num_batches = total_samples // batch_size
 
 # Spinodoid generation parameters

@@ -107,41 +107,63 @@ def create_volume_fn(problem):
     """
     Creates a JIT-compiled volume fraction calculation function for a given problem.
     Returns a function that computes the volume fraction of material in the domain.
-    
+
+    Supports node-based, cell-based, and quad-based density arrays.
+
     Args:
         problem: FEAX Problem instance
-        
+
     Returns:
         volume_fn: JIT-compiled function that takes density array and returns volume fraction
+                   Accepts: (num_nodes,) node-based, (num_cells,) cell-based,
+                           or (num_cells, num_quads) quad-based density arrays
     """
     # Pre-compute problem-specific data as static values
     fe = problem.fes[0]
     # Get quadrature weights and Jacobian determinants for volume integration
-    JxW = fe.JxW  # Jacobian times quadrature weights
+    JxW = fe.JxW  # Jacobian times quadrature weights (num_cells, num_quads)
     num_cells = fe.num_cells
     num_quads = fe.num_quads
+    num_nodes = fe.num_total_nodes
+    shape_vals = fe.shape_vals  # (num_quads, num_nodes_per_cell)
+    cells = fe.cells  # (num_cells, num_nodes_per_cell)
     domain_volume = float(np.sum(JxW))  # Pre-compute domain volume as Python float
-    
-    def volume_fn_inner(rho_array, num_quads):
-        """Compute volume fraction for the given density distribution."""
-        # rho_array shape: (num_cells, 1) or (num_cells*num_quads, 1)
-        # Check if rho is already at quadrature points or needs expansion
-        if rho_array.shape[0] == num_cells:
-            # Expand to quadrature points: (num_cells, num_quads, 1)
-            rho_quads = np.repeat(rho_array[:, None, :], num_quads, axis=1)
-            # Integrate density over the domain: integral rho dOmega
-            total_volume = np.sum(rho_quads[:, :, 0] * JxW)
+
+    @jax.jit
+    def volume_fn(rho_array):
+        """Compute volume fraction for the given density distribution.
+
+        Args:
+            rho_array: Density field. Can be:
+                - (num_nodes,) node-based density
+                - (num_cells,) cell-based density
+                - (num_cells, num_quads) quad-based density
+
+        Returns:
+            Volume fraction (scalar between 0 and 1)
+        """
+        rho_flat = rho_array.ravel()
+
+        # Determine input type based on size
+        if rho_flat.shape[0] == num_nodes:
+            # Node-based density: interpolate to quadrature points using shape functions
+            # Gather node values for each cell: (num_cells, num_nodes_per_cell)
+            rho_cell_nodes = rho_flat[cells]
+            # Interpolate to quad points: (num_cells, num_quads)
+            # shape_vals: (num_quads, num_nodes_per_cell)
+            # rho_cell_nodes: (num_cells, num_nodes_per_cell)
+            rho_quads = np.einsum('qn,cn->cq', shape_vals, rho_cell_nodes)
+            total_volume = np.sum(rho_quads * JxW)
+        elif rho_flat.shape[0] == num_cells:
+            # Cell-based density: expand to quadrature points
+            rho_quads = np.repeat(rho_flat[:, None], num_quads, axis=1)
+            total_volume = np.sum(rho_quads * JxW)
         else:
-            # Already at quadrature points (num_cells * num_quads, 1)
-            # Reshape to (num_cells, num_quads) for integration
-            rho_reshaped = rho_array.reshape((num_cells, num_quads))
+            # Already at quadrature points (num_cells * num_quads,)
+            rho_reshaped = rho_flat.reshape((num_cells, num_quads))
             total_volume = np.sum(rho_reshaped * JxW)
-        
+
         # Return volume fraction
         return total_volume / domain_volume
-    
-    # Return a wrapper that fixes num_quads
-    def volume_fn(rho_array):
-        return volume_fn_inner(rho_array, num_quads)
-    
+
     return volume_fn

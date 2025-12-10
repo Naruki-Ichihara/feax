@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker:*)",
+      "Bash(npm start)",
+      "Bash(npm run clear:*)",
+      "Bash(lsof:*)",
+      "Bash(xargs:*)",
+      "Bash(netstat:*)",
+      "Bash(pkill:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

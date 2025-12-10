@@ -23,8 +23,17 @@ RUN if [ "$INSTALL_FENICSX" = "true" ]; then \
     apt-get install software-properties-common -y && \
     add-apt-repository ppa:fenics-packages/fenics -y && \
     apt update -y && \
-    apt install fenicsx -y \
+    apt install fenicsx -y; \
     fi
+
+# Configure MPI to work in Docker containers
+ENV OMPI_ALLOW_RUN_AS_ROOT=1
+ENV OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
+# NOTE: FEniCSx requires proper IPC namespace for MPI shared memory.
+# When running the container, you MUST use ONE of these options:
+#   1. docker-compose up (recommended - already configured with ipc: host)
+#   2. docker run --ipc=host ...
+# Without proper IPC, dolfinx will fail to import with MPI initialization errors.
 
 WORKDIR /home/
 CMD ["/bin/bash"]
