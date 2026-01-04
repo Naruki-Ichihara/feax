@@ -53,7 +53,7 @@ FEAX is licensed under the GNU General Public License v3.0. See [LICENSE](LICENS
 
 FEAX builds upon the excellent work of:
 - [JAX](https://github.com/google/jax) for automatic differentiation and compilation
-- [JAX-FEM](https://github.com/tianjuxue/jax_fem) for inspiration and reference implementations
+- [JAX-FEM](https://github.com/deepmodeling/jax-fem) for inspiration and reference implementations
 
 ---
 <div align="center">
