@@ -12,7 +12,7 @@ Solve a cantilever beam problem with surface traction loading. This tutorial cov
 - Defining constitutive laws via `get_tensor_map`
 - Applying Dirichlet boundary conditions
 - Surface traction implementation
-- Linear solver configuration (BiCGSTAB, CG, GMRES)
+- Linear solver configuration (BiCGSTAB, CG, GMRES, SPSOLVE)
 - Internal variables for parameter management
 - Solution extraction and VTK output
 

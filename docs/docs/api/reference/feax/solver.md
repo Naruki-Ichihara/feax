@@ -30,7 +30,7 @@ Parameters
 - **tol** (*float, default 1e-6*): Absolute tolerance for residual vector (l2 norm)
 - **rel_tol** (*float, default 1e-8*): Relative tolerance for residual vector (l2 norm)
 - **max_iter** (*int, default 100*): Maximum number of Newton iterations
-- **linear_solver** (*str, default &quot;cg&quot;*): Linear solver type. Options: &quot;cg&quot;, &quot;bicgstab&quot;, &quot;gmres&quot;
+- **linear_solver** (*str, default &quot;cg&quot;*): Linear solver type. Options: &quot;cg&quot;, &quot;bicgstab&quot;, &quot;gmres&quot;, &quot;spsolve&quot;
 - **preconditioner** (*callable, optional*): Preconditioner function for linear solver
 - **use_jacobi_preconditioner** (*bool, default False*): Whether to use Jacobi (diagonal) preconditioner automatically
 - **jacobi_shift** (*float, default 1e-12*): Regularization parameter for Jacobi preconditioner
@@ -46,7 +46,7 @@ Parameters
 
 #### linear\_solver
 
-Options: &quot;cg&quot;, &quot;bicgstab&quot;, &quot;gmres&quot;
+Options: &quot;cg&quot;, &quot;bicgstab&quot;, &quot;gmres&quot;, &quot;spsolve&quot;
 
 #### linear\_solver\_x0\_fn
 
