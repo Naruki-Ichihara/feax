@@ -171,6 +171,76 @@ def create_jacobi_preconditioner(A: jax.experimental.sparse.BCOO, shift: float =
     
     return M_matvec
 
+def create_linear_solve_fn(solver_options: SolverOptions):
+
+    def choose_preconditioner(A):
+        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
+            return create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+        return solver_options.preconditioner
+
+    # Define solver functions for JAX compatibility (no conditionals inside JAX-traced code)
+    if solver_options.linear_solver == "cg":
+        def solve(A, b, x0):
+            M = choose_preconditioner(A)
+            x, _ = jax.scipy.sparse.linalg.cg(
+                A, b, x0=x0, M=M,
+                tol=solver_options.linear_solver_tol,
+                atol=solver_options.linear_solver_atol,
+                maxiter=solver_options.linear_solver_maxiter
+            )
+            return x
+        return solve
+
+    if solver_options.linear_solver == "bicgstab":
+        def solve(A, b, x0):
+            M = choose_preconditioner(A)
+            x, _ = jax.scipy.sparse.linalg.bicgstab(
+                A, b, x0=x0, M=M,
+                tol=solver_options.linear_solver_tol,
+                atol=solver_options.linear_solver_atol,
+                maxiter=solver_options.linear_solver_maxiter
+            )
+            return x
+        return solve
+
+    if solver_options.linear_solver == "gmres":
+        def solve(A, b, x0):
+            M = choose_preconditioner(A)
+            x, _ = jax.scipy.sparse.linalg.gmres(
+                A, b, x0=x0, M=M,
+                tol=solver_options.linear_solver_tol,
+                atol=solver_options.linear_solver_atol,
+                maxiter=solver_options.linear_solver_maxiter
+            )
+            return x
+        return solve
+
+    if solver_options.linear_solver == "spsolve":
+        if jax.default_backend() != "cpu":
+            raise RuntimeError(
+                "jax.experimental.sparse.linalg.spsolve is disabled on GPU. "
+                "Run on CPU or use an iterative solver on GPU."
+            )
+
+        def solve(A, b, x0):
+            # spsolve currently does not support jit or batching via vmap
+            # CPU -> scipy implementation, UMPFACK solver
+            # GPU -> jax implementation, requires 32-bit types + unstable
+            # https://docs.jax.dev/en/latest/_autosummary/jax.experimental.sparse.linalg.spsolve.html
+            A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A).sum_duplicates()
+            x = jax.experimental.sparse.linalg.spsolve(
+                A_bcsr.data, A_bcsr.indices, A_bcsr.indptr, b,
+                tol=solver_options.linear_solver_tol,
+                reorder=1,
+            )
+            return x
+        return solve
+    valid_solvers = ("cg", "bicgstab", "gmres", "spsolve")
+    raise ValueError(
+        f"Unknown linear solver: {solver_options.linear_solver}. "
+        f"Choose from {valid_solvers}"
+    )
+
 
 def create_x0(bc_rows=None, bc_vals=None, P_mat=None):
     """Create initial guess function for linear solver following JAX-FEM approach.
@@ -447,90 +517,8 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
             P_mat=P_mat
         )
     
-    # Define solver functions for JAX compatibility (no conditionals inside JAX-traced code)
-    def solve_cg(A, b, x0):
-        # Determine preconditioner
-        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
-            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
-        else:
-            M = solver_options.preconditioner
-            
-        x, _ = jax.scipy.sparse.linalg.cg(
-            A, b, x0=x0, 
-            M=M,
-            tol=solver_options.linear_solver_tol,
-            atol=solver_options.linear_solver_atol,
-            maxiter=solver_options.linear_solver_maxiter
-        )
-        return x
-    
-    def solve_bicgstab(A, b, x0):
-        # Determine preconditioner
-        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
-            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
-        else:
-            M = solver_options.preconditioner
-            
-        x, _ = jax.scipy.sparse.linalg.bicgstab(
-            A, b, x0=x0,
-            M=M,
-            tol=solver_options.linear_solver_tol,
-            atol=solver_options.linear_solver_atol,
-            maxiter=solver_options.linear_solver_maxiter
-        )
-        return x
-    
-    def solve_gmres(A, b, x0):
-        # Determine preconditioner
-        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
-            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
-        else:
-            M = solver_options.preconditioner
-            
-        x, _ = jax.scipy.sparse.linalg.gmres(
-            A, b, x0=x0,
-            M=M,
-            tol=solver_options.linear_solver_tol,
-            atol=solver_options.linear_solver_atol,
-            maxiter=solver_options.linear_solver_maxiter
-        )
-        return x
-
-    def solve_spsolve(A, b, x0):
-        # spsolve currently does not support jit or batching via vmap
-        # CPU -> scipy implementation, UMPFACK solver
-        # GPU -> jax implementation, requires 32-bit types + unstable
-        # https://docs.jax.dev/en/latest/_autosummary/jax.experimental.sparse.linalg.spsolve.html
-
-        A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A).sum_duplicates()
-
-        x = jax.experimental.sparse.linalg.spsolve(A_bcsr.data, A_bcsr.indices, A_bcsr.indptr, b,
-            tol=solver_options.linear_solver_tol,
-            reorder=1,
-        )
-
-        return x
-    
-    # Validate solver choice first (at function definition time)
-    valid_solvers = {"cg", "bicgstab", "gmres", "spsolve"}
-    if solver_options.linear_solver not in valid_solvers:
-        raise ValueError(f"Unknown linear solver: {solver_options.linear_solver}. Choose from {valid_solvers}")
-    
-    # Select solver function - since we validated, we can use conditionals here
-    # This happens at function definition time, not inside JAX-traced code
-    if solver_options.linear_solver == "cg":
-        linear_solve_fn = solve_cg
-    elif solver_options.linear_solver == "bicgstab":
-        linear_solve_fn = solve_bicgstab
-    elif solver_options.linear_solver == "gmres":
-        linear_solve_fn = solve_gmres
-    else: # Must be spsolve since we validated above
-        if jax.default_backend() == "gpu":
-            raise RuntimeError(
-                "jax.experimental.sparse.linalg.spsolve is disabled on GPU. "
-                "Run on CPU or use an iterative solver on GPU."
-            )
-        linear_solve_fn = solve_spsolve
+    # Define solver function
+    linear_solve_fn = create_linear_solve_fn(solver_options)
     
     def linear_solve_jit(A, b, x0=None):
         """Solve linear system Ax = b using JAX sparse solvers."""
@@ -655,82 +643,8 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc: Dirichlet
             P_mat=P_mat
         )
     
-    # Define solver functions
-    def solve_cg(A, b, x0):
-        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
-            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
-        else:
-            M = solver_options.preconditioner
-        x, _ = jax.scipy.sparse.linalg.cg(
-            A, b, x0=x0, 
-            M=M,
-            tol=solver_options.linear_solver_tol,
-            atol=solver_options.linear_solver_atol,
-            maxiter=solver_options.linear_solver_maxiter
-        )
-        return x
-    
-    def solve_bicgstab(A, b, x0):
-        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
-            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
-        else:
-            M = solver_options.preconditioner
-        x, _ = jax.scipy.sparse.linalg.bicgstab(
-            A, b, x0=x0,
-            M=M,
-            tol=solver_options.linear_solver_tol,
-            atol=solver_options.linear_solver_atol,
-            maxiter=solver_options.linear_solver_maxiter
-        )
-        return x
-    
-    def solve_gmres(A, b, x0):
-        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
-            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
-        else:
-            M = solver_options.preconditioner
-        x, _ = jax.scipy.sparse.linalg.gmres(
-            A, b, x0=x0,
-            M=M,
-            tol=solver_options.linear_solver_tol,
-            atol=solver_options.linear_solver_atol,
-            maxiter=solver_options.linear_solver_maxiter
-        )
-        return x
-    
-    def solve_spsolve(A, b, x0):
-        # spsolve currently does not support jit or batching via vmap
-        # CPU -> scipy implementation, UMPFACK solver
-        # GPU -> jax implementation, requires 32-bit types + unstable
-        # https://docs.jax.dev/en/latest/_autosummary/jax.experimental.sparse.linalg.spsolve.html
-
-        A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A).sum_duplicates()
-
-        x = jax.experimental.sparse.linalg.spsolve(A_bcsr.data, A_bcsr.indices, A_bcsr.indptr, b,
-            tol=solver_options.linear_solver_tol,
-            reorder=1,
-        )
-
-        return x
-    
-    # Validate and select solver
-    valid_solvers = {"cg", "bicgstab", "gmres", "spsolve"}
-    if solver_options.linear_solver not in valid_solvers:
-        raise ValueError(f"Unknown linear solver: {solver_options.linear_solver}. Choose from {valid_solvers}")
-    
-    if solver_options.linear_solver == "cg":
-        linear_solve_fn = solve_cg
-    elif solver_options.linear_solver == "bicgstab":
-        linear_solve_fn = solve_bicgstab
-    elif solver_options.linear_solver == "gmres":
-        linear_solve_fn = solve_gmres
-    else:
-        if jax.default_backend() == "gpu":
-            raise RuntimeError(
-                "jax.experimental.sparse.linalg.spsolve is disabled on GPU. "
-                "Run on CPU or use an iterative solver on GPU."
-            )
-        linear_solve_fn = solve_spsolve
+    # Define solver function
+    linear_solve_fn = create_linear_solve_fn(solver_options)
 
     # Create line search function once (outside the loop)
     armijo_search = create_armijo_line_search_jax(
@@ -841,82 +755,8 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
             P_mat=P_mat
         )
     
-    # Define solver functions
-    def solve_cg(A, b, x0):
-        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
-            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
-        else:
-            M = solver_options.preconditioner
-        x, _ = jax.scipy.sparse.linalg.cg(
-            A, b, x0=x0, 
-            M=M,
-            tol=solver_options.linear_solver_tol,
-            atol=solver_options.linear_solver_atol,
-            maxiter=solver_options.linear_solver_maxiter
-        )
-        return x
-    
-    def solve_bicgstab(A, b, x0):
-        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
-            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
-        else:
-            M = solver_options.preconditioner
-        x, _ = jax.scipy.sparse.linalg.bicgstab(
-            A, b, x0=x0,
-            M=M,
-            tol=solver_options.linear_solver_tol,
-            atol=solver_options.linear_solver_atol,
-            maxiter=solver_options.linear_solver_maxiter
-        )
-        return x
-    
-    def solve_gmres(A, b, x0):
-        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
-            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
-        else:
-            M = solver_options.preconditioner
-        x, _ = jax.scipy.sparse.linalg.gmres(
-            A, b, x0=x0,
-            M=M,
-            tol=solver_options.linear_solver_tol,
-            atol=solver_options.linear_solver_atol,
-            maxiter=solver_options.linear_solver_maxiter
-        )
-        return x
-
-    def solve_spsolve(A, b, x0):
-        # spsolve currently does not support jit or batching via vmap
-        # CPU -> scipy implementation, UMPFACK solver
-        # GPU -> jax implementation, requires 32-bit types + unstable
-        # https://docs.jax.dev/en/latest/_autosummary/jax.experimental.sparse.linalg.spsolve.html
-
-        A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A).sum_duplicates()
-
-        x = jax.experimental.sparse.linalg.spsolve(A_bcsr.data, A_bcsr.indices, A_bcsr.indptr, b,
-            tol=solver_options.linear_solver_tol,
-            reorder=1,
-        )
-
-        return x
-    
-    # Validate and select solver
-    valid_solvers = {"cg", "bicgstab", "gmres", "spsolve"}
-    if solver_options.linear_solver not in valid_solvers:
-        raise ValueError(f"Unknown linear solver: {solver_options.linear_solver}. Choose from {valid_solvers}")
-    
-    if solver_options.linear_solver == "cg":
-        linear_solve_fn = solve_cg
-    elif solver_options.linear_solver == "bicgstab":
-        linear_solve_fn = solve_bicgstab
-    elif solver_options.linear_solver == "gmres":
-        linear_solve_fn = solve_gmres
-    else:
-        if jax.default_backend() == "gpu":
-            raise RuntimeError(
-                "jax.experimental.sparse.linalg.spsolve is disabled on GPU. "
-                "Run on CPU or use an iterative solver on GPU."
-            )
-        linear_solve_fn = solve_spsolve
+    # Define solver function
+    linear_solve_fn = create_linear_solve_fn(solver_options)
 
     # Create line search function using shared Python version
     armijo_line_search = create_armijo_line_search_python(
@@ -1024,82 +864,8 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
             P_mat=P_mat
         )
     
-    # Define solver functions
-    def solve_cg(A, b, x0):
-        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
-            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
-        else:
-            M = solver_options.preconditioner
-        x, _ = jax.scipy.sparse.linalg.cg(
-            A, b, x0=x0, 
-            M=M,
-            tol=solver_options.linear_solver_tol,
-            atol=solver_options.linear_solver_atol,
-            maxiter=solver_options.linear_solver_maxiter
-        )
-        return x
-    
-    def solve_bicgstab(A, b, x0):
-        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
-            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
-        else:
-            M = solver_options.preconditioner
-        x, _ = jax.scipy.sparse.linalg.bicgstab(
-            A, b, x0=x0,
-            M=M,
-            tol=solver_options.linear_solver_tol,
-            atol=solver_options.linear_solver_atol,
-            maxiter=solver_options.linear_solver_maxiter
-        )
-        return x
-
-    def solve_gmres(A, b, x0):
-        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
-            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
-        else:
-            M = solver_options.preconditioner
-        x, _ = jax.scipy.sparse.linalg.gmres(
-            A, b, x0=x0,
-            M=M,
-            tol=solver_options.linear_solver_tol,
-            atol=solver_options.linear_solver_atol,
-            maxiter=solver_options.linear_solver_maxiter
-        )
-        return x
-    
-    def solve_spsolve(A, b, x0):
-        # spsolve currently does not support jit or batching via vmap
-        # CPU -> scipy implementation, UMPFACK solver
-        # GPU -> jax implementation, requires 32-bit types + unstable
-        # https://docs.jax.dev/en/latest/_autosummary/jax.experimental.sparse.linalg.spsolve.html
-
-        A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A).sum_duplicates()
-
-        x = jax.experimental.sparse.linalg.spsolve(A_bcsr.data, A_bcsr.indices, A_bcsr.indptr, b,
-            tol=solver_options.linear_solver_tol,
-            reorder=1,
-        )
-
-        return x
-    
-    # Validate and select solver
-    valid_solvers = {"cg", "bicgstab", "gmres", "spsolve"}
-    if solver_options.linear_solver not in valid_solvers:
-        raise ValueError(f"Unknown linear solver: {solver_options.linear_solver}. Choose from {valid_solvers}")
-    
-    if solver_options.linear_solver == "cg":
-        linear_solve_fn = solve_cg
-    elif solver_options.linear_solver == "bicgstab":
-        linear_solve_fn = solve_bicgstab
-    elif solver_options.linear_solver == "gmres":
-        linear_solve_fn = solve_gmres
-    else:
-        if jax.default_backend() == "gpu":
-            raise RuntimeError(
-                "jax.experimental.sparse.linalg.spsolve is disabled on GPU. "
-                "Run on CPU or use an iterative solver on GPU."
-            )
-        linear_solve_fn = solve_spsolve
+    # Define solver function
+    linear_solve_fn = create_linear_solve_fn(solver_options)
     
     # Single Newton iteration (no while loop)
     # Step 1: Compute residual and Jacobian
@@ -1171,83 +937,8 @@ def __linear_solve_adjoint(A, b, solver_options: SolverOptions, bc=None):
     Dirichlet boundary conditions.
     """
 
-    # Define solver functions
-    def solve_cg(A, b, x0):
-        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
-            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
-        else:
-            M = solver_options.preconditioner
-        x, _ = jax.scipy.sparse.linalg.cg(
-            A, b, x0=x0,
-            M=M,
-            tol=solver_options.linear_solver_tol,
-            atol=solver_options.linear_solver_atol,
-            maxiter=solver_options.linear_solver_maxiter
-        )
-        return x
-
-    def solve_bicgstab(A, b, x0):
-        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
-            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
-        else:
-            M = solver_options.preconditioner
-        x, _ = jax.scipy.sparse.linalg.bicgstab(
-            A, b, x0=x0,
-            M=M,
-            tol=solver_options.linear_solver_tol,
-            atol=solver_options.linear_solver_atol,
-            maxiter=solver_options.linear_solver_maxiter
-        )
-
-        return x
-
-    def solve_gmres(A, b, x0):
-        if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
-            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
-        else:
-            M = solver_options.preconditioner
-        x, _ = jax.scipy.sparse.linalg.gmres(
-            A, b, x0=x0,
-            M=M,
-            tol=solver_options.linear_solver_tol,
-            atol=solver_options.linear_solver_atol,
-            maxiter=solver_options.linear_solver_maxiter
-        )
-        return x
-
-    def solve_spsolve(A, b, x0):
-        # spsolve currently does not support jit or batching via vmap
-        # CPU -> scipy implementation, UMPFACK solver
-        # GPU -> jax implementation, requires 32-bit types + unstable
-        # https://docs.jax.dev/en/latest/_autosummary/jax.experimental.sparse.linalg.spsolve.html
-
-        A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A).sum_duplicates()
-
-        x = jax.experimental.sparse.linalg.spsolve(A_bcsr.data, A_bcsr.indices, A_bcsr.indptr, b,
-            tol=solver_options.linear_solver_tol,
-            reorder=1,
-        )
-
-        return x
-    
-    # Validate and select solver
-    valid_solvers = {"cg", "bicgstab", "gmres", "spsolve"}
-    if solver_options.linear_solver not in valid_solvers:
-        raise ValueError(f"Unknown linear solver: {solver_options.linear_solver}. Choose from {valid_solvers}")
-    
-    if solver_options.linear_solver == "cg":
-        linear_solve_fn = solve_cg
-    elif solver_options.linear_solver == "bicgstab":
-        linear_solve_fn = solve_bicgstab
-    elif solver_options.linear_solver == "gmres":
-        linear_solve_fn = solve_gmres
-    else:
-        if jax.default_backend() == "gpu":
-            raise RuntimeError(
-                "jax.experimental.sparse.linalg.spsolve is disabled on GPU. "
-                "Run on CPU or use an iterative solver on GPU."
-            )
-        linear_solve_fn = solve_spsolve
+    # Define solver function
+    linear_solve_fn = create_linear_solve_fn(solver_options)
 
     # Compute initial guess for adjoint solve
     # For adjoint problem, BC rows have identity on diagonal of J^T,
