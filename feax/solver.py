@@ -65,7 +65,7 @@ class SolverOptions:
     max_iter : int, default 100
         Maximum number of Newton iterations
     linear_solver : str, default "cg"
-        Linear solver type. Options: "cg", "bicgstab", "gmres", "spsolve"
+        Linear solver type. Options: "cg", "bicgstab", "gmres", "spsolve", "cudss_solver"
     preconditioner : callable, optional
         Preconditioner function for linear solver
     use_jacobi_preconditioner : bool, default False
@@ -101,7 +101,7 @@ class SolverOptions:
     tol: float = 1e-6
     rel_tol: float = 1e-8
     max_iter: int = 100
-    linear_solver: str = "cg"  # Options: "cg", "bicgstab", "gmres", "spsolve"
+    linear_solver: str = "cg"  # Options: "cg", "bicgstab", "gmres", "spsolve", "cudss_solver"
     preconditioner: Optional[Callable] = None
     use_jacobi_preconditioner: bool = False
     jacobi_shift: float = 1e-12
@@ -172,6 +172,25 @@ def create_jacobi_preconditioner(A: jax.experimental.sparse.BCOO, shift: float =
     return M_matvec
 
 def create_linear_solve_fn(solver_options: SolverOptions):
+    """Create a linear solve function based on solver options.
+
+    Parameters
+    ----------
+    solver_options : SolverOptions
+        Solver configuration, including linear solver selection and tolerances.
+
+    Returns
+    -------
+    callable
+        Function with signature (A, b, x0) -> x.
+
+    Notes
+    -----
+    The returned function selects between "cg", "bicgstab", "gmres", "spsolve",
+    and "cudss_solver". The "spsolve" option is only available on CPU, while
+    "cudss_solver" is only available on CUDA GPUs (tested with CUDA 12). To
+    install the cudss solver, use `pip install feax[cuda12]`.
+    """
 
     def choose_preconditioner(A):
         if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
@@ -218,7 +237,7 @@ def create_linear_solve_fn(solver_options: SolverOptions):
     if solver_options.linear_solver == "spsolve":
         if jax.default_backend() != "cpu":
             raise RuntimeError(
-                "jax.experimental.sparse.linalg.spsolve is disabled on GPU. "
+                "jax.experimental.sparse.linalg.spsolve is only enabled on the GPU. "
                 "Run on CPU or use an iterative solver on GPU."
             )
 
@@ -235,7 +254,42 @@ def create_linear_solve_fn(solver_options: SolverOptions):
             )
             return x
         return solve
-    valid_solvers = ("cg", "bicgstab", "gmres", "spsolve")
+    
+    if solver_options.linear_solver == "cudss_solver":
+        if jax.default_backend() != "gpu":
+            raise RuntimeError(
+                "spineax.cudss.solver.solve_single is only enabled on the GPU"
+            )
+        try:
+            from spineax.cudss.solver import solve as cudss_solve
+        except Exception as e:
+            raise RuntimeError(
+                "Failed to import spineax.cudss.solver.solve."
+                "Make sure feax is built with spineax support."
+            ) from e
+
+        def solve(A, b, x0):
+            A = A.sum_duplicates(nse=A.nse)
+            A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A)
+
+            csr_values  = A_bcsr.data
+            csr_offsets = A_bcsr.indptr.astype(jnp.int32)
+            csr_columns = A_bcsr.indices.astype(jnp.int32)
+
+            x, _ = cudss_solve(
+                b,
+                csr_values,
+                csr_offsets,
+                csr_columns,
+                device_id=0,
+                mtype_id=0,
+                mview_id=1,
+            )
+            return x
+        return solve
+        
+
+    valid_solvers = ("cg", "bicgstab", "gmres", "spsolve", "cudss_solver")
     raise ValueError(
         f"Unknown linear solver: {solver_options.linear_solver}. "
         f"Choose from {valid_solvers}"

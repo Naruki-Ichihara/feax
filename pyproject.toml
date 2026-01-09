@@ -54,6 +54,10 @@ docs = [
     "sphinx",
     "sphinx-rtd-theme",
 ]
+cuda12 = [
+    "jax[cuda12]",
+    "spineax @ git+https://github.com/robtaylor/spineax.git" # Change to johnviljoen/spine, once the pull-request has been merged
+]
 
 [project.urls]
 Homepage = "https://github.com/Naruki-Ichihara/feax"
