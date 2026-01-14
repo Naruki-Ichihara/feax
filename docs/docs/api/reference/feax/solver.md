@@ -30,7 +30,7 @@ Parameters
 - **tol** (*float, default 1e-6*): Absolute tolerance for residual vector (l2 norm)
 - **rel_tol** (*float, default 1e-8*): Relative tolerance for residual vector (l2 norm)
 - **max_iter** (*int, default 100*): Maximum number of Newton iterations
-- **linear_solver** (*str, default &quot;cg&quot;*): Linear solver type. Options: &quot;cg&quot;, &quot;bicgstab&quot;, &quot;gmres&quot;, &quot;spsolve&quot;
+- **linear_solver** (*str, default &quot;cg&quot;*): Linear solver type. Options: &quot;cg&quot;, &quot;bicgstab&quot;, &quot;gmres&quot;, &quot;spsolve&quot;, &quot;cudss_solver&quot;
 - **preconditioner** (*callable, optional*): Preconditioner function for linear solver
 - **use_jacobi_preconditioner** (*bool, default False*): Whether to use Jacobi (diagonal) preconditioner automatically
 - **jacobi_shift** (*float, default 1e-12*): Regularization parameter for Jacobi preconditioner
@@ -46,7 +46,7 @@ Parameters
 
 #### linear\_solver
 
-Options: &quot;cg&quot;, &quot;bicgstab&quot;, &quot;gmres&quot;, &quot;spsolve&quot;
+Options: &quot;cg&quot;, &quot;bicgstab&quot;, &quot;gmres&quot;, &quot;spsolve&quot;, &quot;cudss_solver&quot;
 
 #### linear\_solver\_x0\_fn
 
@@ -122,6 +122,30 @@ Examples
 >>> # Usage with reduced problem
 >>> x0_fn = create_x0(bc_rows, bc_vals, P_mat=P)
 ```
+
+#### create\_linear\_solve\_fn
+
+```python
+def create_linear_solve_fn(solver_options: SolverOptions)
+```
+
+Create a linear solve function based on the configured solver options.
+
+Parameters
+----------
+- **solver_options** (*SolverOptions*): Solver configuration, including linear solver selection and tolerances
+
+
+Returns
+-------
+- **solve** (*callable*): Function with signature (A, b, x0) -> x
+
+
+Notes
+-----
+The returned function selects between "cg", "bicgstab", "gmres", "spsolve", and "cudss_solver".
+The "spsolve" option is only available on CPU, while "cudss_solver" is only available on CUDA GPUs
+(tested with CUDA 12). To install the cudss solver, use `pip install feax[cuda12]`.
 
 #### create\_armijo\_line\_search\_jax
 
@@ -388,4 +412,3 @@ Examples
 >>> grad_fn = jax.grad(loss_fn)
 >>> gradients = grad_fn(internal_vars)
 ```
-
