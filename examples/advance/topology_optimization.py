@@ -4,6 +4,7 @@
 Minimizes compliance subject to volume constraint for a cantilever beam
 with density-based material interpolation (SIMP).
 """
+
 import feax as fe
 import feax.flat as flat
 from feax.experimental.topopt_toolkit.responses import create_compliance_fn, create_volume_fn
@@ -26,7 +27,7 @@ L = 100  # Length
 W = 4    # Width
 H = 20   # Height
 box_size = (L, W, H)
-mesh = fe.mesh.box_mesh(box_size, mesh_size=0.5)
+mesh = fe.mesh.box_mesh(box_size, mesh_size=1)
 tol = 1e-3  # Boundary tolerance
     
 # Locations
@@ -70,7 +71,7 @@ bc = bc_config.create_bc(problem)
 # Solver configuration
 # Forward solver: bicgstab with Jacobi preconditioning for better convergence
 solver_options = fe.solver.SolverOptions(
-    linear_solver="bicgstab",
+    linear_solver="cudss_solver",
     linear_solver_tol=1e-10,
     linear_solver_atol=1e-12,
     use_jacobi_preconditioner=True,
@@ -79,7 +80,7 @@ solver_options = fe.solver.SolverOptions(
 
 # Adjoint solver: relaxed tolerance for gradient computation
 adjoint_solver_options = fe.solver.SolverOptions(
-    linear_solver="bicgstab",
+    linear_solver="cudss_solver",
     tol=1e-6,
     linear_solver_tol=1e-8,
     linear_solver_atol=1e-10,

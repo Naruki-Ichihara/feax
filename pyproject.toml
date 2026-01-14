@@ -40,6 +40,7 @@ dependencies = [
     "pytest",
     "fenics-basix",
     "gmsh",
+    "equinox",
 ]
 
 [project.optional-dependencies]
@@ -56,7 +57,14 @@ docs = [
 ]
 cuda12 = [
     "jax[cuda12]",
-    "spineax @ git+https://github.com/robtaylor/spineax.git" # Change to johnviljoen/spine, once the pull-request has been merged
+    "nvidia-cudss-cu12",
+    "nvidia-cublas-cu12",
+    "nvidia-cuda-runtime-cu12",
+    "nvidia-cudnn-cu12",
+    "nvidia-cuda-nvcc-cu12",
+    "nanobind",
+    "scikit-build-core>=0.5",
+    "ninja"
 ]
 
 [project.urls]
@@ -66,6 +74,7 @@ Repository = "https://github.com/Naruki-Ichihara/feax.git"
 Issues = "https://github.com/Naruki-Ichihara/feax/issues"
 
 [tool.setuptools]
+py-modules = []
 zip-safe = false
 
 [tool.setuptools.packages.find]

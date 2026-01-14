@@ -31,7 +31,7 @@ class HyperElasticityFeax(fe.problem.Problem):
 
         return first_PK_stress
     
-mesh = fe.mesh.box_mesh((1, 1, 1), mesh_size=0.1)
+mesh = fe.mesh.box_mesh((1, 1, 1), mesh_size=0.2)
 
 # Define boundary locations.
 def left(point):
@@ -69,7 +69,7 @@ internal_vars = fe.internal_vars.InternalVars()
 
 bc = bc_config.create_bc(feax_problem)
 
-solver_options = fe.solver.SolverOptions(tol=1e-8, linear_solver="bicgstab", verbose=True)
+solver_options = fe.solver.SolverOptions(tol=1e-8, linear_solver="cudss_solver", verbose=True)
 solver = fe.solver.create_solver(feax_problem, bc, solver_options)
 
 def solve_fn(internal_vars):
