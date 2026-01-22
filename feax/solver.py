@@ -237,11 +237,11 @@ def create_linear_solve_fn(solver_options: SolverOptions):
     if solver_options.linear_solver == "spsolve":
         if jax.default_backend() != "cpu":
             raise RuntimeError(
-                "jax.experimental.sparse.linalg.spsolve is only enabled on the GPU. "
+                "jax.experimental.sparse.linalg.spsolve is only enabled on the CPU. "
                 "Run on CPU or use an iterative solver on GPU."
             )
 
-        def solve(A, b, x0):
+        def solve(A, b, _):
             # spsolve currently does not support jit or batching via vmap
             # CPU -> scipy implementation, UMPFACK solver
             # GPU -> jax implementation, requires 32-bit types + unstable
@@ -258,33 +258,34 @@ def create_linear_solve_fn(solver_options: SolverOptions):
     if solver_options.linear_solver == "cudss_solver":
         if jax.default_backend() != "gpu":
             raise RuntimeError(
-                "spineax.cudss.solver.solve_single is only enabled on the GPU"
+                "spineax.cudss.solver.CuDSSSolver is only enabled on the GPU"
             )
         try:
-            from spineax.cudss.solver import solve as cudss_solve
+            from spineax.cudss.solver import CuDSSSolver
         except Exception as e:
             raise RuntimeError(
-                "Failed to import spineax.cudss.solver.solve."
+                "Failed to import spineax.cudss.solver.solve. "
                 "Make sure feax is built with spineax support."
             ) from e
+        cudss_solver = None
 
-        def solve(A, b, x0):
+        def solve(A, b, _):
+            nonlocal cudss_solver
             A = A.sum_duplicates(nse=A.nse)
             A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A)
 
             csr_values  = A_bcsr.data
-            csr_offsets = A_bcsr.indptr.astype(jnp.int32)
-            csr_columns = A_bcsr.indices.astype(jnp.int32)
-
-            x, _ = cudss_solve(
-                b,
-                csr_values,
-                csr_offsets,
-                csr_columns,
-                device_id=0,
-                mtype_id=0,
-                mview_id=1,
-            )
+            if cudss_solver is None:
+                csr_offsets = A_bcsr.indptr.astype(jnp.int32)
+                csr_columns = A_bcsr.indices.astype(jnp.int32)
+                cudss_solver = CuDSSSolver(
+                    csr_offsets=csr_offsets,
+                    csr_columns=csr_columns,
+                    device_id=0,
+                    mtype_id=0,
+                    mview_id=0,
+                )
+            x, _ = cudss_solver(b, csr_values)
             return x
         return solve
         
