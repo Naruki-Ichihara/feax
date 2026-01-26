@@ -29,21 +29,86 @@ FEAX leverages JAX's powerful transformation system to enable:
 - **Parallelization**: Scale across multiple devices with `pmap`
 
 ## Installation
-Use pip to install:
+
+### Basic Installation (CPU only)
 ```bash
 pip install feax
 ```
 
-To install the latest commit from the main branch:
+### GPU/CUDA 12 Installation (Recommended)
+
+FEAX with GPU acceleration requires a two-step installation process:
+
+#### Option 1: Using the installation script (for development)
 ```bash
-pip install git+https://github.com/Naruki-Ichihara/feax.git@main
+git clone https://github.com/Naruki-Ichihara/feax.git
+cd feax
+./install-cuda12.sh
 ```
 
-## [Documentation](https://naruki-ichihara.github.io/feax/docs/intro)
+#### Option 2: Manual installation (from PyPI)
+```bash
+# Step 1: Install FEAX with CUDA 12 dependencies
+pip install feax[cuda12]
+
+# Step 2: Install spineax (CUDA sparse solver)
+# The --no-build-isolation flag is required to access CUDA libraries from Step 1
+pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
+```
 
 ## feax.flat
 
 Flat (Feax Lattice) is a utility for asymptotic homogenization of lattice unit cell.
+
+## feax.gene
+
+**Gene** (Generative design in FEAX) is a comprehensive toolkit for topology optimization and generative design. It provides efficient, JAX-native implementations of common topology optimization components.
+
+### Key Features
+
+- **Response Functions**: Compliance and volume fraction calculations optimized for topology optimization
+- **Filtering Methods**:
+  - PDE-based Helmholtz filter for smooth, physically-motivated designs
+  - Distance-based density filter for efficient spatial smoothing
+  - Sensitivity filter for mesh-independent gradient smoothing
+- **Constrained Optimization**: MDMM (Modified Differential Multiplier Method) for handling equality and inequality constraints with automatic differentiation
+- **Pure JAX Implementation**: Fully differentiable and compatible with optax optimizers
+
+### Quick Example
+
+```python
+import feax
+from feax.gene import create_compliance_fn, create_volume_fn, create_density_filter, mdmm
+import optax
+
+# Create response functions
+compliance_fn = create_compliance_fn(problem)
+volume_fn = create_volume_fn(problem)
+
+# Create density filter
+filter_fn = create_density_filter(mesh, radius=3.0)
+
+# Define objective with filtering
+def objective(params):
+    rho_filtered = filter_fn(params['rho'])
+    sol = solver(rho_filtered)
+    return compliance_fn(sol)
+
+# Add volume constraint with MDMM
+constraint = mdmm.ineq(
+    lambda params: 0.4 - volume_fn(filter_fn(params['rho'])),
+    damping=10.0,
+    weight=100.0
+)
+
+# Use with any optax optimizer
+optimizer = optax.chain(
+    optax.adam(0.05),
+    mdmm.optax_prepare_update()
+)
+```
+
+See `examples/advance/topology_optimization_mdmm.py` for a complete topology optimization example.
 
 ## License
 

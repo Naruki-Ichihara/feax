@@ -64,7 +64,11 @@ cuda12 = [
     "nvidia-cuda-nvcc-cu12",
     "nanobind",
     "scikit-build-core>=0.5",
-    "ninja"
+    "ninja",
+    # Note: spineax (CUDA sparse solver) must be installed separately
+    # after installing cuda12 dependencies due to build isolation requirements.
+    # Run: pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
+    # See README.md for detailed installation instructions.
 ]
 
 [project.urls]

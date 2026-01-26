@@ -26,3 +26,8 @@ from .utils import zero_like_initial_guess
 
 # Note: Experimental features available in feax.experimental
 # from feax.experimental import SymbolicProblem
+
+# Generative design toolkit (gene module)
+# Gene = Generative design in FEAX
+# Available: feax.gene.create_compliance_fn, feax.gene.create_volume_fn,
+#            feax.gene.create_helmholtz_filter, feax.gene.mdmm, etc.

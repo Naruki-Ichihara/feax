@@ -1,8 +1,5 @@
 FROM nvcr.io/nvidia/jax:25.04-py3
 
-# Build argument to control Claude Code installation
-ARG INSTALL_CLAUDE=false
-
 RUN apt update
 RUN apt upgrade -y
 
@@ -19,12 +16,5 @@ RUN pip install .[cuda12]
 
 # Install spineax from GitHub without build isolation
 RUN pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
-
-# Install Node.js and Claude Code (if enabled)
-RUN if [ "$INSTALL_CLAUDE" = "true" ]; then \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt install -y nodejs && \
-    npm install -g @anthropic-ai/claude-code; \
-    fi
 
 CMD ["/bin/bash"]

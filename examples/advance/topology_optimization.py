@@ -6,8 +6,8 @@ with density-based material interpolation (SIMP).
 """
 
 import feax as fe
-import feax.flat as flat
-from feax.experimental.topopt_toolkit.responses import create_compliance_fn, create_volume_fn
+import feax.gene as gene
+from feax.gene.responses import create_compliance_fn, create_volume_fn
 import jax
 import jax.numpy as np
 import os
@@ -19,7 +19,7 @@ penalty = 3  # SIMP penalization parameter
 traction_mag = 1.0
 
 # Optimization parameters
-radius = 1# Helmholtz filter radius (smaller = sharper boundaries)
+radius = 3 # Helmholtz filter radius (smaller = sharper boundaries)
 target_fraction = 0.4  # Target volume fraction
 
 # Geometry
@@ -101,7 +101,7 @@ volume_fn = create_volume_fn(problem)
 
 # Create filter function once (outside of differentiated function)
 # Filter uses node-based input and output
-filter_fn = flat.filters.create_helmholtz_filter(mesh, radius)
+filter_fn = gene.filters.create_density_filter(mesh, radius)
 
 def solve_forward(rho):
     """Compute compliance for given node-based density field."""

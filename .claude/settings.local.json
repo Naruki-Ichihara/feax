@@ -21,7 +21,8 @@
       "Bash(npm start)",
       "Bash(timeout 120 python:*)",
       "Bash(timeout 180 python:*)",
-      "Bash(timeout 300 python:*)"
+      "Bash(timeout 300 python:*)",
+      "Bash(ls:*)"
     ],
     "deny": [],
     "ask": []
