@@ -24,9 +24,15 @@ FEAX leverages JAX's powerful transformation system to enable:
 - **Automatic Differentiation**: Compute exact gradients through finite element solvers
 - **JIT Compilation**: Compile to optimized machine code for maximum performance  
 - **Vectorization**: Efficiently process multiple scenarios in parallel with `vmap`
-- **Parallelization**: Scale across multiple devices with `pmap`
 
 ## Installation
+
+```bash
+pip install feax[cuda12]
+pip install --no-build-isolation git+https://github.com/Naruki-Ichihara/spineax.git
+```
+
+> **Note**: `spineax` requires CUDA toolkit and cuDSS to be available at build time. The `--no-build-isolation` flag is required so that spineax can find JAX and NVIDIA libraries installed by `feax[cuda12]`.
 
 ## feax.flat
 
@@ -36,17 +42,6 @@ FEAX leverages JAX's powerful transformation system to enable:
 
 **Gene** (Generative design in FEAX) is a comprehensive toolkit for topology optimization and generative design. It provides efficient, JAX-native implementations of common topology optimization components.
 
-### Key Features
-
-- **Response Functions**: Compliance and volume fraction calculations optimized for topology optimization
-- **Filtering Methods**:
-  - PDE-based Helmholtz filter for smooth, physically-motivated designs
-  - Distance-based density filter for efficient spatial smoothing
-  - Sensitivity filter for mesh-independent gradient smoothing
-- **Constrained Optimization**: MDMM (Modified Differential Multiplier Method) for handling equality and inequality constraints with automatic differentiation
-- **Pure JAX Implementation**: Fully differentiable and compatible with optax optimizers
-
-
 ## License
 
 FEAX is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for the full license text.
@@ -55,7 +50,8 @@ FEAX is licensed under the GNU General Public License v3.0. See [LICENSE](LICENS
 
 FEAX builds upon the excellent work of:
 - [JAX](https://github.com/google/jax) for automatic differentiation and compilation
-- [JAX-FEM](https://github.com/tianjuxue/jax_fem) for inspiration and reference implementations
+- [JAX-FEM](https://github.com/deepmodeling/jax-fem) for inspiration and reference implementations
+- [Spineax](https://github.com/johnviljoen/spineax) for cuDSS solver implementation
 
 ---
 <div align="center">

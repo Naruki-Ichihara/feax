@@ -70,7 +70,7 @@ internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), s
 print("Creating homogenization solver...")
 solver_options = fe.solver.SolverOptions(
     tol=1e-8,
-    linear_solver="cg",
+    linear_solver="cudss",
     verbose=False
 )
 

@@ -3,17 +3,10 @@ jax.config.update("jax_enable_x64", True)
 
 # Version info
 try:
-    from ._version import version as __version__
-except ImportError:
-    # Fallback for development installations without setuptools_scm
-    try:
-        from importlib.metadata import version, PackageNotFoundError
-        try:
-            __version__ = version("feax")
-        except PackageNotFoundError:
-            __version__ = "0.0.0+unknown"
-    except ImportError:
-        __version__ = "0.0.0+unknown"
+    from importlib.metadata import version, PackageNotFoundError
+    __version__ = version("feax")
+except (ImportError, PackageNotFoundError):
+    __version__ = "0.1.0"
 
 # Main API
 from .problem import Problem

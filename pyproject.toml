@@ -1,14 +1,14 @@
 [build-system]
-requires = ["setuptools>=61.0", "setuptools-scm>=8.0"]
+requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "feax"
-dynamic = ["version"]
+version = "0.1.0"
 description = "A GPU-accelerated finite element analysis framework with JAX."
 readme = "README.md"
 requires-python = ">=3.9"
-license = {text = "MIT"}
+license = {text = "GPL-3.0-or-later"}
 authors = [
     {name = "Naruki-Ichihara", email = "ichihara.naruki@nihon-u.ac.jp"},
 ]
@@ -18,7 +18,7 @@ maintainers = [
 keywords = ["JAX", "CUDA", "Simulation", "PINN", "finite-element", "FEA", "GPU"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
@@ -37,7 +37,6 @@ dependencies = [
     "scipy",
     "matplotlib",
     "meshio",
-    "pytest",
     "fenics-basix",
     "gmsh",
     "equinox",
@@ -65,10 +64,6 @@ cuda12 = [
     "nanobind",
     "scikit-build-core>=0.5",
     "ninja",
-    # Note: spineax (CUDA sparse solver) must be installed separately
-    # after installing cuda12 dependencies due to build isolation requirements.
-    # Run: pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
-    # See README.md for detailed installation instructions.
 ]
 
 [project.urls]
@@ -137,8 +132,3 @@ disallow_untyped_defs = false
 disallow_incomplete_defs = false
 check_untyped_defs = false
 ignore_missing_imports = true
-
-[tool.setuptools_scm]
-write_to = "feax/_version.py"
-version_scheme = "python-simplified-semver"
-local_scheme = "no-local-version"

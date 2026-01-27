@@ -23,7 +23,7 @@ L = 100
 W = 10
 H = 10
 box_size = (L, W, H)
-mesh = fe.mesh.box_mesh(box_size, mesh_size=1)  # Coarser mesh for speed
+mesh = fe.mesh.box_mesh(box_size, mesh_size=0.5)  # Coarser mesh for speed
 
 # Locations
 left = lambda point: np.isclose(point[0], 0., tol)
@@ -59,7 +59,7 @@ bc_config = fe.DCboundary.DirichletBCConfig([left_fix])
 bc = bc_config.create_bc(problem)
 
 # Create JIT-compiled solver
-solver_option = fe.solver.SolverOptions(linear_solver="bicgstab")
+solver_option = fe.solver.SolverOptions(linear_solver="cudss")
 solver = fe.solver.create_solver(problem, bc, solver_option, iter_num=1)
 initial = fe.utils.zero_like_initial_guess(problem, bc)
 
