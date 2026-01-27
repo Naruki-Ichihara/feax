@@ -856,5 +856,5 @@ def create_res_bc_function(problem: 'Problem', bc: 'DirichletBC') -> Callable[[n
         res = get_res(problem, sol_list, internal_vars)
         res_flat = jax.flatten_util.ravel_pytree(res)[0]
         return apply_boundary_to_res(bc, res_flat, sol_flat)
-    
+
     return res_bc_func

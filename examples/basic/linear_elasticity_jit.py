@@ -48,7 +48,7 @@ bc_config = fe.DCboundary.DirichletBCConfig([left_fix])
 bc = bc_config.create_bc(problem)
 
 # Solver setup
-solver_option = fe.solver.SolverOptions(linear_solver="bicgstab")
+solver_option = fe.solver.SolverOptions(linear_solver="cudss")
 solver_no_jit = fe.solver.create_solver(problem, bc, solver_option, iter_num=1)
 solver_jit = jax.jit(fe.solver.create_solver(problem, bc, solver_option, iter_num=1))
 

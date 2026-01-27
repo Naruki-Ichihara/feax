@@ -188,7 +188,6 @@ def apply_boundary_to_J(bc: DirichletBC, J: BCOO) -> BCOO:
     return J_bc
 
 
-
 def apply_boundary_to_res(bc: DirichletBC, res_vec: np.ndarray, sol_vec: np.ndarray, scale: float = 1.0) -> np.ndarray:
     """Apply Dirichlet boundary conditions to residual vector using row elimination.
     

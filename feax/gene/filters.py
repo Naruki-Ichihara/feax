@@ -98,7 +98,7 @@ def create_helmholtz_filter(mesh, radius, P=None, solver_options=None):
     if solver_options is None:
         solver_options = fe.solver.SolverOptions(
             tol=1e-8,
-            linear_solver="cudss_solver",
+            linear_solver="cudss",
             verbose=False
         )
 

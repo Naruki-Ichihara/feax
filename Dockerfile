@@ -15,6 +15,7 @@ WORKDIR /workspace
 RUN pip install .[cuda12]
 
 # Install spineax from GitHub without build isolation
-RUN pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
+# RUN pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
+RUN pip install --no-build-isolation git+https://github.com/Naruki-Ichihara/spineax.git
 
 CMD ["/bin/bash"]

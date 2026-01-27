@@ -64,8 +64,8 @@ class SolverOptions:
         Relative tolerance for residual vector (l2 norm)
     max_iter : int, default 100
         Maximum number of Newton iterations
-    linear_solver : str, default "cg"
-        Linear solver type. Options: "cg", "bicgstab", "gmres", "spsolve", "cudss_solver"
+    linear_solver : str, default "cudss"
+        Linear solver type. Options: "cg", "bicgstab", "gmres", "spsolve", "cudss"
     preconditioner : callable, optional
         Preconditioner function for linear solver
     use_jacobi_preconditioner : bool, default False
@@ -101,7 +101,7 @@ class SolverOptions:
     tol: float = 1e-6
     rel_tol: float = 1e-8
     max_iter: int = 100
-    linear_solver: str = "cg"  # Options: "cg", "bicgstab", "gmres", "spsolve", "cudss_solver"
+    linear_solver: str = "cudss"  # Options: "cg", "bicgstab", "gmres", "spsolve", "cudss"
     preconditioner: Optional[Callable] = None
     use_jacobi_preconditioner: bool = False
     jacobi_shift: float = 1e-12
@@ -187,9 +187,9 @@ def create_linear_solve_fn(solver_options: SolverOptions):
     Notes
     -----
     The returned function selects between "cg", "bicgstab", "gmres", "spsolve",
-    and "cudss_solver". The "spsolve" option is only available on CPU, while
-    "cudss_solver" is only available on CUDA GPUs (tested with CUDA 12). To
-    install the cudss solver, use `pip install feax[cuda12]`.
+    and "cudss". The "spsolve" option is only available on CPU, while
+    "cudss" is only available on CUDA GPUs (tested with CUDA 12). To
+    install the CUDSS solver, use `pip install feax[cuda12]`.
     """
 
     def choose_preconditioner(A):
@@ -255,7 +255,7 @@ def create_linear_solve_fn(solver_options: SolverOptions):
             return x
         return solve
     
-    if solver_options.linear_solver == "cudss_solver":
+    if solver_options.linear_solver == "cudss":
         if jax.default_backend() != "gpu":
             raise RuntimeError(
                 "spineax.cudss.solver.CuDSSSolver is only enabled on the GPU"
@@ -290,7 +290,7 @@ def create_linear_solve_fn(solver_options: SolverOptions):
         return solve
         
 
-    valid_solvers = ("cg", "bicgstab", "gmres", "spsolve", "cudss_solver")
+    valid_solvers = ("cg", "bicgstab", "gmres", "spsolve", "cudss")
     raise ValueError(
         f"Unknown linear solver: {solver_options.linear_solver}. "
         f"Choose from {valid_solvers}"
@@ -1247,8 +1247,7 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
     # Standard solver (original implementation)
     J_bc_func = create_J_bc_function(problem, bc)
     res_bc_func = create_res_bc_function(problem, bc)
-    
-    # Standard case - no special handling
+
     if iter_num is None:
         solve_fn = lambda internal_vars, initial_sol: newton_solve(
             J_bc_func, res_bc_func, initial_sol, bc, solver_options, internal_vars

@@ -71,9 +71,9 @@ bc_config = fe.DCboundary.DirichletBCConfig([left_fix])
 bc = bc_config.create_bc(problem)
 
 # Solver configuration
-# Forward solver: bicgstab with Jacobi preconditioning for better convergence
+# Forward solver: CUDSS with Jacobi preconditioning for better convergence
 solver_options = fe.solver.SolverOptions(
-    linear_solver="cudss_solver",
+    linear_solver="cudss",
     linear_solver_tol=1e-10,
     linear_solver_atol=1e-12,
     use_jacobi_preconditioner=True,
@@ -82,7 +82,7 @@ solver_options = fe.solver.SolverOptions(
 
 # Adjoint solver: relaxed tolerance for gradient computation
 adjoint_solver_options = fe.solver.SolverOptions(
-    linear_solver="cudss_solver",
+    linear_solver="cudss",
     tol=1e-6,
     linear_solver_tol=1e-8,
     linear_solver_atol=1e-10,
