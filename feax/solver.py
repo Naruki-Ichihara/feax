@@ -242,11 +242,11 @@ def create_linear_solve_fn(solver_options: SolverOptions):
             )
 
         def solve(A, b, _):
-            # spsolve currently does not support jit or batching via vmap
+            # spsolve currently does not support batching via vmap
             # CPU -> scipy implementation, UMPFACK solver
             # GPU -> jax implementation, requires 32-bit types + unstable
             # https://docs.jax.dev/en/latest/_autosummary/jax.experimental.sparse.linalg.spsolve.html
-            A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A).sum_duplicates()
+            A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A.sum_duplicates(nse=A.nse))
             x = jax.experimental.sparse.linalg.spsolve(
                 A_bcsr.data, A_bcsr.indices, A_bcsr.indptr, b,
                 tol=solver_options.linear_solver_tol,
@@ -264,15 +264,14 @@ def create_linear_solve_fn(solver_options: SolverOptions):
             from spineax.cudss.solver import CuDSSSolver
         except Exception as e:
             raise RuntimeError(
-                "Failed to import spineax.cudss.solver.solve. "
-                "Make sure feax is built with spineax support."
+                "Failed to import `spineax.cudss.solver.CuDSSSolver`. "
+                "The optional dependency `spineax` is required to use the `cudss` solver."
             ) from e
         cudss_solver = None
 
         def solve(A, b, _):
             nonlocal cudss_solver
-            A = A.sum_duplicates(nse=A.nse)
-            A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A)
+            A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A.sum_duplicates(nse=A.nse))
 
             csr_values  = A_bcsr.data
             if cudss_solver is None:
