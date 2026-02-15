@@ -21,6 +21,7 @@ from typing import Optional, Callable
 import logging
 from .assembler import create_J_bc_function, create_res_bc_function
 from .DCboundary import DirichletBC
+import lineax as lx
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,44 @@ def _safe_negate(x):
 
 
 @dataclass(frozen=True)
+class CUDSSOptions:
+    """Options specific to the NVIDIA cuDSS direct solver.
+
+    cuDSS matrix configuration is defined by two orthogonal properties:
+    1) Matrix View (which triangular portion is provided)
+    2) Matrix Type (algebraic structure of the matrix)
+
+    Matrix View (cudssMatrixView_t):
+    - 0: FULL  (all entries provided)
+    - 1: UPPER (only upper triangular part)
+    - 2: LOWER (only lower triangular part)
+
+    Matrix Type (cudssMatrixType_t):
+    - 0: GENERAL   (non-symmetric)
+    - 1: SYMMETRIC (real symmetric)
+    - 2: HERMITIAN (complex conjugate symmetric)
+    - 3: SPD       (symmetric positive definite)
+
+    Typical combinations:
+    - General sparse:  view=FULL,  type=GENERAL
+    - Symmetric:       view=LOWER/UPPER, type=SYMMETRIC
+    - Hermitian:       view=LOWER/UPPER, type=HERMITIAN
+    - Cholesky (SPD):  view=LOWER/UPPER, type=SPD
+
+    Notes
+    -----
+    For GENERAL matrices, cuDSS treats the view as FULL (the view setting is
+    effectively ignored).
+    """
+
+    # {0: gen, 1: sym, 2: herm, 3: spd, 4: hpd}
+    mtype_id: int = 0
+    # {0: full, 1: triu, 2: tril}
+    mview_id: int = 0
+    device_id: int = 0
+
+
+@dataclass(frozen=True)
 class SolverOptions:
     """Configuration options for the Newton solver.
 
@@ -65,7 +104,7 @@ class SolverOptions:
     max_iter : int, default 100
         Maximum number of Newton iterations
     linear_solver : str, default "cudss"
-        Linear solver type. Options: "cg", "bicgstab", "gmres", "spsolve", "cudss"
+        Linear solver type. Options: "cg", "bicgstab", "gmres", "spsolve", "cudss", "lineax"
     preconditioner : callable, optional
         Preconditioner function for linear solver
     use_jacobi_preconditioner : bool, default False
@@ -80,6 +119,8 @@ class SolverOptions:
         Maximum iterations for linear solver
     linear_solver_x0_fn : callable, optional
         Custom function to compute initial guess: f(current_sol) -> x0
+    cudss_options : CUDSSOptions, optional
+        CuDSS-specific options (mtype_id, mview_id, device_id)
     line_search_max_backtracks : int, default 30
         Maximum number of backtracking steps in Armijo line search
     line_search_c1 : float, default 1e-4
@@ -101,7 +142,7 @@ class SolverOptions:
     tol: float = 1e-6
     rel_tol: float = 1e-8
     max_iter: int = 100
-    linear_solver: str = "cudss"  # Options: "cg", "bicgstab", "gmres", "spsolve", "cudss"
+    linear_solver: str = "cudss"  # Options: "cg", "bicgstab", "gmres", "spsolve", "cudss", "lineax_bicgstab"
     preconditioner: Optional[Callable] = None
     use_jacobi_preconditioner: bool = False
     jacobi_shift: float = 1e-12
@@ -109,6 +150,7 @@ class SolverOptions:
     linear_solver_atol: float = 1e-10
     linear_solver_maxiter: int = 10000
     linear_solver_x0_fn: Optional[Callable] = None  # Function to compute initial guess: f(current_sol) -> x0
+    cudss_options: Optional[CUDSSOptions] = CUDSSOptions(0, 0, 0)
     line_search_max_backtracks: int = 30
     line_search_c1: float = 1e-4
     line_search_rho: float = 0.5
@@ -187,14 +229,17 @@ def create_linear_solve_fn(solver_options: SolverOptions):
     Notes
     -----
     The returned function selects between "cg", "bicgstab", "gmres", "spsolve",
-    and "cudss". The "spsolve" option is only available on CPU, while
+    "cudss", "lineax". The "spsolve" option is only available on CPU, while
     "cudss" is only available on CUDA GPUs (tested with CUDA 12). To
     install the CUDSS solver, use `pip install feax[cuda12]`.
     """
 
-    def choose_preconditioner(A):
+    def choose_preconditioner(A, input_structure=None):
         if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
-            return create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+            M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
+            if solver_options.linear_solver.startswith("lineax"):
+                return lx.FunctionLinearOperator(M, input_structure=input_structure)
+            return M
         return solver_options.preconditioner
 
     # Define solver functions for JAX compatibility (no conditionals inside JAX-traced code)
@@ -232,6 +277,42 @@ def create_linear_solve_fn(solver_options: SolverOptions):
                 maxiter=solver_options.linear_solver_maxiter
             )
             return x
+        return solve
+
+    if solver_options.linear_solver == "lineax":
+        def solve(A, b, x0):
+            input_structure = jax.ShapeDtypeStruct((A.shape[1],), b.dtype)
+            M = choose_preconditioner(A, input_structure=input_structure)
+
+            def matvec(v):
+                return A @ v
+
+            operator = lx.FunctionLinearOperator(matvec, input_structure=input_structure)
+
+            options = {}
+            if x0 is not None:
+                options["y0"] = x0
+            if M is not None:
+                options["preconditioner"] = M
+
+            solver = lx.BiCGStab(
+                rtol=solver_options.linear_solver_tol,
+                atol=solver_options.linear_solver_atol,
+                max_steps=solver_options.linear_solver_maxiter,
+            )
+
+            sol = lx.linear_solve(operator, b, solver=solver, options=options)
+            if solver_options.verbose:
+                num_steps = sol.stats.get("num_steps", -1)
+                max_steps = sol.stats.get("max_steps", -1)
+                jax.debug.print(
+                    "lineax: status={status} steps=({steps}/{max_steps})",
+                    status=lx.RESULTS[sol.result],
+                    steps=num_steps,
+                    max_steps=max_steps,
+                )
+            return sol.value
+
         return solve
 
     if solver_options.linear_solver == "spsolve":
@@ -280,16 +361,16 @@ def create_linear_solve_fn(solver_options: SolverOptions):
                 cudss_solver = CuDSSSolver(
                     csr_offsets=csr_offsets,
                     csr_columns=csr_columns,
-                    device_id=0,
-                    mtype_id=0,
-                    mview_id=0,
+                    device_id=solver_options.cudss_options.device_id,
+                    mtype_id=solver_options.cudss_options.mtype_id,
+                    mview_id=solver_options.cudss_options.mview_id,
                 )
             x, _ = cudss_solver(b, csr_values)
             return x
         return solve
         
 
-    valid_solvers = ("cg", "bicgstab", "gmres", "spsolve", "cudss")
+    valid_solvers = ("cg", "bicgstab", "gmres", "spsolve", "cudss", "lineax")
     raise ValueError(
         f"Unknown linear solver: {solver_options.linear_solver}. "
         f"Choose from {valid_solvers}"
@@ -1238,6 +1319,33 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
             use_jacobi_preconditioner=True,
             linear_solver_maxiter=10000  # Sufficient iterations for adjoint solve
         )
+
+    uses_cg = solver_options.linear_solver == "cg" or adjoint_solver_options.linear_solver == "cg"
+    if uses_cg and not bc.symmetric_elimination:
+        logger.warning(
+            "DirichletBC.symmetric_elimination is False while CG is selected. Row-only BC elimination breaks symmetry, "
+            "so CG may struggle or fail to converge. Consider symmetric_elimination=True or a nonsymmetric solver."
+        )
+
+    def _validate_cudss_options(opts: CUDSSOptions, role: str) -> None:
+        if opts.mview_id != 0:
+            raise ValueError(
+                f"cudss_options.mview_id must be 0 (FULL) for {role} solver"
+            )
+        if opts.mtype_id not in (0, 1):
+            raise ValueError(
+                f"cudss_options.mtype_id must be 0 (GENERAL) or 1 (SYMMETRIC) for {role} solver."
+            )
+        if opts.mtype_id == 1 and not bc.symmetric_elimination:
+            raise ValueError(
+                f"cudss_options.mtype_id=1 (SYMMETRIC) for {role} solver requires "
+                "DirichletBC.symmetric_elimination=True to preserve symmetry."
+            )
+
+    if solver_options.linear_solver == "cudss":
+        _validate_cudss_options(solver_options.cudss_options, "primary")
+    if adjoint_solver_options.linear_solver == "cudss":
+        _validate_cudss_options(adjoint_solver_options.cudss_options, "adjoint")
 
     # Branch between standard and reduced solver
     if P is not None:
