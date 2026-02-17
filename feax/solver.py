@@ -271,6 +271,76 @@ class SolverOptions:
         if self.cudss_options is None:
             object.__setattr__(self, 'cudss_options', CUDSSOptions())
 
+    @classmethod
+    def from_problem(cls, problem, **kwargs):
+        """Create SolverOptions with automatic configuration based on Problem.
+
+        This factory method auto-configures solver options to match the Problem's
+        matrix storage format. For Problems with UPPER/LOWER matrix_view, it
+        automatically sets the cuDSS solver to use matching matrix view.
+
+        Parameters
+        ----------
+        problem : Problem
+            The finite element problem instance
+        **kwargs : dict
+            Additional SolverOptions parameters to override defaults
+
+        Returns
+        -------
+        SolverOptions
+            Configured solver options matching the problem structure
+
+        Examples
+        --------
+        >>> problem = Problem(mesh, vec=3, dim=3, matrix_view='UPPER')
+        >>> solver_opts = SolverOptions.from_problem(problem, tol=1e-8)
+        >>> # Automatically sets cudss_options.matrix_view = UPPER
+
+        Notes
+        -----
+        - UPPER/LOWER matrix_view requires SYMMETRIC matrix type
+        - Automatically validates compatibility
+        """
+        from feax.problem import MatrixView
+
+        # Determine cudss_options based on problem.matrix_view
+        cudss_kwargs = {}
+        if hasattr(problem, 'matrix_view'):
+            if problem.matrix_view == MatrixView.UPPER:
+                cudss_kwargs['matrix_view'] = CUDSSMatrixView.UPPER
+                logger.info("Problem uses UPPER triangular storage → Setting cuDSS matrix_view=UPPER")
+            elif problem.matrix_view == MatrixView.LOWER:
+                cudss_kwargs['matrix_view'] = CUDSSMatrixView.LOWER
+                logger.info("Problem uses LOWER triangular storage → Setting cuDSS matrix_view=LOWER")
+            elif problem.matrix_view == MatrixView.FULL:
+                cudss_kwargs['matrix_view'] = CUDSSMatrixView.FULL
+
+            # For UPPER/LOWER, force SYMMETRIC matrix type
+            if problem.matrix_view in (MatrixView.UPPER, MatrixView.LOWER):
+                cudss_kwargs['matrix_type'] = CUDSSMatrixType.SYMMETRIC
+                logger.info("Triangular storage requires SYMMETRIC matrix type → Setting matrix_type=SYMMETRIC")
+
+        # Allow user to override cudss_options
+        if 'cudss_options' not in kwargs:
+            kwargs['cudss_options'] = CUDSSOptions(**cudss_kwargs)
+        else:
+            # User provided cudss_options - validate compatibility
+            user_cudss = kwargs['cudss_options']
+            if hasattr(problem, 'matrix_view'):
+                if problem.matrix_view == MatrixView.UPPER and user_cudss.matrix_view != CUDSSMatrixView.UPPER:
+                    logger.warning(
+                        f"Problem uses UPPER storage but cudss_options.matrix_view={user_cudss.matrix_view.name}. "
+                        f"Consider using matrix_view=CUDSSMatrixView.UPPER for consistency."
+                    )
+                elif problem.matrix_view == MatrixView.LOWER and user_cudss.matrix_view != CUDSSMatrixView.LOWER:
+                    logger.warning(
+                        f"Problem uses LOWER storage but cudss_options.matrix_view={user_cudss.matrix_view.name}. "
+                        f"Consider using matrix_view=CUDSSMatrixView.LOWER for consistency."
+                    )
+
+        return cls(**kwargs)
+
 
 def create_jacobi_preconditioner(A: jax.experimental.sparse.BCOO, shift: float = 1e-12) -> jax.experimental.sparse.BCOO:
     """Create Jacobi (diagonal) preconditioner from sparse matrix.
@@ -1434,17 +1504,27 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
         )
 
     def _validate_cudss_options(opts: CUDSSOptions, role: str) -> None:
-        if opts.matrix_view != CUDSSMatrixView.FULL:
+        # Matrix view validation - allow UPPER/LOWER for triangular storage
+        # The Problem class handles the actual storage format (FULL/UPPER/LOWER)
+        # The cuDSS solver just needs to know how to interpret that storage
+        if opts.matrix_view not in (CUDSSMatrixView.FULL, CUDSSMatrixView.UPPER, CUDSSMatrixView.LOWER):
             raise ValueError(
-                f"cudss_options.matrix_view must be FULL for {role} solver. "
-                f"With symmetric elimination, the full matrix is always required. "
+                f"cudss_options.matrix_view must be FULL, UPPER, or LOWER for {role} solver. "
                 f"Got: {opts.matrix_view.name}"
             )
-        if opts.matrix_type not in (CUDSSMatrixType.GENERAL, CUDSSMatrixType.SYMMETRIC):
+
+        # For UPPER/LOWER views, SYMMETRIC matrix type is required
+        if opts.matrix_view in (CUDSSMatrixView.UPPER, CUDSSMatrixView.LOWER):
+            if opts.matrix_type != CUDSSMatrixType.SYMMETRIC:
+                logger.warning(
+                    f"{role} solver: Using matrix_view={opts.matrix_view.name} with matrix_type={opts.matrix_type.name}. "
+                    f"For best performance, use matrix_type=SYMMETRIC with triangular storage."
+                )
+
+        if opts.matrix_type not in (CUDSSMatrixType.GENERAL, CUDSSMatrixType.SYMMETRIC, CUDSSMatrixType.SPD):
             raise ValueError(
-                f"cudss_options.matrix_type must be GENERAL or SYMMETRIC for {role} solver. "
-                f"Got: {opts.matrix_type.name}. "
-                f"Note: SPD (Symmetric Positive Definite) may also work if your problem is positive definite."
+                f"cudss_options.matrix_type must be GENERAL, SYMMETRIC, or SPD for {role} solver. "
+                f"Got: {opts.matrix_type.name}."
             )
 
     if solver_options.linear_solver == "cudss":

@@ -681,64 +681,116 @@ def compute_residual_vars_helper(problem: 'Problem',
     return res_list
 
 
-def get_J(problem: 'Problem', 
-          sol_list: List[np.ndarray], 
-          internal_vars: InternalVars) -> sparse.BCOO:
-    """Compute Jacobian matrix with separated internal variables.
-    
-    Assembles the global Jacobian matrix by computing derivatives of the weak
-    form with respect to the solution variables. Uses forward-mode automatic
-    differentiation for element-level Jacobians.
-    
+def _get_J(problem: 'Problem',
+           sol_list: List[np.ndarray],
+           internal_vars: InternalVars) -> sparse.BCOO:
+    """Internal function to compute Jacobian matrix.
+
+    WARNING: This is a private function. Do not call directly from user code.
+    When used with JIT-compiled solvers and cuDSS backend, calling this
+    function from outside the JIT boundary can cause GPU memory conflicts.
+
+    Use get_jacobian_info() for safe access to Jacobian statistics.
+
     Parameters
     ----------
     problem : Problem
         The finite element problem containing mesh and physics definitions.
     sol_list : list of np.ndarray
         Solution arrays for each variable.
-        Each array has shape (num_total_nodes, vec).
     internal_vars : InternalVars
         Container with material properties and loading parameters.
-    
+
     Returns
     -------
     sparse.BCOO
         Sparse Jacobian matrix in JAX BCOO format.
-        Shape: (num_total_dofs, num_total_dofs).
-    
-    Examples
-    --------
-    >>> J = get_J(problem, [solution], internal_vars)
-    >>> print(f"Jacobian shape: {J.shape}, nnz: {J.nnz}")
-    
-    Notes
-    -----
-    The Jacobian is assembled in sparse format for memory efficiency,
-    particularly important for large 3D problems.
     """
     cells_sol_list = [sol[cells] for cells, sol in zip(problem.cells_list, sol_list)]
     cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
-    
+
     # Compute Jacobian values from volume integrals
     _, cells_jac_flat = split_and_compute_cell(problem, cells_sol_flat, True, internal_vars.volume_vars)
-    
+
     # Collect all Jacobian arrays to avoid repeated concatenation
     V_arrays = [cells_jac_flat.reshape(-1)]
-    
+
     # Add Jacobian values from surface integrals
     _, cells_jac_face_flat = compute_face(problem, cells_sol_flat, True, internal_vars.surface_vars)
     for cells_jac_f_flat in cells_jac_face_flat:
         V_arrays.append(cells_jac_f_flat.reshape(-1))
-    
+
     # Single concatenation to avoid memory overhead
     V = np.concatenate(V_arrays) if len(V_arrays) > 1 else np.array(V_arrays[0])
 
-    # Build BCOO sparse matrix
-    indices = np.stack([problem.I, problem.J], axis=1)
+    # Use pre-computed filtered indices (JIT-compatible)
     shape = (problem.num_total_dofs_all_vars, problem.num_total_dofs_all_vars)
-    J = sparse.BCOO((V, indices), shape=shape)
-    
+
+    if hasattr(problem, 'filter_indices') and problem.filter_indices is not None:
+        # Use pre-computed integer indices for filtering (JIT-compatible)
+        filtered_data = V[problem.filter_indices]
+        filtered_indices = np.stack([problem.I_filtered, problem.J_filtered], axis=1)
+        J = sparse.BCOO((filtered_data, filtered_indices), shape=shape)
+    else:
+        # FULL - use pre-filtered indices (which are same as I, J for FULL)
+        indices = np.stack([problem.I_filtered, problem.J_filtered], axis=1)
+        J = sparse.BCOO((V, indices), shape=shape)
+
     return J
+
+
+def get_jacobian_info(problem: 'Problem',
+                      sol_list: List[np.ndarray],
+                      internal_vars: InternalVars) -> dict:
+    """Get Jacobian matrix information without full matrix construction.
+
+    This function provides safe access to Jacobian statistics that works
+    correctly with JIT-compiled solvers and cuDSS backend. Unlike the
+    internal _get_J function, this does not cause GPU memory conflicts.
+
+    Parameters
+    ----------
+    problem : Problem
+        The finite element problem definition.
+    sol_list : list of np.ndarray
+        Solution arrays for each variable.
+    internal_vars : InternalVars
+        Internal variables container.
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - 'nnz': Number of non-zero entries (int)
+        - 'shape': Matrix shape (tuple)
+        - 'matrix_view': Matrix storage format (MatrixView enum)
+
+    Examples
+    --------
+    >>> info = get_jacobian_info(problem, sol_list, internal_vars)
+    >>> print(f"Jacobian NNZ: {info['nnz']:,}")
+    >>> print(f"Matrix view: {info['matrix_view'].name}")
+
+    Notes
+    -----
+    This function is safe to call from user code and does not interfere
+    with JIT-compiled solvers using cuDSS backend.
+    """
+    shape = (problem.num_total_dofs_all_vars, problem.num_total_dofs_all_vars)
+
+    # Calculate NNZ based on matrix view
+    if hasattr(problem, 'filter_indices') and problem.filter_indices is not None:
+        nnz = len(problem.filter_indices)
+    elif hasattr(problem, 'I_filtered'):
+        nnz = len(problem.I_filtered)
+    else:
+        nnz = len(problem.I)
+
+    return {
+        'nnz': nnz,
+        'shape': shape,
+        'matrix_view': problem.matrix_view if hasattr(problem, 'matrix_view') else None
+    }
 
 
 def get_res(problem: 'Problem', 
@@ -818,7 +870,7 @@ def create_J_bc_function(problem: 'Problem', bc: 'DirichletBC') -> Callable[[np.
     
     def J_bc_func(sol_flat, internal_vars: InternalVars):
         sol_list = problem.unflatten_fn_sol_list(sol_flat)
-        J = get_J(problem, sol_list, internal_vars)
+        J = _get_J(problem, sol_list, internal_vars)
         return apply_boundary_to_J(bc, J)
     
     return J_bc_func

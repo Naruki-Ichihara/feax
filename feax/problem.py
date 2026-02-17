@@ -11,9 +11,26 @@ import jax.numpy as np
 import jax.flatten_util
 from dataclasses import dataclass
 from typing import List, Tuple, Union, Optional, Callable, Any
+from enum import Enum
 
 from feax.mesh import Mesh
 from feax.fe import FiniteElement
+
+
+class MatrixView(Enum):
+    """Matrix storage format for sparse assembly.
+
+    Controls which entries are stored in the assembled matrix:
+    - FULL: Store all entries (default, backward compatible)
+    - UPPER: Store only upper triangular entries (j >= i)
+    - LOWER: Store only lower triangular entries (j <= i)
+
+    For symmetric problems, UPPER or LOWER reduces memory by ~50%
+    and enables optimized solvers like Cholesky factorization.
+    """
+    FULL = 0
+    UPPER = 1
+    LOWER = 2
 
 @dataclass
 @jax.tree_util.register_pytree_node_class
@@ -38,9 +55,12 @@ class Problem:
         Gaussian quadrature order(s). Default determined by element type
     location_fns : Optional[List[Callable]], optional
         Functions defining boundary locations for surface integrals
+    matrix_view : Union[MatrixView, str], optional
+        Matrix storage format: 'FULL' (default), 'UPPER', or 'LOWER'.
+        Use UPPER for symmetric problems to reduce memory by ~50%.
     additional_info : Tuple[Any, ...], optional
         Additional problem-specific information passed to custom_init()
-        
+
     Attributes
     ----------
     num_vars : int
@@ -70,23 +90,31 @@ class Problem:
     ele_type: Union[str, List[str]] = 'HEX8'
     gauss_order: Optional[Union[int, List[int]]] = None
     location_fns: Optional[List[Callable]] = None
+    matrix_view: Union[MatrixView, str] = MatrixView.FULL
     additional_info: Tuple[Any, ...] = ()
 
     def __post_init__(self) -> None:
         """Initialize all state data for the finite element problem.
-        
+
         This method handles the conversion of single variables to lists for
         uniform processing, creates finite element objects, computes assembly
         indices, and pre-computes geometric data for efficient assembly.
-        
+
         The initialization process:
         1. Normalizes input parameters to list format
-        2. Creates FiniteElement objects for each variable  
+        2. Creates FiniteElement objects for each variable
         3. Computes sparse matrix assembly indices (I, J)
         4. Pre-computes shape functions and Jacobian data
         5. Sets up boundary condition data structures
         6. Calls custom_init() for problem-specific setup
         """
+        # Convert matrix_view string to enum if needed
+        if isinstance(self.matrix_view, str):
+            try:
+                object.__setattr__(self, 'matrix_view', MatrixView[self.matrix_view.upper()])
+            except KeyError:
+                raise ValueError(f"Invalid matrix_view: {self.matrix_view}. Must be 'FULL', 'UPPER', or 'LOWER'")
+
         if type(self.mesh) != type([]):
             self.mesh = [self.mesh]
             self.vec = [self.vec]
@@ -124,6 +152,10 @@ class Problem:
         inds = np.array(jax.vmap(find_ind)(*self.cells_list))
         self.I = np.repeat(inds[:, :, None], inds.shape[1], axis=2).reshape(-1)
         self.J = np.repeat(inds[:, None, :], inds.shape[1], axis=1).reshape(-1)
+
+        # Note: I and J are kept as FULL for assembly
+        # Filtering to UPPER/LOWER happens in get_J() after computing values
+
         self.cells_list_face_list = []
 
         for i, boundary_inds in enumerate(self.boundary_inds_list):
@@ -131,9 +163,27 @@ class Problem:
             inds_face = np.array(jax.vmap(find_ind)(*cells_list_face)) # (num_selected_faces, num_nodes*vec + ...)
             I_face = np.repeat(inds_face[:, :, None], inds_face.shape[1], axis=2).reshape(-1)
             J_face = np.repeat(inds_face[:, None, :], inds_face.shape[1], axis=1).reshape(-1)
+
             self.I = np.hstack((self.I, I_face))
             self.J = np.hstack((self.J, J_face))
             self.cells_list_face_list.append(cells_list_face)
+
+        # Pre-compute filtering indices for UPPER/LOWER views (for JIT compatibility)
+        # Store integer indices instead of boolean mask to enable JIT compilation
+        if self.matrix_view == MatrixView.UPPER:
+            mask = self.J >= self.I
+            self.filter_indices = np.where(mask)[0]
+            self.I_filtered = self.I[mask]
+            self.J_filtered = self.J[mask]
+        elif self.matrix_view == MatrixView.LOWER:
+            mask = self.J <= self.I
+            self.filter_indices = np.where(mask)[0]
+            self.I_filtered = self.I[mask]
+            self.J_filtered = self.J[mask]
+        else:  # FULL
+            self.filter_indices = None
+            self.I_filtered = self.I
+            self.J_filtered = self.J
      
         self.cells_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*self.cells_list) # (num_cells, num_nodes + ...)
 
@@ -341,6 +391,7 @@ class Problem:
             'ele_type': self.ele_type,
             'gauss_order': self.gauss_order,
             'location_fns': self.location_fns,
+            'matrix_view': self.matrix_view,
             'additional_info': self.additional_info,
         }
         return dynamic, static
@@ -369,6 +420,7 @@ class Problem:
             ele_type=static['ele_type'],
             gauss_order=static['gauss_order'],
             location_fns=static['location_fns'],
+            matrix_view=static.get('matrix_view', MatrixView.FULL),  # Default for backward compatibility
             additional_info=static['additional_info'],
         )
 

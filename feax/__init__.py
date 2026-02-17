@@ -9,12 +9,12 @@ except (ImportError, PackageNotFoundError):
     __version__ = "0.1.0"
 
 # Main API
-from .problem import Problem
+from .problem import Problem, MatrixView
 from .internal_vars import InternalVars
-from .assembler import get_J, get_res, create_J_bc_function, create_res_bc_function
+from .assembler import get_jacobian_info, get_res, create_J_bc_function, create_res_bc_function
 from .mesh import Mesh
 from .DCboundary import DirichletBC, apply_boundary_to_J, apply_boundary_to_res, DirichletBCSpec, DirichletBCConfig, dirichlet_bc_config
-from .solver import newton_solve, SolverOptions, CUDSSOptions, create_solver, linear_solve, newton_solve_fori, newton_solve_py
+from .solver import newton_solve, SolverOptions, CUDSSOptions, CUDSSMatrixType, CUDSSMatrixView, create_solver, linear_solve, newton_solve_fori, newton_solve_py
 from .utils import zero_like_initial_guess
 
 # Note: Experimental features available in feax.experimental
