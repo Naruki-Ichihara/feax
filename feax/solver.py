@@ -1494,14 +1494,9 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
     if solver_options is None:
         solver_options = SolverOptions()
     if adjoint_solver_options is None:
-        adjoint_solver_options = SolverOptions(
-            linear_solver="bicgstab",  # More robust than CG
-            tol=1e-6,  # Relaxed tolerance for better convergence
-            linear_solver_tol=1e-8,  # Tolerance for iterative linear solver
-            linear_solver_atol=1e-10,  # Absolute tolerance for iterative linear solver
-            use_jacobi_preconditioner=True,
-            linear_solver_maxiter=10000  # Sufficient iterations for adjoint solve
-        )
+        # Default: use same solver options for adjoint as forward
+        # This is simpler and works well for symmetric problems
+        adjoint_solver_options = solver_options
 
     def _validate_cudss_options(opts: CUDSSOptions, role: str) -> None:
         # Matrix view validation - allow UPPER/LOWER for triangular storage
@@ -1608,7 +1603,21 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
         
         J = J_bc_func(sol, internal_vars)
         v_vec = jax.flatten_util.ravel_pytree(v)[0]
-        adjoint_vec = __linear_solve_adjoint(J.transpose(), v_vec, adjoint_solver_options, bc)
+
+        # For symmetric matrices with UPPER/LOWER storage, don't transpose
+        # Since A^T = A for symmetric matrices, we can use J directly
+        # This avoids the index-swapping issue (UPPER -> LOWER or vice versa)
+        use_transpose = True
+        if (adjoint_solver_options.linear_solver == "cudss" and
+            adjoint_solver_options.cudss_options.matrix_view in
+            (CUDSSMatrixView.UPPER, CUDSSMatrixView.LOWER)):
+            # Symmetric matrix with triangular storage: A^T = A
+            use_transpose = False
+            logger.debug(f"Using J directly (no transpose) for adjoint solve with "
+                        f"matrix_view={adjoint_solver_options.cudss_options.matrix_view.name}")
+
+        J_adjoint = J.transpose() if use_transpose else J
+        adjoint_vec = __linear_solve_adjoint(J_adjoint, v_vec, adjoint_solver_options, bc)
         sol_list = problem.unflatten_fn_sol_list(sol)
         vjp_linear_fn = get_vjp_contraint_fn_params(internal_vars, sol_list)
         vjp_result = vjp_linear_fn(problem.unflatten_fn_sol_list(adjoint_vec))

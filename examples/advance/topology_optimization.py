@@ -71,7 +71,7 @@ bc = bc_config.create_bc(problem)
 
 solver_opts = fe.SolverOptions.from_problem(problem)
 solver = fe.solver.create_solver(
-    problem, bc, solver_options=solver_opts, iter_num=1
+    problem, bc, solver_options=solver_opts, adjoint_solver_options=solver_opts, iter_num=1
 )
 initial = fe.utils.zero_like_initial_guess(problem, bc)
 
