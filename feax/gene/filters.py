@@ -6,6 +6,7 @@ for design variable smoothing in generative design workflows.
 
 import jax
 import jax.numpy as np
+import jax.experimental.sparse as jsparse
 import feax as fe
 from feax.problem import Problem
 from typing import Callable, Tuple
@@ -199,48 +200,80 @@ def helmholtz_filter(rho_source, mesh, radius, P=None, solver_options=None):
 # ============================================================================
 
 
-def _compute_density_filter_weights(points: np.ndarray, radius: float,
-                                   weight_type: str = "cone") -> np.ndarray:
-    """Compute dense filter weight matrix for density filtering.
+def _compute_density_filter_weights_sparse(points, radius: float,
+                                           weight_type: str = "cone", batch_size: int = 500):
+    """Compute sparse filter weight matrix for density filtering (memory-efficient).
 
     Args:
-        points: Node coordinates (num_nodes, dim)
+        points: Node coordinates (num_nodes, dim) as JAX or numpy array
         radius: Filter radius
         weight_type: Type of weight function:
             - "cone": Linear decay w = max(0, r - d) (default, most common in topology optimization)
             - "gaussian": Gaussian decay w = exp(-(d/r)^2)
             - "constant": Constant weight within radius
+        batch_size: Number of nodes to process at once (smaller = less memory, slower)
 
     Returns:
-        Normalized weight matrix (num_nodes, num_nodes) where weights[i, j] is the
-        normalized weight from node j to node i
+        Sparse weight matrix in BCOO format and row sums for normalization
     """
-    # Compute pairwise distances
-    # For large meshes, consider using spatial partitioning (KD-tree, etc.)
-    diff = points[:, None, :] - points[None, :, :]  # (num_nodes, num_nodes, dim)
-    distances = np.linalg.norm(diff, axis=2)  # (num_nodes, num_nodes)
+    import numpy as onp
 
-    # Compute raw weights based on distance
-    if weight_type == "cone":
-        # Linear cone: w = max(0, r - d)
-        # Most common in topology optimization literature
-        raw_weights = np.maximum(0.0, radius - distances)
-    elif weight_type == "gaussian":
-        # Gaussian: w = exp(-(d/r)^2)
-        # Smoother but less localized
-        raw_weights = np.exp(-(distances / radius) ** 2)
-    elif weight_type == "constant":
-        # Constant within radius
-        raw_weights = np.where(distances <= radius, 1.0, 0.0)
-    else:
-        raise ValueError(f"Unknown weight_type: {weight_type}. "
-                        f"Choose 'cone', 'gaussian', or 'constant'")
+    # Convert to numpy for preprocessing
+    points_np = onp.array(points) if hasattr(points, 'shape') else points
+    num_nodes = points_np.shape[0]
 
-    # Normalize each row (so each filtered value is a weighted average)
-    row_sums = np.sum(raw_weights, axis=1, keepdims=True)
-    normalized_weights = raw_weights / (row_sums + 1e-12)  # Avoid division by zero
+    # Build sparse matrix in COO format using batch processing
+    rows = []
+    cols = []
+    data = []
 
-    return normalized_weights
+    # Process nodes in batches to avoid memory issues
+    for start_idx in range(0, num_nodes, batch_size):
+        end_idx = min(start_idx + batch_size, num_nodes)
+        batch_points = points_np[start_idx:end_idx]
+
+        # Compute distances from batch to all nodes
+        # (batch_size, 1, dim) - (1, num_nodes, dim) -> (batch_size, num_nodes, dim)
+        diff = batch_points[:, onp.newaxis, :] - points_np[onp.newaxis, :, :]
+        distances = onp.linalg.norm(diff, axis=2)
+
+        # Find neighbors within radius and compute weights
+        for local_i, global_i in enumerate(range(start_idx, end_idx)):
+            dists = distances[local_i]
+            neighbors = onp.where(dists <= radius)[0]
+
+            if len(neighbors) > 0:
+                neighbor_dists = dists[neighbors]
+
+                # Compute raw weights based on distance
+                if weight_type == "cone":
+                    weights = onp.maximum(0.0, radius - neighbor_dists)
+                elif weight_type == "gaussian":
+                    weights = onp.exp(-(neighbor_dists / radius) ** 2)
+                elif weight_type == "constant":
+                    weights = onp.ones_like(neighbor_dists)
+                else:
+                    raise ValueError(f"Unknown weight_type: {weight_type}")
+
+                # Store COO entries
+                rows.extend([global_i] * len(neighbors))
+                cols.extend(neighbors.tolist())
+                data.extend(weights.tolist())
+
+    # Convert to JAX BCOO sparse matrix
+    rows = onp.array(rows, dtype=onp.int32)
+    cols = onp.array(cols, dtype=onp.int32)
+    data = onp.array(data)
+    indices = onp.stack([rows, cols], axis=1)
+
+    # Create BCOO matrix
+    sparse_matrix = jsparse.BCOO((np.array(data), np.array(indices)),
+                                 shape=(num_nodes, num_nodes))
+
+    # Compute row sums for normalization and convert to dense array
+    row_sums = np.array(sparse_matrix.sum(axis=1).todense())
+
+    return sparse_matrix, row_sums
 
 
 def create_density_filter(mesh, radius: float, weight_type: str = "cone",
@@ -290,8 +323,8 @@ def create_density_filter(mesh, radius: float, weight_type: str = "cone",
     """
     points = mesh.points  # (num_nodes, dim)
 
-    # Pre-compute filter weight matrix (done once at filter creation)
-    weight_matrix = _compute_density_filter_weights(points, radius, weight_type)
+    # Pre-compute sparse filter weight matrix (done once at filter creation)
+    weight_matrix, row_sums = _compute_density_filter_weights_sparse(points, radius, weight_type)
 
     @jax.jit
     def filter_fn(rho: np.ndarray) -> np.ndarray:
@@ -303,8 +336,10 @@ def create_density_filter(mesh, radius: float, weight_type: str = "cone",
         Returns:
             Filtered design variables at nodes (num_nodes,)
         """
-        # Simple matrix-vector multiplication for weighted averaging
-        rho_filtered = np.dot(weight_matrix, rho)
+        # Sparse matrix-vector multiplication for weighted averaging
+        rho_weighted = weight_matrix @ rho
+        # Normalize by row sums
+        rho_filtered = rho_weighted / (row_sums + 1e-12)
         return rho_filtered
 
     return filter_fn

@@ -11,6 +11,7 @@ from feax.gene.responses import create_compliance_fn, create_volume_fn
 import jax
 import jax.numpy as np
 import os
+from feax.problem import MatrixView
 
 # Material properties
 elastic_moduli = 70e3
@@ -27,7 +28,7 @@ L = 100  # Length
 W = 20    # Width
 H = 20   # Height
 box_size = (L, W, H)
-mesh = fe.mesh.box_mesh(box_size, mesh_size=0.5)
+mesh = fe.mesh.box_mesh(box_size, mesh_size=2)
 tol = 1e-3  # Boundary tolerance
     
 # Locations
@@ -57,7 +58,7 @@ class LinearElasticity(fe.problem.Problem):
             return np.array([0., 0., -traction_mag])  # Downward traction
         return [surface_map]
     
-problem = LinearElasticity(mesh, vec=3, dim=3, location_fns=[right])
+problem = LinearElasticity(mesh, vec=3, dim=3, location_fns=[right], matrix_view=MatrixView.UPPER)
 
 # Boundary
 left_fix = fe.DCboundary.DirichletBCSpec(
@@ -68,30 +69,9 @@ left_fix = fe.DCboundary.DirichletBCSpec(
 bc_config = fe.DCboundary.DirichletBCConfig([left_fix])
 bc = bc_config.create_bc(problem)
 
-# Solver configuration
-# Forward solver: CUDSS with Jacobi preconditioning for better convergence
-solver_options = fe.solver.SolverOptions(
-    linear_solver="cudss",
-    linear_solver_tol=1e-10,
-    linear_solver_atol=1e-12,
-    use_jacobi_preconditioner=True,
-    linear_solver_maxiter=10000,
-)
-
-# Adjoint solver: relaxed tolerance for gradient computation
-adjoint_solver_options = fe.solver.SolverOptions(
-    linear_solver="cudss",
-    tol=1e-6,
-    linear_solver_tol=1e-8,
-    linear_solver_atol=1e-10,
-    use_jacobi_preconditioner=True,
-    linear_solver_maxiter=10000,
-)
-
+solver_opts = fe.SolverOptions.from_problem(problem)
 solver = fe.solver.create_solver(
-    problem, bc, solver_options,
-    adjoint_solver_options=adjoint_solver_options,
-    iter_num=1
+    problem, bc, solver_options=solver_opts, iter_num=1
 )
 initial = fe.utils.zero_like_initial_guess(problem, bc)
 
