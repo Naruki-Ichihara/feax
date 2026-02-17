@@ -23,7 +23,10 @@
       "Bash(timeout 180 python:*)",
       "Bash(timeout 300 python:*)",
       "Bash(ls:*)",
-      "WebSearch"
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:docs.nvidia.com)"
     ],
     "deny": [],
     "ask": []

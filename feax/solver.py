@@ -17,13 +17,33 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from dataclasses import dataclass
-from typing import Optional, Callable
+from typing import Optional, Callable, Union
+from enum import Enum
 import logging
 from .assembler import create_J_bc_function, create_res_bc_function
 from .DCboundary import DirichletBC
 import lineax as lx
 
 logger = logging.getLogger(__name__)
+
+
+class CUDSSMatrixType(Enum):
+    """Matrix type for cuDSS solver.
+
+    Determines which factorization method cuDSS will use internally.
+    """
+    GENERAL = 0      # Non-symmetric matrix (uses LU factorization)
+    SYMMETRIC = 1    # Symmetric matrix (uses LDLT factorization)
+    HERMITIAN = 2    # Hermitian matrix (uses LDLT for complex)
+    SPD = 3          # Symmetric Positive Definite (uses Cholesky factorization)
+    HPD = 4          # Hermitian Positive Definite (uses Cholesky for complex)
+
+
+class CUDSSMatrixView(Enum):
+    """Matrix view (which portion of matrix is provided) for cuDSS solver."""
+    FULL = 0   # Full matrix provided
+    UPPER = 1  # Upper triangular portion only
+    LOWER = 2  # Lower triangular portion only
 
 
 def _safe_negate(x):
@@ -58,37 +78,105 @@ class CUDSSOptions:
     """Options specific to the NVIDIA cuDSS direct solver.
 
     cuDSS matrix configuration is defined by two orthogonal properties:
-    1) Matrix View (which triangular portion is provided)
-    2) Matrix Type (algebraic structure of the matrix)
+    1) Matrix Type (algebraic structure determining factorization method)
+    2) Matrix View (which triangular portion is provided)
 
-    Matrix View (cudssMatrixView_t):
-    - 0: FULL  (all entries provided)
-    - 1: UPPER (only upper triangular part)
-    - 2: LOWER (only lower triangular part)
+    Parameters
+    ----------
+    matrix_type : CUDSSMatrixType or str or int, default GENERAL
+        Matrix type determining factorization method:
+        - GENERAL: Non-symmetric (uses LU factorization)
+        - SYMMETRIC: Symmetric indefinite (uses LDLT factorization)
+        - HERMITIAN: Hermitian indefinite (uses LDLT for complex)
+        - SPD: Symmetric Positive Definite (uses Cholesky factorization)
+        - HPD: Hermitian Positive Definite (uses Cholesky for complex)
+    matrix_view : CUDSSMatrixView or str or int, default FULL
+        Which portion of the matrix is provided:
+        - FULL: All entries provided
+        - UPPER: Upper triangular portion only
+        - LOWER: Lower triangular portion only
+    device_id : int, default 0
+        CUDA device ID to use
 
-    Matrix Type (cudssMatrixType_t):
-    - 0: GENERAL   (non-symmetric)
-    - 1: SYMMETRIC (real symmetric)
-    - 2: HERMITIAN (complex conjugate symmetric)
-    - 3: SPD       (symmetric positive definite)
-
-    Typical combinations:
-    - General sparse:  view=FULL,  type=GENERAL
-    - Symmetric:       view=LOWER/UPPER, type=SYMMETRIC
-    - Hermitian:       view=LOWER/UPPER, type=HERMITIAN
-    - Cholesky (SPD):  view=LOWER/UPPER, type=SPD
+    Examples
+    --------
+    >>> # Using enums (recommended)
+    >>> opts = CUDSSOptions(
+    ...     matrix_type=CUDSSMatrixType.SPD,
+    ...     matrix_view=CUDSSMatrixView.FULL
+    ... )
+    >>>
+    >>> # Using strings (convenient)
+    >>> opts = CUDSSOptions(matrix_type="SPD", matrix_view="FULL")
+    >>>
+    >>> # Using integers (backward compatible)
+    >>> opts = CUDSSOptions(matrix_type=3, matrix_view=0)
 
     Notes
     -----
+    Typical combinations:
+    - General sparse: matrix_type=GENERAL, matrix_view=FULL
+    - Symmetric: matrix_type=SYMMETRIC, matrix_view=FULL
+    - SPD (Cholesky): matrix_type=SPD, matrix_view=FULL
+
     For GENERAL matrices, cuDSS treats the view as FULL (the view setting is
     effectively ignored).
+
+    With symmetric elimination (default in FEAX), matrix_view should always be FULL
+    since both upper and lower triangular portions are modified.
     """
 
-    # {0: gen, 1: sym, 2: herm, 3: spd, 4: hpd}
-    mtype_id: int = 0
-    # {0: full, 1: triu, 2: tril}
-    mview_id: int = 0
+    matrix_type: Union[CUDSSMatrixType, str, int] = CUDSSMatrixType.SYMMETRIC
+    matrix_view: Union[CUDSSMatrixView, str, int] = CUDSSMatrixView.FULL
     device_id: int = 0
+
+    def __post_init__(self):
+        """Validate and convert matrix_type and matrix_view to enums if needed."""
+        # Convert matrix_type to enum if string or int
+        if isinstance(self.matrix_type, str):
+            try:
+                object.__setattr__(self, 'matrix_type', CUDSSMatrixType[self.matrix_type.upper()])
+            except KeyError:
+                raise ValueError(
+                    f"Invalid matrix_type string: {self.matrix_type}. "
+                    f"Valid options: {[t.name for t in CUDSSMatrixType]}"
+                )
+        elif isinstance(self.matrix_type, int):
+            try:
+                object.__setattr__(self, 'matrix_type', CUDSSMatrixType(self.matrix_type))
+            except ValueError:
+                raise ValueError(
+                    f"Invalid matrix_type integer: {self.matrix_type}. "
+                    f"Valid values: 0-4"
+                )
+
+        # Convert matrix_view to enum if string or int
+        if isinstance(self.matrix_view, str):
+            try:
+                object.__setattr__(self, 'matrix_view', CUDSSMatrixView[self.matrix_view.upper()])
+            except KeyError:
+                raise ValueError(
+                    f"Invalid matrix_view string: {self.matrix_view}. "
+                    f"Valid options: {[v.name for v in CUDSSMatrixView]}"
+                )
+        elif isinstance(self.matrix_view, int):
+            try:
+                object.__setattr__(self, 'matrix_view', CUDSSMatrixView(self.matrix_view))
+            except ValueError:
+                raise ValueError(
+                    f"Invalid matrix_view integer: {self.matrix_view}. "
+                    f"Valid values: 0-2"
+                )
+
+    @property
+    def mtype_id(self) -> int:
+        """Get matrix type as integer ID for cuDSS."""
+        return self.matrix_type.value
+
+    @property
+    def mview_id(self) -> int:
+        """Get matrix view as integer ID for cuDSS."""
+        return self.matrix_view.value
 
 
 @dataclass(frozen=True)
@@ -103,8 +191,11 @@ class SolverOptions:
         Relative tolerance for residual vector (l2 norm)
     max_iter : int, default 100
         Maximum number of Newton iterations
-    linear_solver : str, default "cudss"
-        Linear solver type. Options: "cg", "bicgstab", "gmres", "spsolve", "cudss", "lineax"
+    linear_solver : str, optional
+        Linear solver type. If not specified, automatically selects based on backend:
+        - GPU backend: "cudss" (cuDSS direct solver, requires CUDA)
+        - CPU backend: "cg" (Conjugate Gradient, JAX-native)
+        Manual options: "cg", "bicgstab", "gmres", "spsolve", "cudss", "lineax"
     preconditioner : callable, optional
         Preconditioner function for linear solver
     use_jacobi_preconditioner : bool, default False
@@ -142,7 +233,7 @@ class SolverOptions:
     tol: float = 1e-6
     rel_tol: float = 1e-8
     max_iter: int = 100
-    linear_solver: str = "cudss"  # Options: "cg", "bicgstab", "gmres", "spsolve", "cudss", "lineax_bicgstab"
+    linear_solver: Optional[str] = None  # Auto-detected based on backend if not specified
     preconditioner: Optional[Callable] = None
     use_jacobi_preconditioner: bool = False
     jacobi_shift: float = 1e-12
@@ -150,13 +241,35 @@ class SolverOptions:
     linear_solver_atol: float = 1e-10
     linear_solver_maxiter: int = 10000
     linear_solver_x0_fn: Optional[Callable] = None  # Function to compute initial guess: f(current_sol) -> x0
-    cudss_options: Optional[CUDSSOptions] = CUDSSOptions(0, 0, 0)
+    cudss_options: CUDSSOptions = None  # Will be set to default in __post_init__
     line_search_max_backtracks: int = 30
     line_search_c1: float = 1e-4
     line_search_rho: float = 0.5
     verbose: bool = False
     check_convergence: bool = False
     convergence_threshold: float = 0.1
+
+    def __post_init__(self):
+        """Auto-detect backend and set appropriate defaults."""
+        # Auto-detect linear solver based on backend if not specified
+        if self.linear_solver is None:
+            backend = jax.default_backend()
+            if backend == "gpu":
+                # Use cuDSS for GPU (faster direct solver)
+                object.__setattr__(self, 'linear_solver', 'cudss')
+                logger.info(f"JAX backend: {backend.upper()} | Auto-selected linear solver: cudss")
+            else:
+                # Use CG for CPU (JAX-native iterative solver)
+                object.__setattr__(self, 'linear_solver', 'cg')
+                logger.info(f"JAX backend: {backend.upper()} | Auto-selected linear solver: cg")
+        else:
+            # User manually specified solver - just show backend info
+            backend = jax.default_backend()
+            logger.info(f"JAX backend: {backend.upper()} | Linear solver: {self.linear_solver}")
+
+        # Set default cudss_options if not provided
+        if self.cudss_options is None:
+            object.__setattr__(self, 'cudss_options', CUDSSOptions())
 
 
 def create_jacobi_preconditioner(A: jax.experimental.sparse.BCOO, shift: float = 1e-12) -> jax.experimental.sparse.BCOO:
@@ -1321,13 +1434,17 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
         )
 
     def _validate_cudss_options(opts: CUDSSOptions, role: str) -> None:
-        if opts.mview_id != 0:
+        if opts.matrix_view != CUDSSMatrixView.FULL:
             raise ValueError(
-                f"cudss_options.mview_id must be 0 (FULL) for {role} solver"
+                f"cudss_options.matrix_view must be FULL for {role} solver. "
+                f"With symmetric elimination, the full matrix is always required. "
+                f"Got: {opts.matrix_view.name}"
             )
-        if opts.mtype_id not in (0, 1):
+        if opts.matrix_type not in (CUDSSMatrixType.GENERAL, CUDSSMatrixType.SYMMETRIC):
             raise ValueError(
-                f"cudss_options.mtype_id must be 0 (GENERAL) or 1 (SYMMETRIC) for {role} solver."
+                f"cudss_options.matrix_type must be GENERAL or SYMMETRIC for {role} solver. "
+                f"Got: {opts.matrix_type.name}. "
+                f"Note: SPD (Symmetric Positive Definite) may also work if your problem is positive definite."
             )
 
     if solver_options.linear_solver == "cudss":
