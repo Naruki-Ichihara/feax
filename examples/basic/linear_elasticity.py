@@ -47,7 +47,7 @@ bc_config = fe.DCboundary.DirichletBCConfig([left_fix])
 bc = bc_config.create_bc(problem)
 
 # Solver
-solver_option = fe.solver.SolverOptions(linear_solver="cudss")
+solver_option = fe.solver.SolverOptions(linear_solver="cg")
 solver = fe.solver.create_solver(problem, bc, solver_option, iter_num=1)
 initial = fe.utils.zero_like_initial_guess(problem, bc)
 

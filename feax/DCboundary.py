@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class DirichletBC:
     """JAX-compatible dataclass for Dirichlet boundary conditions.
-    
+
     This class pre-computes and stores all BC information as static JAX arrays,
     making it suitable for JIT compilation.
     """
@@ -33,30 +33,26 @@ class DirichletBC:
     bc_mask: np.ndarray  # Boolean mask for BC rows (size: total_dofs)
     bc_vals: np.ndarray  # Boundary condition values for each BC row
     total_dofs: int
-    symmetric_elimination: bool = False
     
     @staticmethod
-    def from_specs(problem: 'Problem', specs: List['DirichletBCSpec'], symmetric_elimination: bool = False) -> 'DirichletBC':
+    def from_specs(problem: 'Problem', specs: List['DirichletBCSpec']) -> 'DirichletBC':
         """Create DirichletBC directly from a list of DirichletBCSpec objects.
-        
-        This is a convenient factory method that creates a DirichletBC without 
+
+        This is a convenient factory method that creates a DirichletBC without
         needing to create an intermediate DirichletBCConfig object.
-        
+
         Parameters
         ----------
         problem : Problem
             The finite element problem instance
         specs : List[DirichletBCSpec]
             List of boundary condition specifications
-        symmetric_elimination : bool, default False
-            If True, zero both rows and columns for BC DOFs to preserve symmetry.
-            If False, zero rows only (faster, but breaks symmetry and invalidates CG).
-            
+
         Returns
         -------
         DirichletBC
             The compiled boundary condition object
-            
+
         Examples
         --------
         >>> bc = DirichletBC.from_specs(problem, [
@@ -64,19 +60,19 @@ class DirichletBC:
         ...     DirichletBCSpec(right_boundary, 'x', 0.1)
         ... ])
         """
-        config = DirichletBCConfig(specs, symmetric_elimination=symmetric_elimination)
+        config = DirichletBCConfig(specs)
         return config.create_bc(problem)
 
 
 # Register DirichletBC as a JAX pytree
-def _dirichletbc_flatten(bc: DirichletBC) -> Tuple[Tuple[np.ndarray, ...], Tuple[int, bool]]:
+def _dirichletbc_flatten(bc: DirichletBC) -> Tuple[Tuple[np.ndarray, ...], int]:
     """Flatten DirichletBC into a list of arrays and auxiliary data.
-    
+
     Parameters
     ----------
     bc : DirichletBC
         The DirichletBC object to flatten
-        
+
     Returns
     -------
     Tuple[Tuple[np.ndarray, ...], int]
@@ -86,33 +82,32 @@ def _dirichletbc_flatten(bc: DirichletBC) -> Tuple[Tuple[np.ndarray, ...], Tuple
     # Arrays go in the first return value
     arrays = (bc.bc_rows, bc.bc_mask, bc.bc_vals)
     # Static data goes in the second return value
-    aux_data = (bc.total_dofs, bc.symmetric_elimination)
+    aux_data = bc.total_dofs
     return arrays, aux_data
 
 
-def _dirichletbc_unflatten(aux_data: Tuple[int, bool], arrays: Tuple[np.ndarray, ...]) -> DirichletBC:
+def _dirichletbc_unflatten(aux_data: int, arrays: Tuple[np.ndarray, ...]) -> DirichletBC:
     """Reconstruct DirichletBC from flattened representation.
-    
+
     Parameters
     ----------
     aux_data : int
         Static auxiliary data (total_dofs)
     arrays : Tuple[np.ndarray, ...]
         Tuple of JAX arrays (bc_rows, bc_mask, bc_vals)
-        
+
     Returns
     -------
     DirichletBC
         Reconstructed DirichletBC object
     """
     bc_rows, bc_mask, bc_vals = arrays
-    total_dofs, symmetric_elimination = aux_data
+    total_dofs = aux_data
     return DirichletBC(
         bc_rows=bc_rows,
         bc_mask=bc_mask,
         bc_vals=bc_vals,
         total_dofs=total_dofs,
-        symmetric_elimination=symmetric_elimination,
     )
 
 
@@ -126,16 +121,17 @@ register_pytree_node(
 
 def apply_boundary_to_J(bc: DirichletBC, J: BCOO) -> BCOO:
     """Apply Dirichlet boundary conditions to Jacobian matrix J.
-    
+
     This function modifies the Jacobian matrix to enforce Dirichlet boundary conditions
-    by zeroing out entries in boundary condition rows and setting diagonal entries
-    to 1.0 for those rows. This transforms the system to enforce u[bc_dof] = bc_val.
-    
+    by zeroing out entries in boundary condition rows and columns, and setting diagonal
+    entries to 1.0 for those rows. This preserves symmetry and transforms the system to
+    enforce u[bc_dof] = bc_val.
+
     The algorithm:
-    1. Zero out all entries in BC rows (both on-diagonal and off-diagonal)
+    1. Zero out all entries in BC rows and columns (symmetric elimination)
     2. Set diagonal entries to 1.0 for all BC rows
     3. Handle potential duplicates by concatenation (JAX sparse solvers handle this)
-    
+
     Parameters
     ----------
     bc : DirichletBC
@@ -146,18 +142,18 @@ def apply_boundary_to_J(bc: DirichletBC, J: BCOO) -> BCOO:
         - total_dofs: Total number of DOFs in the system
     J : jax.experimental.sparse.BCOO
         The sparse Jacobian matrix in BCOO format with shape (total_dofs, total_dofs)
-        
+
     Returns
     -------
     J_bc : jax.experimental.sparse.BCOO
         The Jacobian matrix with boundary conditions applied, same shape as input
-        
+
     Notes
     -----
     This function is JAX-JIT compatible and designed for efficient use in Newton solvers.
     The returned matrix may have duplicate entries (original zeros + new diagonal ones),
     but JAX sparse solvers handle this correctly by summing duplicates.
-    bc.symmetric_elimination=True adds the column elimination, which is needed to preserve symmetry.
+    Symmetric elimination preserves matrix symmetry, allowing use of symmetric solvers like CG.
     """
     # Get the data and indices from the BCOO matrix
     data = J.data
@@ -165,43 +161,39 @@ def apply_boundary_to_J(bc: DirichletBC, J: BCOO) -> BCOO:
     shape = J.shape
     # Get row and column indices from sparse matrix
     row_indices = indices[:, 0]
-    
-    # Create mask for BC rows using pre-computed bc_mask
+    col_indices = indices[:, 1]
+
+    # Create mask for BC rows and columns using pre-computed bc_mask
     is_bc_row = bc.bc_mask[row_indices]
+    is_bc_col = bc.bc_mask[col_indices]
 
     # The algorithm:
-    # 1. Zero out all BC row/column entries 
+    # 1. Zero out all BC row/column entries (symmetric elimination)
     # 2. Add diagonal entries for ALL BC rows with value 1.0
 
-    # Step 1: Zero out all BC row/column entries
-    if bc.symmetric_elimination:
-        # To preserve symmetry under row elimination, we also zero the corresponding columns
-        col_indices = indices[:, 1]
-        is_bc_col = bc.bc_mask[col_indices]
-        bc_row_col_mask = is_bc_row | is_bc_col
-        data_modified = np.where(bc_row_col_mask, 0.0, data)
-    else:
-        data_modified = np.where(is_bc_row, 0.0, data)
+    # Step 1: Zero out all BC row/column entries to preserve symmetry
+    bc_row_col_mask = is_bc_row | is_bc_col
+    data_modified = np.where(bc_row_col_mask, 0.0, data)
 
     # Step 2: Add diagonal entries for ALL BC rows
     # Direct approach that works with JIT: always add all BC diagonal entries
     # This may create duplicates, but most JAX sparse solvers handle this correctly
-    
+
     bc_diag_indices = np.stack([bc.bc_rows, bc.bc_rows], axis=-1)
     bc_diag_data = np.ones_like(bc.bc_rows, dtype=data.dtype)
-    
+
     # Concatenate all data
     all_indices = np.concatenate([indices, bc_diag_indices], axis=0)
     all_data = np.concatenate([data_modified, bc_diag_data], axis=0)
-    
+
     # Create final BCOO matrix
     J_bc = BCOO((all_data, all_indices), shape=shape)
-    
+
     # Skip sorting for large matrices to avoid slow compilation
     # Most JAX sparse solvers can handle unsorted matrices with duplicates
     # The duplicates will be handled correctly by summing during solve
     # (BC diagonal entries: 0 + 1 = 1, which is what we want)
-    
+
     return J_bc
 
 
@@ -333,15 +325,15 @@ class DirichletBCSpec:
 @dataclass
 class DirichletBCConfig:
     """Configuration for all Dirichlet boundary conditions in a problem.
-    
+
     This dataclass holds a collection of DirichletBCSpec objects and provides
     methods to convert to the format expected by DirichletBC.from_bc_info.
-    
+
     Parameters
     ----------
     specs : List[DirichletBCSpec]
         List of boundary condition specifications
-        
+
     Examples
     --------
     >>> # Create BC configuration for elasticity problem
@@ -352,17 +344,16 @@ class DirichletBCConfig:
     ...         value=0.0
     ...     ),
     ...     DirichletBCSpec(
-    ...         location=lambda pt: np.isclose(pt[0], 1.0), 
+    ...         location=lambda pt: np.isclose(pt[0], 1.0),
     ...         component='x',
     ...         value=0.1
     ...     )
     ... ])
-    >>> 
+    >>>
     >>> # Create DirichletBC from config
     >>> bc = bc_config.create_bc(problem)
     """
     specs: List[DirichletBCSpec] = field(default_factory=list)
-    symmetric_elimination: bool = False
     
     def add(self, 
             location: Callable[[np.ndarray], bool], 
@@ -426,7 +417,6 @@ class DirichletBCConfig:
                 bc_mask=np.zeros(problem.num_total_dofs_all_vars, dtype=bool),
                 bc_vals=np.array([], dtype=np.float64),
                 total_dofs=problem.num_total_dofs_all_vars,
-                symmetric_elimination=self.symmetric_elimination,
             )
         
         bc_rows_list = []
@@ -500,13 +490,12 @@ class DirichletBCConfig:
         bc_mask = np.zeros(total_dofs, dtype=bool)
         if bc_rows.shape[0] > 0:
             bc_mask = bc_mask.at[bc_rows].set(True)
-        
+
         return DirichletBC(
             bc_rows=bc_rows,
             bc_mask=bc_mask,
             bc_vals=bc_vals,
             total_dofs=total_dofs,
-            symmetric_elimination=self.symmetric_elimination,
         )
 
 

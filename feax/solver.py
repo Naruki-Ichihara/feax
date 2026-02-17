@@ -1320,13 +1320,6 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
             linear_solver_maxiter=10000  # Sufficient iterations for adjoint solve
         )
 
-    uses_cg = solver_options.linear_solver == "cg" or adjoint_solver_options.linear_solver == "cg"
-    if uses_cg and not bc.symmetric_elimination:
-        logger.warning(
-            "DirichletBC.symmetric_elimination is False while CG is selected. Row-only BC elimination breaks symmetry, "
-            "so CG may struggle or fail to converge. Consider symmetric_elimination=True or a nonsymmetric solver."
-        )
-
     def _validate_cudss_options(opts: CUDSSOptions, role: str) -> None:
         if opts.mview_id != 0:
             raise ValueError(
@@ -1335,11 +1328,6 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
         if opts.mtype_id not in (0, 1):
             raise ValueError(
                 f"cudss_options.mtype_id must be 0 (GENERAL) or 1 (SYMMETRIC) for {role} solver."
-            )
-        if opts.mtype_id == 1 and not bc.symmetric_elimination:
-            raise ValueError(
-                f"cudss_options.mtype_id=1 (SYMMETRIC) for {role} solver requires "
-                "DirichletBC.symmetric_elimination=True to preserve symmetry."
             )
 
     if solver_options.linear_solver == "cudss":
