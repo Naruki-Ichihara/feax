@@ -5,7 +5,7 @@ import os
 
 elastic_moduli = 70e3
 poisson_ratio = 0.3
-traction = 1.
+traction = 1e-3
 tol = 1e-5
 
 # Define mesh

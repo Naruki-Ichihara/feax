@@ -24,10 +24,10 @@ target_fraction = 0.4  # Target volume fraction
 
 # Geometry
 L = 100  # Length
-W = 4    # Width
+W = 20    # Width
 H = 20   # Height
 box_size = (L, W, H)
-mesh = fe.mesh.box_mesh(box_size, mesh_size=1)
+mesh = fe.mesh.box_mesh(box_size, mesh_size=0.5)
 tol = 1e-3  # Boundary tolerance
     
 # Locations
