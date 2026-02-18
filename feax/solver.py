@@ -15,13 +15,15 @@ Key Features:
 
 import jax
 import jax.numpy as jnp
+from jax.experimental.sparse import BCOO
 import numpy as np
 from dataclasses import dataclass
-from typing import Optional, Callable, Union
+from typing import Optional, Callable, Union, Any
 from enum import Enum
 import logging
 from .assembler import create_J_bc_function, create_res_bc_function
 from .DCboundary import DirichletBC
+from .problem import MatrixView, Problem
 import lineax as lx
 
 logger = logging.getLogger(__name__)
@@ -417,12 +419,9 @@ def create_linear_solve_fn(solver_options: SolverOptions):
     install the CUDSS solver, use `pip install feax[cuda12]`.
     """
 
-    def choose_preconditioner(A, input_structure=None):
+    def choose_preconditioner(A):
         if solver_options.use_jacobi_preconditioner and solver_options.preconditioner is None:
             M = create_jacobi_preconditioner(A, solver_options.jacobi_shift)
-            if solver_options.linear_solver.startswith("lineax"):
-                return lx.FunctionLinearOperator(M, input_structure=input_structure)
-            return M
         return solver_options.preconditioner
 
     # Define solver functions for JAX compatibility (no conditionals inside JAX-traced code)
@@ -465,35 +464,20 @@ def create_linear_solve_fn(solver_options: SolverOptions):
     if solver_options.linear_solver == "lineax":
         def solve(A, b, x0):
             input_structure = jax.ShapeDtypeStruct((A.shape[1],), b.dtype)
-            M = choose_preconditioner(A, input_structure=input_structure)
 
             def matvec(v):
                 return A @ v
 
-            operator = lx.FunctionLinearOperator(matvec, input_structure=input_structure)
-
-            options = {}
-            if x0 is not None:
-                options["y0"] = x0
-            if M is not None:
-                options["preconditioner"] = M
-
-            solver = lx.BiCGStab(
-                rtol=solver_options.linear_solver_tol,
-                atol=solver_options.linear_solver_atol,
-                max_steps=solver_options.linear_solver_maxiter,
+            operator = lx.FunctionLinearOperator(
+                matvec,
+                input_structure=input_structure,
+                tags=(
+                    lx.symmetric_tag,
+                    lx.positive_semidefinite_tag,
+                ),
             )
 
-            sol = lx.linear_solve(operator, b, solver=solver, options=options)
-            if solver_options.verbose:
-                num_steps = sol.stats.get("num_steps", -1)
-                max_steps = sol.stats.get("max_steps", -1)
-                jax.debug.print(
-                    "lineax: status={status} steps=({steps}/{max_steps})",
-                    status=lx.RESULTS[sol.result],
-                    steps=num_steps,
-                    max_steps=max_steps,
-                )
+            sol = lx.linear_solve(operator, b, solver=lx.Cholesky())
             return sol.value
 
         return solve
@@ -1142,7 +1126,47 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC
     return sol, res_norm, converged, iter_count
 
 
-def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, internal_vars=None, P_mat=None):
+def _extract_sparse_diagonal(A: BCOO):
+    """Extract sparse matrix diagonal as dense vector."""
+    n = A.shape[0]
+    diagonal_mask = A.indices[:, 0] == A.indices[:, 1]
+    diagonal_indices = jnp.where(diagonal_mask, A.indices[:, 0], n)
+    diagonal_values = jnp.where(diagonal_mask, A.data, 0.0)
+    diag = jnp.zeros(n, dtype=A.data.dtype)
+    return diag.at[diagonal_indices].add(diagonal_values)
+
+
+def _matvec_with_full_view(A, x, matrix_view: MatrixView):
+    """Apply full matrix-vector product for FULL/UPPER/LOWER storage."""
+    if matrix_view in (MatrixView.UPPER, MatrixView.LOWER):
+        diag = _extract_sparse_diagonal(A)
+        return A @ x + A.transpose() @ x - diag * x
+    return A @ x
+
+
+def _check_linear_convergence(A, x, b, solver_options: SolverOptions, matrix_view: MatrixView, solver_label: str):
+    """Check relative residual and return NaN solution when convergence fails."""
+    residual = _matvec_with_full_view(A, x, matrix_view) - b
+    residual_norm = jnp.linalg.norm(residual)
+    b_norm = jnp.linalg.norm(b)
+    rel_residual = residual_norm / (b_norm + 1e-12)
+
+    if solver_options.verbose:
+        jax.debug.print(
+            "{label} residual: abs={r:.6e}, rel={rr:.6e}",
+            label=solver_label,
+            r=residual_norm,
+            rr=rel_residual,
+        )
+
+    return jnp.where(
+        rel_residual < solver_options.convergence_threshold,
+        x,
+        jnp.full_like(x, jnp.nan),
+    )
+
+
+def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options: SolverOptions, matrix_view: MatrixView, internal_vars=None, P_mat=None):
     """Linear solver for problems that converge in one iteration.
 
     Optimized for linear problems (e.g., linear elasticity). Performs single Newton step.
@@ -1159,6 +1183,8 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         Boundary conditions
     solver_options : SolverOptions
         Solver configuration
+    matrix_view : MatrixView, optional
+        Matrix storage format from the problem.
     internal_vars : InternalVars, optional
         Material properties and parameters
     P_mat : BCOO matrix, optional
@@ -1203,23 +1229,13 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
 
     # Step 4: Verify convergence if requested
     if solver_options.check_convergence:
-        # Compute residual: r = A*x - b
-        residual = J @ delta_sol - b
-        residual_norm = jnp.linalg.norm(residual)
-        b_norm = jnp.linalg.norm(b)
-        rel_residual = residual_norm / (b_norm + 1e-12)
-
-        if solver_options.verbose:
-            jax.debug.print(
-                "Linear solver residual: abs={r:.6e}, rel={rr:.6e}",
-                r=residual_norm, rr=rel_residual
-            )
-
-        # Return NaN if convergence failed (signals problem to user)
-        delta_sol = jnp.where(
-            rel_residual < solver_options.convergence_threshold,
-            delta_sol,
-            jnp.full_like(delta_sol, jnp.nan)
+        delta_sol = _check_linear_convergence(
+            A=J,
+            x=delta_sol,
+            b=b,
+            solver_options=solver_options,
+            matrix_view=matrix_view,
+            solver_label="Linear solver",
         )
 
     # Step 5: Update solution
@@ -1228,7 +1244,7 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
     return sol, None
 
 
-def __linear_solve_adjoint(A, b, solver_options: SolverOptions, bc=None):
+def __linear_solve_adjoint(A, b, solver_options: SolverOptions, matrix_view: MatrixView, bc=None):
     """Solve linear system for adjoint problem.
 
     Parameters
@@ -1239,6 +1255,8 @@ def __linear_solve_adjoint(A, b, solver_options: SolverOptions, bc=None):
         Right-hand side vector (cotangent vector from VJP)
     solver_options : SolverOptions
         Solver configuration for adjoint solve
+    matrix_view : MatrixView
+        Matrix storage format from the problem
     bc : DirichletBC, optional
         Boundary conditions for computing initial guess
 
@@ -1275,22 +1293,13 @@ def __linear_solve_adjoint(A, b, solver_options: SolverOptions, bc=None):
 
     # Verify convergence if requested
     if solver_options.check_convergence:
-        residual = A @ sol - b
-        residual_norm = jnp.linalg.norm(residual)
-        b_norm = jnp.linalg.norm(b)
-        rel_residual = residual_norm / (b_norm + 1e-12)
-
-        if solver_options.verbose:
-            jax.debug.print(
-                "Adjoint solver residual: abs={r:.6e}, rel={rr:.6e}",
-                r=residual_norm, rr=rel_residual
-            )
-
-        # Return NaN if convergence failed
-        sol = jnp.where(
-            rel_residual < solver_options.convergence_threshold,
-            sol,
-            jnp.full_like(sol, jnp.nan)
+        sol = _check_linear_convergence(
+            A=A,
+            x=sol,
+            b=b,
+            solver_options=solver_options,
+            matrix_view=matrix_view,
+            solver_label="Adjoint solver",
         )
 
     return sol
@@ -1408,7 +1417,14 @@ def _create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_option
     return differentiable_solve
 
 
-def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None, iter_num=None, P=None):
+def create_solver(
+    problem: Problem,
+    bc: DirichletBC,
+    solver_options: Optional[SolverOptions] = None,
+    adjoint_solver_options: Optional[SolverOptions] = None,
+    iter_num: Optional[int] = None,
+    P: Optional[BCOO] = None,
+) -> Callable[[Any, jax.Array], jax.Array]:
     """Create a differentiable solver that returns gradients w.r.t. internal_vars using custom VJP.
     
     This solver uses the self-adjoint approach for efficient gradient computation:
@@ -1423,7 +1439,7 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
         Boundary conditions
     solver_options : SolverOptions, optional
         Options for forward solve (defaults to SolverOptions())
-    adjoint_solver_options : dict, optional
+    adjoint_solver_options : SolverOptions, optional
         Options for adjoint solve (defaults to same as forward solve)
     iter_num : int, optional
         Number of iterations to perform. Controls which solver is used:
@@ -1508,12 +1524,12 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
                 f"Got: {opts.matrix_view.name}"
             )
 
-        # For UPPER/LOWER views, SYMMETRIC matrix type is required
+        # For UPPER/LOWER views, SYMMETRIC or SPD matrix type is required
         if opts.matrix_view in (CUDSSMatrixView.UPPER, CUDSSMatrixView.LOWER):
-            if opts.matrix_type != CUDSSMatrixType.SYMMETRIC:
+            if opts.matrix_type not in (CUDSSMatrixType.SYMMETRIC, CUDSSMatrixType.SPD):
                 logger.warning(
                     f"{role} solver: Using matrix_view={opts.matrix_view.name} with matrix_type={opts.matrix_type.name}. "
-                    f"For best performance, use matrix_type=SYMMETRIC with triangular storage."
+                    f"For best performance, use matrix_type=SYMMETRIC or matrix_type=SPD with triangular storage."
                 )
 
         if opts.matrix_type not in (CUDSSMatrixType.GENERAL, CUDSSMatrixType.SYMMETRIC, CUDSSMatrixType.SPD):
@@ -1541,7 +1557,7 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
         )
     elif iter_num == 1:
         solve_fn = lambda internal_vars, initial_sol: linear_solve(
-            J_bc_func, res_bc_func, initial_sol, bc, solver_options, internal_vars
+            J_bc_func, res_bc_func, initial_sol, bc, solver_options, problem.matrix_view, internal_vars
         )
     else:
         solve_fn = lambda internal_vars, initial_sol: newton_solve_fori(
@@ -1604,20 +1620,19 @@ def create_solver(problem, bc, solver_options=None, adjoint_solver_options=None,
         J = J_bc_func(sol, internal_vars)
         v_vec = jax.flatten_util.ravel_pytree(v)[0]
 
-        # For symmetric matrices with UPPER/LOWER storage, don't transpose
-        # Since A^T = A for symmetric matrices, we can use J directly
-        # This avoids the index-swapping issue (UPPER -> LOWER or vice versa)
+        # If the problem stores only one triangular part (UPPER/LOWER),
+        # transposing swaps storage convention and is not meaningful here.
+        # Use J directly for adjoint solve in that case.
         use_transpose = True
-        if (adjoint_solver_options.linear_solver == "cudss" and
-            adjoint_solver_options.cudss_options.matrix_view in
-            (CUDSSMatrixView.UPPER, CUDSSMatrixView.LOWER)):
-            # Symmetric matrix with triangular storage: A^T = A
+        if problem.matrix_view in (MatrixView.UPPER, MatrixView.LOWER):
             use_transpose = False
-            logger.debug(f"Using J directly (no transpose) for adjoint solve with "
-                        f"matrix_view={adjoint_solver_options.cudss_options.matrix_view.name}")
+            logger.debug(
+                "Using J directly (no transpose) for adjoint solve with problem.matrix_view=%s",
+                problem.matrix_view.name,
+            )
 
         J_adjoint = J.transpose() if use_transpose else J
-        adjoint_vec = __linear_solve_adjoint(J_adjoint, v_vec, adjoint_solver_options, bc)
+        adjoint_vec = __linear_solve_adjoint(J_adjoint, v_vec, adjoint_solver_options, problem.matrix_view, bc)
         sol_list = problem.unflatten_fn_sol_list(sol)
         vjp_linear_fn = get_vjp_contraint_fn_params(internal_vars, sol_list)
         vjp_result = vjp_linear_fn(problem.unflatten_fn_sol_list(adjoint_vec))
