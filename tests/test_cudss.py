@@ -34,7 +34,7 @@ def has_gpu():
 def has_cudss():
     """Check if cuDSS backend is available."""
     try:
-        from feax.solver import CUDSSOptions
+        from feax.solver_option import CUDSSOptions
         return has_gpu()  # cuDSS requires GPU
     except ImportError:
         return False
@@ -186,7 +186,7 @@ def test_cudss_options_configuration(
     bc = bc_config.create_bc(problem)
 
     # Create solver with explicit cuDSS options
-    from feax.solver import CUDSSOptions, CUDSSMatrixType, CUDSSMatrixView
+    from feax.solver_option import CUDSSOptions, CUDSSMatrixType, CUDSSMatrixView
 
     cudss_opts = CUDSSOptions(
         matrix_type=CUDSSMatrixType.SPD,  # Symmetric Positive Definite

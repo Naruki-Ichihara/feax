@@ -69,7 +69,7 @@ internal_vars = fe.internal_vars.InternalVars()
 
 bc = bc_config.create_bc(feax_problem)
 
-solver_options = fe.solver.SolverOptions(tol=1e-8, linear_solver="cudss_solver", verbose=True)
+solver_options = fe.solver.SolverOptions(tol=1e-8, linear_solver="cudss", verbose=True)
 solver = fe.solver.create_solver(feax_problem, bc, solver_options)
 
 def solve_fn(internal_vars):

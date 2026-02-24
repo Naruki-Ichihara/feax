@@ -28,7 +28,11 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:docs.nvidia.com)",
       "Bash(pytest:*)",
-      "Bash(git config:*)"
+      "Bash(git config:*)",
+      "Bash(pip show:*)",
+      "Bash(pip index versions:*)",
+      "Bash(nvcc:*)",
+      "Bash(grep:*)"
     ],
     "deny": [],
     "ask": []

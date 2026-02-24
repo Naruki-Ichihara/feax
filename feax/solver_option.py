@@ -1,0 +1,673 @@
+"""
+Solver configuration options for FEAX finite element framework.
+
+This module provides configuration dataclasses and enums for controlling
+solver behavior, including linear solver selection, tolerances, and
+CUDA-specific options.
+"""
+
+import jax
+from dataclasses import dataclass
+from typing import Optional, Callable, Union
+from enum import Enum
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Backend Detection
+# ============================================================================
+
+class Backend(Enum):
+    """JAX compute backend."""
+    CPU = "cpu"
+    CUDA = "gpu"  # JAX reports GPU as "gpu"; we expose it as CUDA
+
+
+def detect_backend() -> Backend:
+    """Detect the active JAX backend.
+
+    Returns
+    -------
+    Backend
+        Backend.CUDA if a CUDA device is active, Backend.CPU otherwise.
+    """
+    return Backend(jax.default_backend())
+
+
+def is_cuda() -> bool:
+    """Check if the active backend is CUDA."""
+    return detect_backend() == Backend.CUDA
+
+
+def is_cpu() -> bool:
+    """Check if the active backend is CPU."""
+    return detect_backend() == Backend.CPU
+
+
+def has_cudss() -> bool:
+    """Check if the cuDSS direct solver is available.
+
+    Requires CUDA backend and the ``spineax`` package.
+    """
+    if not is_cuda():
+        return False
+    try:
+        from spineax.cudss.solver import CuDSSSolver  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def has_spsolve() -> bool:
+    """Check if JAX's experimental spsolve is available.
+
+    Only supported on the CPU backend.
+    """
+    return is_cpu()
+
+
+# ============================================================================
+# Matrix Property Detection
+# ============================================================================
+
+class MatrixProperty(Enum):
+    """Algebraic properties of the system matrix.
+
+    Used by auto solver selection to choose the best algorithm.
+
+    - GENERAL: No special structure (LU / GMRES)
+    - SYMMETRIC: Symmetric A = A^T (LDLT / BICGSTAB)
+    - SPD: Symmetric Positive Definite (Cholesky / CG)
+    """
+    GENERAL = "general"
+    SYMMETRIC = "symmetric"
+    SPD = "spd"
+
+    def view(self):
+        """Return the recommended MatrixView for this property.
+
+        Returns
+        -------
+        MatrixView
+            GENERAL → FULL, SYMMETRIC/SPD → UPPER.
+        """
+        from .problem import MatrixView
+
+        if self in (MatrixProperty.SYMMETRIC, MatrixProperty.SPD):
+            return MatrixView.UPPER
+        return MatrixView.FULL
+
+
+def detect_matrix_property(A, sym_tol: float = 1e-8, matrix_view=None) -> MatrixProperty:
+    """Detect matrix property from an assembled sparse matrix.
+
+    Performs numerical checks on the matrix:
+    1. Symmetry: compares ``A @ x`` vs ``A^T @ x`` for a random vector.
+       Skipped when ``matrix_view`` is UPPER or LOWER (the matrix is
+       symmetric by construction).
+    2. Positive definiteness (heuristic): checks that all diagonal entries
+       are positive, which is a necessary condition for SPD.
+
+    Parameters
+    ----------
+    A : BCOO sparse matrix
+        The assembled system matrix.
+    sym_tol : float, default 1e-8
+        Relative tolerance for the symmetry check.
+    matrix_view : MatrixView, optional
+        Storage format of the matrix.  When UPPER or LOWER, the matrix
+        stores only one triangular half and is symmetric by definition,
+        so the symmetry check is skipped.
+
+    Returns
+    -------
+    MatrixProperty
+        SPD if symmetric with all-positive diagonal,
+        SYMMETRIC if symmetric but diagonal has non-positive entries,
+        GENERAL otherwise.
+
+    Notes
+    -----
+    The diagonal positivity test is a necessary but not sufficient
+    condition for positive definiteness.  For FEM stiffness matrices
+    from well-posed problems this is a reliable indicator.
+    """
+    import jax.numpy as jnp
+    from .problem import MatrixView
+
+    # UPPER/LOWER storage implies symmetry by construction
+    if matrix_view in (MatrixView.UPPER, MatrixView.LOWER):
+        is_symmetric = True
+    else:
+        # --- symmetry check via random matvec ---
+        key = jax.random.PRNGKey(42)
+        x = jax.random.normal(key, (A.shape[1],), dtype=A.dtype)
+        Ax = A @ x
+        ATx = A.T @ x
+        sym_err = jnp.linalg.norm(Ax - ATx) / (jnp.linalg.norm(Ax) + 1e-30)
+        is_symmetric = bool(sym_err < sym_tol)
+
+    if not is_symmetric:
+        return MatrixProperty.GENERAL
+
+    # --- SPD heuristic: diagonal positivity ---
+    n = A.shape[0]
+    diag_mask = A.indices[:, 0] == A.indices[:, 1]
+    diag_idx = jnp.where(diag_mask, A.indices[:, 0], n)
+    diag_val = jnp.where(diag_mask, A.data, 0.0)
+    diag = jnp.zeros(n, dtype=A.dtype).at[diag_idx].add(diag_val)
+    is_diag_positive = bool(jnp.all(diag > 0))
+
+    if is_diag_positive:
+        return MatrixProperty.SPD
+
+    return MatrixProperty.SYMMETRIC
+
+
+class CUDSSMatrixType(Enum):
+    """Matrix type for cuDSS solver.
+
+    Determines which factorization method cuDSS will use internally.
+    """
+    GENERAL = 0      # Non-symmetric matrix (uses LU factorization)
+    SYMMETRIC = 1    # Symmetric matrix (uses LDLT factorization)
+    HERMITIAN = 2    # Hermitian matrix (uses LDLT for complex)
+    SPD = 3          # Symmetric Positive Definite (uses Cholesky factorization)
+    HPD = 4          # Hermitian Positive Definite (uses Cholesky for complex)
+
+
+class CUDSSMatrixView(Enum):
+    """Matrix view (which portion of matrix is provided) for cuDSS solver."""
+    FULL = 0   # Full matrix provided
+    UPPER = 1  # Upper triangular portion only
+    LOWER = 2  # Lower triangular portion only
+
+
+@dataclass(frozen=True)
+class CUDSSOptions:
+    """Options specific to the NVIDIA cuDSS direct solver.
+
+    cuDSS matrix configuration is defined by two orthogonal properties:
+    1) Matrix Type (algebraic structure determining factorization method)
+    2) Matrix View (which triangular portion is provided)
+
+    Parameters
+    ----------
+    matrix_type : CUDSSMatrixType or str or int, default SYMMETRIC
+        Matrix type determining factorization method:
+        - GENERAL: Non-symmetric (uses LU factorization)
+        - SYMMETRIC: Symmetric indefinite (uses LDLT factorization)
+        - HERMITIAN: Hermitian indefinite (uses LDLT for complex)
+        - SPD: Symmetric Positive Definite (uses Cholesky factorization)
+        - HPD: Hermitian Positive Definite (uses Cholesky for complex)
+    matrix_view : CUDSSMatrixView or str or int, default FULL
+        Which portion of the matrix is provided:
+        - FULL: All entries provided
+        - UPPER: Upper triangular portion only
+        - LOWER: Lower triangular portion only
+    device_id : int, default 0
+        CUDA device ID to use
+
+    Examples
+    --------
+    >>> # Using enums (recommended)
+    >>> opts = CUDSSOptions(
+    ...     matrix_type=CUDSSMatrixType.SPD,
+    ...     matrix_view=CUDSSMatrixView.FULL
+    ... )
+    >>>
+    >>> # Using strings (convenient)
+    >>> opts = CUDSSOptions(matrix_type="SPD", matrix_view="FULL")
+    >>>
+    >>> # Using integers (backward compatible)
+    >>> opts = CUDSSOptions(matrix_type=3, matrix_view=0)
+
+    Notes
+    -----
+    Typical combinations:
+    - General sparse: matrix_type=GENERAL, matrix_view=FULL
+    - Symmetric: matrix_type=SYMMETRIC, matrix_view=FULL
+    - SPD (Cholesky): matrix_type=SPD, matrix_view=FULL
+
+    For GENERAL matrices, cuDSS treats the view as FULL (the view setting is
+    effectively ignored).
+
+    With symmetric elimination (default in FEAX), matrix_view should always be FULL
+    since both upper and lower triangular portions are modified.
+    """
+
+    matrix_type: Union[CUDSSMatrixType, str, int] = CUDSSMatrixType.SYMMETRIC
+    matrix_view: Union[CUDSSMatrixView, str, int] = CUDSSMatrixView.FULL
+    device_id: int = 0
+
+    def __post_init__(self):
+        """Validate and convert matrix_type and matrix_view to enums if needed."""
+        # Convert matrix_type to enum if string or int
+        if isinstance(self.matrix_type, str):
+            try:
+                object.__setattr__(self, 'matrix_type', CUDSSMatrixType[self.matrix_type.upper()])
+            except KeyError:
+                raise ValueError(
+                    f"Invalid matrix_type string: {self.matrix_type}. "
+                    f"Valid options: {[t.name for t in CUDSSMatrixType]}"
+                )
+        elif isinstance(self.matrix_type, int):
+            try:
+                object.__setattr__(self, 'matrix_type', CUDSSMatrixType(self.matrix_type))
+            except ValueError:
+                raise ValueError(
+                    f"Invalid matrix_type integer: {self.matrix_type}. "
+                    f"Valid values: 0-4"
+                )
+
+        # Convert matrix_view to enum if string or int
+        if isinstance(self.matrix_view, str):
+            try:
+                object.__setattr__(self, 'matrix_view', CUDSSMatrixView[self.matrix_view.upper()])
+            except KeyError:
+                raise ValueError(
+                    f"Invalid matrix_view string: {self.matrix_view}. "
+                    f"Valid options: {[v.name for v in CUDSSMatrixView]}"
+                )
+        elif isinstance(self.matrix_view, int):
+            try:
+                object.__setattr__(self, 'matrix_view', CUDSSMatrixView(self.matrix_view))
+            except ValueError:
+                raise ValueError(
+                    f"Invalid matrix_view integer: {self.matrix_view}. "
+                    f"Valid values: 0-2"
+                )
+
+    @property
+    def mtype_id(self) -> int:
+        """Get matrix type as integer ID for cuDSS."""
+        return self.matrix_type.value
+
+    @property
+    def mview_id(self) -> int:
+        """Get matrix view as integer ID for cuDSS."""
+        return self.matrix_view.value
+
+
+@dataclass(frozen=True)
+class SolverOptions:
+    """Configuration options for the Newton solver.
+
+    Parameters
+    ----------
+    tol : float, default 1e-6
+        Absolute tolerance for residual vector (l2 norm)
+    rel_tol : float, default 1e-8
+        Relative tolerance for residual vector (l2 norm)
+    max_iter : int, default 100
+        Maximum number of Newton iterations
+    linear_solver : str, optional
+        Linear solver type. If not specified, automatically selects based on backend:
+        - GPU backend: "cudss" (cuDSS direct solver, requires CUDA)
+        - CPU backend: "cg" (Conjugate Gradient, JAX-native)
+        Manual options: "cg", "bicgstab", "gmres", "spsolve", "cudss", "lineax"
+    preconditioner : callable, optional
+        Preconditioner function for linear solver
+    use_jacobi_preconditioner : bool, default False
+        Whether to use Jacobi (diagonal) preconditioner automatically
+    jacobi_shift : float, default 1e-12
+        Regularization parameter for Jacobi preconditioner
+    linear_solver_tol : float, default 1e-10
+        Tolerance for linear solver
+    linear_solver_atol : float, default 1e-10
+        Absolute tolerance for linear solver
+    linear_solver_maxiter : int, default 10000
+        Maximum iterations for linear solver
+    linear_solver_x0_fn : callable, optional
+        Custom function to compute initial guess: f(current_sol) -> x0
+    cudss_options : CUDSSOptions, optional
+        CuDSS-specific options (mtype_id, mview_id, device_id)
+    line_search_max_backtracks : int, default 30
+        Maximum number of backtracking steps in Armijo line search
+    line_search_c1 : float, default 1e-4
+        Armijo constant for sufficient decrease condition
+    line_search_rho : float, default 0.5
+        Backtracking factor for line search (alpha *= rho each iteration)
+    verbose : bool, default False
+        Whether to print convergence information during iterations
+        Uses jax.debug.print() for JIT/vmap compatibility
+    check_convergence : bool, default False
+        Whether to verify linear solver convergence by checking residual.
+        If True and residual is too large, returns NaN to signal failure.
+        Useful for detecting ill-conditioned problems.
+    convergence_threshold : float, default 0.1
+        Maximum allowable relative residual for convergence check.
+        Only used when check_convergence=True.
+    """
+
+    tol: float = 1e-6
+    rel_tol: float = 1e-8
+    max_iter: int = 100
+    linear_solver: Optional[str] = None  # Auto-detected based on backend if not specified
+    preconditioner: Optional[Callable] = None
+    use_jacobi_preconditioner: bool = False
+    jacobi_shift: float = 1e-12
+    linear_solver_tol: float = 1e-10
+    linear_solver_atol: float = 1e-10
+    linear_solver_maxiter: int = 10000
+    linear_solver_x0_fn: Optional[Callable] = None  # Function to compute initial guess: f(current_sol) -> x0
+    cudss_options: CUDSSOptions = None  # Will be set to default in __post_init__
+    line_search_max_backtracks: int = 30
+    line_search_c1: float = 1e-4
+    line_search_rho: float = 0.5
+    verbose: bool = False
+    check_convergence: bool = False
+    convergence_threshold: float = 0.1
+
+    def __post_init__(self):
+        """Auto-detect backend and set appropriate defaults."""
+        # Auto-detect linear solver based on backend if not specified
+        if self.linear_solver is None:
+            backend = jax.default_backend()
+            if backend == "gpu":
+                # Use cuDSS for GPU (faster direct solver)
+                object.__setattr__(self, 'linear_solver', 'cudss')
+                logger.info(f"JAX backend: {backend.upper()} | Auto-selected linear solver: cudss")
+            else:
+                # Use CG for CPU (JAX-native iterative solver)
+                object.__setattr__(self, 'linear_solver', 'cg')
+                logger.info(f"JAX backend: {backend.upper()} | Auto-selected linear solver: cg")
+        else:
+            # User manually specified solver - just show backend info
+            backend = jax.default_backend()
+            logger.info(f"JAX backend: {backend.upper()} | Linear solver: {self.linear_solver}")
+
+        # Set default cudss_options if not provided
+        if self.cudss_options is None:
+            object.__setattr__(self, 'cudss_options', CUDSSOptions())
+
+    @classmethod
+    def from_problem(cls, problem, **kwargs):
+        """Create SolverOptions with automatic configuration based on Problem.
+
+        This factory method auto-configures solver options to match the Problem's
+        matrix storage format. For Problems with UPPER/LOWER matrix_view, it
+        automatically sets the cuDSS solver to use matching matrix view.
+
+        Parameters
+        ----------
+        problem : Problem
+            The finite element problem instance
+        **kwargs : dict
+            Additional SolverOptions parameters to override defaults
+
+        Returns
+        -------
+        SolverOptions
+            Configured solver options matching the problem structure
+
+        Examples
+        --------
+        >>> problem = Problem(mesh, vec=3, dim=3, matrix_view='UPPER')
+        >>> solver_opts = SolverOptions.from_problem(problem, tol=1e-8)
+        >>> # Automatically sets cudss_options.matrix_view = UPPER
+
+        Notes
+        -----
+        - UPPER/LOWER matrix_view requires SYMMETRIC matrix type
+        - Automatically validates compatibility
+        """
+        from feax.problem import MatrixView
+
+        # Determine cudss_options based on problem.matrix_view
+        cudss_kwargs = {}
+        if hasattr(problem, 'matrix_view'):
+            if problem.matrix_view == MatrixView.UPPER:
+                cudss_kwargs['matrix_view'] = CUDSSMatrixView.UPPER
+                logger.info("Problem uses UPPER triangular storage → Setting cuDSS matrix_view=UPPER")
+            elif problem.matrix_view == MatrixView.LOWER:
+                cudss_kwargs['matrix_view'] = CUDSSMatrixView.LOWER
+                logger.info("Problem uses LOWER triangular storage → Setting cuDSS matrix_view=LOWER")
+            elif problem.matrix_view == MatrixView.FULL:
+                cudss_kwargs['matrix_view'] = CUDSSMatrixView.FULL
+
+            # For UPPER/LOWER, force SYMMETRIC matrix type
+            if problem.matrix_view in (MatrixView.UPPER, MatrixView.LOWER):
+                cudss_kwargs['matrix_type'] = CUDSSMatrixType.SYMMETRIC
+                logger.info("Triangular storage requires SYMMETRIC matrix type → Setting matrix_type=SYMMETRIC")
+
+        # Allow user to override cudss_options
+        if 'cudss_options' not in kwargs:
+            kwargs['cudss_options'] = CUDSSOptions(**cudss_kwargs)
+        else:
+            # User provided cudss_options - validate compatibility
+            user_cudss = kwargs['cudss_options']
+            if hasattr(problem, 'matrix_view'):
+                if problem.matrix_view == MatrixView.UPPER and user_cudss.matrix_view != CUDSSMatrixView.UPPER:
+                    logger.warning(
+                        f"Problem uses UPPER storage but cudss_options.matrix_view={user_cudss.matrix_view.name}. "
+                        f"Consider using matrix_view=CUDSSMatrixView.UPPER for consistency."
+                    )
+                elif problem.matrix_view == MatrixView.LOWER and user_cudss.matrix_view != CUDSSMatrixView.LOWER:
+                    logger.warning(
+                        f"Problem uses LOWER storage but cudss_options.matrix_view={user_cudss.matrix_view.name}. "
+                        f"Consider using matrix_view=CUDSSMatrixView.LOWER for consistency."
+                    )
+
+        return cls(**kwargs)
+
+
+# ============================================================================
+# Direct Solver Options
+# ============================================================================
+
+@dataclass(frozen=True)
+class DirectSolverOptions:
+    """Configuration for direct linear solvers.
+
+    Parameters
+    ----------
+    solver : str, default "auto"
+        Direct solver algorithm:
+        - "auto": Automatically selected based on backend and matrix property
+          (CUDA -> cudss, CPU -> spsolve). Resolved at create_solver time.
+        - "cudss": NVIDIA cuDSS direct solver (GPU only)
+        - "spsolve": JAX experimental sparse solve (CPU only)
+        - "cholesky": Cholesky decomposition via lineax (SPD matrices)
+        - "lu": LU decomposition via lineax (general matrices)
+        - "qr": QR decomposition via lineax (general/rectangular matrices)
+    cudss_options : CUDSSOptions, optional
+        cuDSS-specific configuration. Only used when solver="cudss".
+        Auto-configured when solver="auto" and backend is CUDA.
+    check_convergence : bool, default False
+        Whether to verify solution by checking residual norm.
+    convergence_threshold : float, default 0.1
+        Maximum allowable relative residual for convergence check.
+    verbose : bool, default False
+        Whether to print solver diagnostics.
+    """
+    solver: str = "auto"
+    cudss_options: CUDSSOptions = None
+    check_convergence: bool = False
+    convergence_threshold: float = 0.1
+    verbose: bool = False
+
+    def __post_init__(self):
+        valid_solvers = ("auto", "cudss", "spsolve", "cholesky", "lu", "qr")
+        if self.solver not in valid_solvers:
+            raise ValueError(
+                f"Invalid direct solver: {self.solver}. "
+                f"Choose from {valid_solvers}"
+            )
+        if self.cudss_options is None:
+            object.__setattr__(self, 'cudss_options', CUDSSOptions())
+
+
+def resolve_direct_solver(
+    options: DirectSolverOptions,
+    matrix_property: MatrixProperty,
+) -> DirectSolverOptions:
+    """Resolve "auto" to a concrete direct solver based on backend and matrix property.
+
+    Parameters
+    ----------
+    options : DirectSolverOptions
+        Options with solver possibly set to "auto".
+    matrix_property : MatrixProperty
+        Detected matrix property (SPD, SYMMETRIC, GENERAL).
+
+    Returns
+    -------
+    DirectSolverOptions
+        Options with solver resolved to a concrete algorithm.
+        If solver != "auto", returns the input unchanged.
+    """
+    if options.solver != "auto":
+        return options
+
+    backend = jax.default_backend()
+    if backend == "gpu":
+        # Map MatrixProperty to CUDSSMatrixType
+        mp_to_cudss = {
+            MatrixProperty.SPD: CUDSSMatrixType.SPD,
+            MatrixProperty.SYMMETRIC: CUDSSMatrixType.SYMMETRIC,
+            MatrixProperty.GENERAL: CUDSSMatrixType.GENERAL,
+        }
+        cudss_mtype = mp_to_cudss[matrix_property]
+        cudss_mview = options.cudss_options.matrix_view
+        cudss_opts = CUDSSOptions(
+            matrix_type=cudss_mtype,
+            matrix_view=cudss_mview,
+            device_id=options.cudss_options.device_id,
+        )
+        resolved = DirectSolverOptions(
+            solver="cudss",
+            cudss_options=cudss_opts,
+            check_convergence=options.check_convergence,
+            convergence_threshold=options.convergence_threshold,
+            verbose=options.verbose,
+        )
+        logger.info(
+            f"DirectSolver auto: backend=CUDA, matrix_property={matrix_property.name} "
+            f"-> cudss (matrix_type={cudss_mtype.name})"
+        )
+    else:
+        resolved = DirectSolverOptions(
+            solver="spsolve",
+            cudss_options=options.cudss_options,
+            check_convergence=options.check_convergence,
+            convergence_threshold=options.convergence_threshold,
+            verbose=options.verbose,
+        )
+        logger.info(
+            f"DirectSolver auto: backend=CPU, matrix_property={matrix_property.name} "
+            f"-> spsolve"
+        )
+
+    return resolved
+
+
+# ============================================================================
+# Iterative Solver Options
+# ============================================================================
+
+@dataclass(frozen=True)
+class IterativeSolverOptions:
+    """Configuration for iterative linear solvers (cg, bicgstab, gmres).
+
+    Parameters
+    ----------
+    solver : str, default "auto"
+        Iterative solver algorithm:
+        - "auto": Automatically selected based on matrix property.
+          SPD -> cg, SYMMETRIC -> bicgstab, GENERAL -> gmres.
+          Resolved at create_solver time.
+        - "cg": Conjugate Gradient (for SPD matrices)
+        - "bicgstab": BiCGSTAB (for symmetric/general matrices)
+        - "gmres": GMRES (for general matrices)
+    tol : float, default 1e-10
+        Relative tolerance for the iterative solver.
+    atol : float, default 1e-10
+        Absolute tolerance for the iterative solver.
+    maxiter : int, default 10000
+        Maximum number of iterations.
+    preconditioner : callable, optional
+        Custom preconditioner function M(x) -> y.
+    use_jacobi_preconditioner : bool, default False
+        Whether to auto-create Jacobi (diagonal) preconditioner.
+    jacobi_shift : float, default 1e-12
+        Regularization parameter for Jacobi preconditioner.
+    x0_fn : callable, optional
+        Custom function to compute initial guess: f(current_sol) -> x0.
+    check_convergence : bool, default False
+        Whether to verify solution by checking residual norm.
+    convergence_threshold : float, default 0.1
+        Maximum allowable relative residual for convergence check.
+    verbose : bool, default False
+        Whether to print solver diagnostics.
+    """
+    solver: str = "auto"
+    tol: float = 1e-10
+    atol: float = 1e-10
+    maxiter: int = 10000
+    preconditioner: Optional[Callable] = None
+    use_jacobi_preconditioner: bool = False
+    jacobi_shift: float = 1e-12
+    x0_fn: Optional[Callable] = None
+    check_convergence: bool = False
+    convergence_threshold: float = 0.1
+    verbose: bool = False
+
+    def __post_init__(self):
+        valid_solvers = ("auto", "cg", "bicgstab", "gmres")
+        if self.solver not in valid_solvers:
+            raise ValueError(
+                f"Invalid iterative solver: {self.solver}. "
+                f"Choose from {valid_solvers}"
+            )
+
+
+def resolve_iterative_solver(
+    options: IterativeSolverOptions,
+    matrix_property: MatrixProperty,
+) -> IterativeSolverOptions:
+    """Resolve "auto" to a concrete iterative solver based on matrix property.
+
+    Parameters
+    ----------
+    options : IterativeSolverOptions
+        Options with solver possibly set to "auto".
+    matrix_property : MatrixProperty
+        Detected matrix property (SPD, SYMMETRIC, GENERAL).
+
+    Returns
+    -------
+    IterativeSolverOptions
+        Options with solver resolved to a concrete algorithm.
+        If solver != "auto", returns the input unchanged.
+    """
+    if options.solver != "auto":
+        return options
+
+    mp_to_solver = {
+        MatrixProperty.SPD: "cg",
+        MatrixProperty.SYMMETRIC: "bicgstab",
+        MatrixProperty.GENERAL: "gmres",
+    }
+    solver_name = mp_to_solver[matrix_property]
+
+    resolved = IterativeSolverOptions(
+        solver=solver_name,
+        tol=options.tol,
+        atol=options.atol,
+        maxiter=options.maxiter,
+        preconditioner=options.preconditioner,
+        use_jacobi_preconditioner=options.use_jacobi_preconditioner,
+        jacobi_shift=options.jacobi_shift,
+        x0_fn=options.x0_fn,
+        check_convergence=options.check_convergence,
+        convergence_threshold=options.convergence_threshold,
+        verbose=options.verbose,
+    )
+    logger.info(
+        f"IterativeSolver auto: matrix_property={matrix_property.name} "
+        f"-> {solver_name}"
+    )
+    return resolved

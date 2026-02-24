@@ -31,7 +31,7 @@ def has_gpu():
 def has_cudss():
     """Check if cuDSS backend is available."""
     try:
-        from feax.solver import CUDSSOptions
+        from feax.solver_option import CUDSSOptions
         return has_gpu()  # cuDSS requires GPU
     except ImportError:
         return False
@@ -456,9 +456,11 @@ def test_grad_jit_compatibility_cudss(
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
 
-    # Create solver with cuDSS
+    # Create solver with cuDSS (pass internal_vars to pre-warm CuDSSSolver
+    # with concrete values, required for JIT+grad composition)
     solver_opts = fe.SolverOptions.from_problem(problem)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1,
+                              internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
@@ -549,9 +551,11 @@ def test_jit_grad_composition_order_cudss(
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
 
-    # Create solver with cuDSS
+    # Create solver with cuDSS (pass internal_vars to pre-warm CuDSSSolver
+    # with concrete values, required for JIT+grad composition)
     solver_opts = fe.SolverOptions.from_problem(problem)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1,
+                              internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
@@ -580,3 +584,89 @@ def test_jit_grad_composition_order_cudss(
     rel_diff = diff / norm
 
     assert rel_diff < 1e-8, f"Different composition orders produce different gradients: {rel_diff:.2e}"
+
+# ============================================================================
+# Gradient Tests - Matrix View Consistency (UPPER vs FULL)
+# ============================================================================
+
+@pytest.mark.cuda
+@requires_cudss
+def test_gradient_consistency_upper_vs_full(
+    linear_elasticity_problem,
+    linear_elasticity_problem_upper,
+    internal_vars,
+    material_params
+):
+    """Test that UPPER matrix view produces same gradients as FULL matrix view.
+
+    This test verifies the fix for the adjoint solver with UPPER matrix storage.
+    For symmetric matrices, the adjoint should give identical results regardless
+    of whether FULL or UPPER storage is used.
+
+    Bug: Previously, UPPER storage gave incorrect gradients because the adjoint
+    solver was transposing the matrix (UPPER->LOWER) without adjusting the
+    matrix_view parameter, causing cuDSS to misinterpret the matrix structure.
+
+    Fix: For symmetric matrices with UPPER/LOWER storage, don't transpose
+    since A^T = A, and use the same matrix_view for adjoint as forward.
+    """
+    tol = material_params['tol']
+
+    # Setup boundary conditions (same for both)
+    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
+    bc_config = fe.DirichletBCConfig([left_fix])
+
+    # Test with FULL matrix view
+    problem_full = linear_elasticity_problem
+    assert problem_full.matrix_view == MatrixView.FULL
+    bc_full = bc_config.create_bc(problem_full)
+
+    solver_opts_full = fe.SolverOptions.from_problem(problem_full)
+    solver_full = fe.create_solver(
+        problem_full, bc_full,
+        solver_options=solver_opts_full,
+        adjoint_solver_options=solver_opts_full,
+        iter_num=1
+    )
+    initial_full = fe.zero_like_initial_guess(problem_full, bc_full)
+
+    def objective_full(internal_vars):
+        sol = solver_full(internal_vars, initial_full)
+        return jnp.linalg.norm(sol)
+
+    grad_full = jax.grad(objective_full)(internal_vars)
+
+    # Test with UPPER matrix view
+    problem_upper = linear_elasticity_problem_upper
+    assert problem_upper.matrix_view == MatrixView.UPPER
+    bc_upper = bc_config.create_bc(problem_upper)
+
+    solver_opts_upper = fe.SolverOptions.from_problem(problem_upper)
+    solver_upper = fe.create_solver(
+        problem_upper, bc_upper,
+        solver_options=solver_opts_upper,
+        adjoint_solver_options=solver_opts_upper,
+        iter_num=1
+    )
+    initial_upper = fe.zero_like_initial_guess(problem_upper, bc_upper)
+
+    def objective_upper(internal_vars):
+        sol = solver_upper(internal_vars, initial_upper)
+        return jnp.linalg.norm(sol)
+
+    grad_upper = jax.grad(objective_upper)(internal_vars)
+
+    # Compare gradients
+    grad_full_surf = grad_full.surface_vars[0][0]
+    grad_upper_surf = grad_upper.surface_vars[0][0]
+
+    diff = jnp.linalg.norm(grad_full_surf - grad_upper_surf)
+    norm = jnp.linalg.norm(grad_full_surf)
+    rel_diff = diff / norm
+
+    # Gradients should be essentially identical (within numerical precision)
+    assert rel_diff < 1e-12, (
+        f"UPPER matrix view produces different gradients than FULL: {rel_diff:.2e}. "
+        f"This indicates incorrect adjoint computation for UPPER storage."
+    )

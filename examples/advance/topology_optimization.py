@@ -69,11 +69,7 @@ left_fix = fe.DCboundary.DirichletBCSpec(
 bc_config = fe.DCboundary.DirichletBCConfig([left_fix])
 bc = bc_config.create_bc(problem)
 
-solver_opts = fe.SolverOptions.from_problem(problem)
-solver = fe.solver.create_solver(
-    problem, bc, solver_options=solver_opts, adjoint_solver_options=solver_opts, iter_num=1
-)
-initial = fe.utils.zero_like_initial_guess(problem, bc)
+initial = fe.zero_like_initial_guess(problem, bc)
 
 # Responses
 compliance_fn = create_compliance_fn(problem)
@@ -82,6 +78,18 @@ volume_fn = create_volume_fn(problem)
 # Create filter function once (outside of differentiated function)
 # Filter uses node-based input and output
 filter_fn = gene.filters.create_density_filter(mesh, radius)
+
+# Initialize node-based density field
+num_nodes = mesh.points.shape[0]
+rho_init = fe.InternalVars.create_node_var(problem, target_fraction)
+
+# Create solver with auto detection using sample internal_vars
+sample_iv = fe.InternalVars(volume_vars=(rho_init,), surface_vars=())
+solver_opts = fe.DirectSolverOptions()
+solver = fe.create_solver(
+    problem, bc, solver_options=solver_opts, adjoint_solver_options=solver_opts,
+    iter_num=1, internal_vars=sample_iv
+)
 
 def solve_forward(rho):
     """Compute compliance for given node-based density field."""
@@ -96,9 +104,7 @@ def evaluate_volume(rho):
     rho_filtered = filter_fn(rho)
     return volume_fn(rho_filtered)
 
-# Initialize node-based density field
-num_nodes = mesh.points.shape[0]
-rho_init = fe.internal_vars.InternalVars.create_node_var(problem, target_fraction)
+
 
 # ============================================================
 # NLopt MMA Optimization
