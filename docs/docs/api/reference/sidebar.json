@@ -4,23 +4,6 @@
       "items": [
         {
           "items": [
-            {
-              "items": [
-                "reference/feax/experimental/topopt_toolkit/filter",
-                "reference/feax/experimental/topopt_toolkit/mdmm",
-                "reference/feax/experimental/topopt_toolkit/responses"
-              ],
-              "label": "feax.experimental.topopt_toolkit",
-              "type": "category"
-            },
-            "reference/feax/experimental/feax_form_compiler",
-            "reference/feax/experimental/symbolic"
-          ],
-          "label": "feax.experimental",
-          "type": "category"
-        },
-        {
-          "items": [
             "reference/feax/flat/filters",
             "reference/feax/flat/graph",
             "reference/feax/flat/pbc",
@@ -32,14 +15,26 @@
           "label": "feax.flat",
           "type": "category"
         },
+        {
+          "items": [
+            "reference/feax/gene/filters",
+            "reference/feax/gene/mdmm",
+            "reference/feax/gene/mma",
+            "reference/feax/gene/responses"
+          ],
+          "label": "feax.gene",
+          "type": "category"
+        },
         "reference/feax/DCboundary",
         "reference/feax/assembler",
         "reference/feax/basis",
         "reference/feax/fe",
         "reference/feax/internal_vars",
+        "reference/feax/linear_solver",
         "reference/feax/mesh",
         "reference/feax/problem",
         "reference/feax/solver",
+        "reference/feax/solver_option",
         "reference/feax/utils"
       ],
       "label": "feax",

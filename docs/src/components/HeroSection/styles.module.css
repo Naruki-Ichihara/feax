@@ -1,0 +1,126 @@
+.hero {
+  text-align: center;
+  padding: 2.5rem 0 1.5rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.heroLogo {
+  width: 100px;
+  height: 100px;
+  margin-bottom: 1rem;
+}
+
+.heroTitle {
+  font-size: 2.75rem;
+  font-weight: 800;
+  margin-bottom: 0.75rem;
+  letter-spacing: -0.5px;
+}
+
+.heroSubtitle {
+  font-size: 1.1rem;
+  max-width: 560px;
+  margin: 0 auto 1.5rem;
+  color: var(--ifm-color-emphasis-700);
+  line-height: 1.6;
+}
+
+.heroSubtitle a {
+  color: var(--ifm-color-primary);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.heroSubtitle a:hover {
+  text-decoration: underline;
+}
+
+.buttons {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.buttonPrimary {
+  background-color: var(--ifm-color-primary);
+  color: #fff;
+  border: 2px solid var(--ifm-color-primary);
+}
+
+.buttonPrimary:hover {
+  background-color: var(--ifm-color-primary-dark);
+  border-color: var(--ifm-color-primary-dark);
+  color: #fff;
+}
+
+.buttonSecondary {
+  background-color: transparent;
+  color: var(--ifm-color-primary);
+  border: 2px solid var(--ifm-color-primary);
+}
+
+.buttonSecondary:hover {
+  background-color: var(--ifm-color-primary);
+  color: #fff;
+}
+
+/* Feature cards */
+.features {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.featureCard {
+  padding: 1.25rem;
+  border-radius: 8px;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  transition: box-shadow 0.2s, border-color 0.2s;
+  text-align: center;
+}
+
+.featureCard:hover {
+  border-color: var(--ifm-color-primary-light);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='dark'] .featureCard:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.featureIcon {
+  font-size: 1.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.featureTitle {
+  font-size: 1.05rem !important;
+  font-weight: 600 !important;
+  margin-bottom: 0.4rem !important;
+  margin-top: 0 !important;
+}
+
+.featureDescription {
+  font-size: 0.9rem;
+  color: var(--ifm-color-emphasis-700);
+  line-height: 1.45;
+  margin: 0;
+}
+
+@media screen and (max-width: 768px) {
+  .features {
+    grid-template-columns: 1fr;
+  }
+
+  .heroTitle {
+    font-size: 2rem;
+  }
+
+  .heroSubtitle {
+    font-size: 1rem;
+  }
+}

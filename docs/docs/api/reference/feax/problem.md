@@ -9,6 +9,22 @@ This module provides the core Problem class that defines finite element problem
 structure independent of material parameters, enabling efficient optimization
 and parameter studies through JAX transformations.
 
+## MatrixView Objects
+
+```python
+class MatrixView(Enum)
+```
+
+Matrix storage format for sparse assembly.
+
+Controls which entries are stored in the assembled matrix:
+- FULL: Store all entries (default, backward compatible)
+- UPPER: Store only upper triangular entries (j &gt;= i)
+- LOWER: Store only lower triangular entries (j &lt;= i)
+
+For symmetric problems, UPPER or LOWER reduces memory by ~50%
+and enables optimized solvers like Cholesky factorization.
+
 ## Problem Objects
 
 ```python
@@ -30,6 +46,7 @@ Parameters
 - **ele_type** (*Union[str, List[str]], optional*): Element type identifier(s). Default &#x27;HEX8&#x27;
 - **gauss_order** (*Union[int, List[int]], optional*): Gaussian quadrature order(s). Default determined by element type
 - **location_fns** (*Optional[List[Callable]], optional*): Functions defining boundary locations for surface integrals
+- **matrix_view** (*Union[MatrixView, str], optional*): Matrix storage format: &#x27;FULL&#x27; (default), &#x27;UPPER&#x27;, or &#x27;LOWER&#x27;. Use UPPER for symmetric problems to reduce memory by ~50%.
 - **additional_info** (*Tuple[Any, ...], optional*): Additional problem-specific information passed to custom_init()
 
 

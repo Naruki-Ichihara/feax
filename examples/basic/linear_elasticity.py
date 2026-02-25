@@ -14,7 +14,7 @@ W = 10
 H = 10
 box_size = (L, W, H)
 mesh = fe.mesh.box_mesh(box_size, mesh_size=1)
-    
+
 # Locations
 left = lambda point: np.isclose(point[0], 0., tol)
 right = lambda point: np.isclose(point[0], L, tol)
@@ -34,7 +34,7 @@ class LinearElasticity(fe.problem.Problem):
         def surface_map(u, x, traction_mag):
             return np.array([0., 0., traction_mag])
         return [surface_map]
-    
+
 problem = LinearElasticity(mesh, vec=3, dim=3, location_fns=[right])
 
 # Boundary
@@ -46,19 +46,21 @@ left_fix = fe.DCboundary.DirichletBCSpec(
 bc_config = fe.DCboundary.DirichletBCConfig([left_fix])
 bc = bc_config.create_bc(problem)
 
-# Solver
-solver = fe.solver.create_solver(problem, bc, iter_num=1)
-initial = fe.utils.zero_like_initial_guess(problem, bc)
-
-def solve_forward(traction_array):
-    internal_vars = fe.internal_vars.InternalVars(
+# Internal variables
+traction_array = fe.InternalVars.create_uniform_surface_var(problem, traction)
+internal_vars = fe.InternalVars(
     volume_vars=(),
     surface_vars=[(traction_array,)]
-    )
-    return solver(internal_vars, initial)
+)
 
-traction_array = fe.internal_vars.InternalVars.create_uniform_surface_var(problem, traction)
-sol = solve_forward(traction_array)
+# Solver (auto selects based on backend and matrix property)
+solver_opts = fe.DirectSolverOptions()
+solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
+initial = fe.zero_like_initial_guess(problem, bc)
+
+def solve_forward(iv):
+    return solver(iv, initial)
+sol = solve_forward(internal_vars)
 sol_unflat = problem.unflatten_fn_sol_list(sol)
 displacement = sol_unflat[0]
 

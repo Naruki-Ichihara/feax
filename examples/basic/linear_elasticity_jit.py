@@ -48,13 +48,15 @@ bc_config = fe.DCboundary.DirichletBCConfig([left_fix])
 bc = bc_config.create_bc(problem)
 
 # Solver setup
-solver_option = fe.solver.SolverOptions(linear_solver="cudss")
-solver_no_jit = fe.solver.create_solver(problem, bc, solver_option, iter_num=1)
-solver_jit = jax.jit(fe.solver.create_solver(problem, bc, solver_option, iter_num=1))
-
-initial = fe.utils.zero_like_initial_guess(problem, bc)
 traction_array = fe.internal_vars.InternalVars.create_uniform_surface_var(problem, traction)
 internal_vars = fe.internal_vars.InternalVars(volume_vars=(), surface_vars=[(traction_array,)])
+
+solver_option = fe.solver.DirectSolverOptions()
+solver_no_jit = fe.solver.create_solver(problem, bc, solver_option, iter_num=1, internal_vars=internal_vars)
+solver_jit = jax.jit(fe.solver.create_solver(problem, bc, solver_option, iter_num=1, internal_vars=internal_vars))
+
+initial = fe.utils.zero_like_initial_guess(problem, bc)
+
 
 # Benchmark 1: No JIT
 start = time.perf_counter()

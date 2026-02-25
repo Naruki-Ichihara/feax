@@ -9,12 +9,27 @@ import feax as fe
 from feax.problem import MatrixView
 
 
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Store test call result on the item so fixtures can inspect it."""
+    outcome = yield
+    rep = outcome.get_result()
+    setattr(item, f'_rep_{call.when}', rep)
+
+
 @pytest.fixture(autouse=True)
-def clear_jax_cache():
-    """Clear JAX compilation cache between tests to avoid CUDA memory issues."""
+def clear_jax_cache(request):
+    """Clear JAX compilation cache between tests to avoid CUDA memory issues.
+
+    Cache is only cleared when the test passes. If a test fails (especially
+    with a CUDA runtime error), clearing the cache forces kernel recompilation
+    in subsequent tests, which cascades the failure when the GPU context is
+    already corrupted.
+    """
     yield
-    # Clear cache after each test
-    jax.clear_caches()
+    call_rep = getattr(request.node, '_rep_call', None)
+    if call_rep is None or not call_rep.failed:
+        jax.clear_caches()
 
 
 @pytest.fixture

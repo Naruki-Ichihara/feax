@@ -72,7 +72,7 @@ def test_cg_solver_vmap_compatibility(
 
     # Create solver with CG
     solver_opts = fe.SolverOptions(linear_solver="cg")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars (3 copies with small perturbations)
@@ -118,7 +118,7 @@ def test_bicgstab_solver_vmap_compatibility(
 
     # Create solver with BICGSTAB
     solver_opts = fe.SolverOptions(linear_solver="bicgstab")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars
@@ -160,7 +160,7 @@ def test_gmres_solver_vmap_compatibility(
 
     # Create solver with GMRES
     solver_opts = fe.SolverOptions(linear_solver="gmres")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars
@@ -206,8 +206,8 @@ def test_cudss_solver_vmap_compatibility(
     bc = bc_config.create_bc(problem)
 
     # Create solver with cuDSS
-    solver_opts = fe.SolverOptions.from_problem(problem)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.DirectSolverOptions()
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars
@@ -253,7 +253,7 @@ def test_vmap_jit_composition_cg(
 
     # Create solver with CG
     solver_opts = fe.SolverOptions(linear_solver="cg")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars
@@ -297,8 +297,8 @@ def test_vmap_jit_composition_cudss(
     bc = bc_config.create_bc(problem)
 
     # Create solver with cuDSS
-    solver_opts = fe.SolverOptions.from_problem(problem)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.DirectSolverOptions()
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars
@@ -343,7 +343,7 @@ def test_vmap_grad_composition_cg(
 
     # Create solver with CG
     solver_opts = fe.SolverOptions(linear_solver="cg")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars
@@ -389,8 +389,8 @@ def test_vmap_grad_composition_cudss(
     bc = bc_config.create_bc(problem)
 
     # Create solver with cuDSS
-    solver_opts = fe.SolverOptions.from_problem(problem)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.DirectSolverOptions()
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars
@@ -440,7 +440,7 @@ def test_vmap_jit_grad_composition_cg(
 
     # Create solver with CG
     solver_opts = fe.SolverOptions(linear_solver="cg")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars
@@ -486,8 +486,8 @@ def test_vmap_jit_grad_composition_cudss(
     bc = bc_config.create_bc(problem)
 
     # Create solver with cuDSS
-    solver_opts = fe.SolverOptions.from_problem(problem)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.DirectSolverOptions()
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars

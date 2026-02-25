@@ -1,0 +1,63 @@
+---
+sidebar_position: 1
+slug: /
+title: Introduction
+hide_title: true
+hide_table_of_contents: true
+---
+
+import HeroSection, {FeatureCards} from '@site/src/components/HeroSection';
+
+<HeroSection />
+
+<FeatureCards />
+
+## Quick Example
+
+3D cantilever beam under traction — solve and compute gradients:
+
+```python
+import feax as fe
+import jax
+import jax.numpy as jnp
+
+mesh = fe.mesh.box_mesh((100, 10, 10), mesh_size=2)
+
+# Define problem, boundary conditions, and solver
+problem = LinearElasticity(mesh, vec=3, dim=3,
+    location_fns=[lambda p: jnp.isclose(p[0], 100., 1e-5)])
+solver = fe.create_solver(problem, bc,
+    solver_options=fe.DirectSolverOptions(), iter_num=1,
+    internal_vars=internal_vars)
+
+# Solve (direct solver — no initial guess needed)
+sol = solver(internal_vars)
+
+# Differentiate through the entire solve
+grad_fn = jax.grad(lambda iv: jnp.sum(solver(iv) ** 2))
+grads = grad_fn(internal_vars)
+```
+
+## Getting Started
+
+New to FEAX? Start here:
+
+1. **[Installation](getting-started/installation.md)** - Install FEAX and its dependencies
+2. **[Basic Tutorials](basic/index.md)** - Learn the fundamentals with hands-on examples
+
+## Tutorials
+
+| Basic | Advanced |
+|---|---|
+| [Linear Elasticity](basic/linear_elasticity.md) - 3D elasticity with traction | [Periodic BCs](advanced/periodic_boundary_conditions.md) - Unit cell analysis |
+| [Hyperelasticity](basic/hyperelasticity.md) - Nonlinear Neo-Hookean | [Lattice Homogenization](advanced/lattice_homogenization.md) - Graph-based lattices |
+| [JIT Transform](basic/jit_transform.md) - JIT compilation | [Spinodoid Metamaterials](advanced/spinodoid_metamaterials.md) - Spinodoid generation |
+| [Vmap Transform](basic/vmap_transform.md) - Vectorization | |
+
+## API Reference
+
+For detailed API documentation, see the [API Reference](api/index.md) section.
+
+## License
+
+FEAX is licensed under the GNU General Public License v3.0.

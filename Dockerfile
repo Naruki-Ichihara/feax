@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/jax:26.01-py3
+FROM nvcr.io/nvidia/jax:25.10-py3
 
 RUN apt update
 RUN apt upgrade -y
@@ -12,7 +12,9 @@ RUN pip install --upgrade pip
 COPY . /workspace
 WORKDIR /workspace
 
-# Install feax with CUDA support (includes all necessary NVIDIA packages)
+# Install feax with CUDA dependencies.
+# JAX is intentionally not reinstalled here: the NVCR base image already ships
+# JAX compiled for CUDA 13.1.1. Use pip install .[cuda13,jax] outside containers.
 RUN pip install .[cuda13]
 RUN pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
 

@@ -55,6 +55,9 @@ docs = [
     "sphinx",
     "sphinx-rtd-theme",
 ]
+jax = [
+    "jax[cuda13]",
+]
 cuda12 = [
     "jax[cuda12]",
     "nvidia-cudss-cu12",
@@ -68,7 +71,6 @@ cuda12 = [
     "cmake"
 ]
 cuda13 = [
-    "jax[cuda13]",
     "nvidia-cudss-cu13",
     "nvidia-cublas",
     "nvidia-cuda-runtime",
