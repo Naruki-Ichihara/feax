@@ -284,43 +284,46 @@ Notes
 Uses JAX&#x27;s at[].add() for scatter-add operations to accumulate
 contributions from multiple elements sharing the same nodes.
 
-#### get\_J
+#### get\_jacobian\_info
 
 ```python
-def get_J(problem: 'Problem', sol_list: List[np.ndarray],
-          internal_vars: InternalVars) -> sparse.BCOO
+def get_jacobian_info(problem: 'Problem', sol_list: List[np.ndarray],
+                      internal_vars: InternalVars) -> dict
 ```
 
-Compute Jacobian matrix with separated internal variables.
+Get Jacobian matrix information without full matrix construction.
 
-Assembles the global Jacobian matrix by computing derivatives of the weak
-form with respect to the solution variables. Uses forward-mode automatic
-differentiation for element-level Jacobians.
+This function provides safe access to Jacobian statistics that works
+correctly with JIT-compiled solvers and cuDSS backend. Unlike the
+internal _get_J function, this does not cause GPU memory conflicts.
 
 Parameters
 ----------
-- **problem** (*Problem*): The finite element problem containing mesh and physics definitions.
-- **sol_list** (*list of np.ndarray*): Solution arrays for each variable. Each array has shape (num_total_nodes, vec).
-- **internal_vars** (*InternalVars*): Container with material properties and loading parameters.
+- **problem** (*Problem*): The finite element problem definition.
+- **sol_list** (*list of np.ndarray*): Solution arrays for each variable.
+- **internal_vars** (*InternalVars*): Internal variables container.
 
 
 Returns
 -------
-sparse.BCOO
-    Sparse Jacobian matrix in JAX BCOO format.
-    Shape: (num_total_dofs, num_total_dofs).
+dict
+    Dictionary containing:
+    - &#x27;nnz&#x27;: Number of non-zero entries (int)
+    - &#x27;shape&#x27;: Matrix shape (tuple)
+    - &#x27;matrix_view&#x27;: Matrix storage format (MatrixView enum)
 
 Examples
 --------
 ```python
->>> J = get_J(problem, [solution], internal_vars)
->>> print(f&quot;Jacobian shape: {`J.shape`}, nnz: {`J.nnz`}&quot;)
+>>> info = get_jacobian_info(problem, sol_list, internal_vars)
+>>> print(f&quot;Jacobian NNZ: {`info[&#x27;nnz&#x27;]:,`}&quot;)
+>>> print(f&quot;Matrix view: {`info[&#x27;matrix_view&#x27;].name`}&quot;)
 ```
 
 Notes
 -----
-The Jacobian is assembled in sparse format for memory efficiency,
-particularly important for large 3D problems.
+This function is safe to call from user code and does not interfere
+with JIT-compiled solvers using cuDSS backend.
 
 #### get\_res
 

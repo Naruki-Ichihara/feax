@@ -76,14 +76,15 @@ Examples
 def apply_boundary_to_J(bc: DirichletBC, J: BCOO) -> BCOO
 ```
 
-Apply Dirichlet boundary conditions to Jacobian matrix J using row elimination.
+Apply Dirichlet boundary conditions to Jacobian matrix J.
 
 This function modifies the Jacobian matrix to enforce Dirichlet boundary conditions
-by zeroing out all entries in boundary condition rows and setting diagonal entries
-to 1.0 for those rows. This transforms the system to enforce u[bc_dof] = bc_val.
+by zeroing out entries in boundary condition rows and columns, and setting diagonal
+entries to 1.0 for those rows. This preserves symmetry and transforms the system to
+enforce u[bc_dof] = bc_val.
 
 The algorithm:
-1. Zero out all entries in BC rows (both on-diagonal and off-diagonal)
+1. Zero out all entries in BC rows and columns (symmetric elimination)
 2. Set diagonal entries to 1.0 for all BC rows
 3. Handle potential duplicates by concatenation (JAX sparse solvers handle this)
 
@@ -103,6 +104,7 @@ Notes
 This function is JAX-JIT compatible and designed for efficient use in Newton solvers.
 The returned matrix may have duplicate entries (original zeros + new diagonal ones),
 but JAX sparse solvers handle this correctly by summing duplicates.
+Symmetric elimination preserves matrix symmetry, allowing use of symmetric solvers like CG.
 
 #### apply\_boundary\_to\_res
 

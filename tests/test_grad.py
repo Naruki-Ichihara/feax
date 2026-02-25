@@ -193,8 +193,8 @@ def test_cudss_solver_grad_full(
     bc = bc_config.create_bc(problem)
 
     # Create solver with cuDSS
-    solver_opts = fe.SolverOptions.from_problem(problem)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.DirectSolverOptions()
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
@@ -236,8 +236,8 @@ def test_cudss_solver_grad_upper(
     bc = bc_config.create_bc(problem)
 
     # Create solver with cuDSS for UPPER matrix
-    solver_opts = fe.SolverOptions.from_problem(problem)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.DirectSolverOptions()
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
@@ -458,7 +458,7 @@ def test_grad_jit_compatibility_cudss(
 
     # Create solver with cuDSS (pass internal_vars to pre-warm CuDSSSolver
     # with concrete values, required for JIT+grad composition)
-    solver_opts = fe.SolverOptions.from_problem(problem)
+    solver_opts = fe.DirectSolverOptions()
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1,
                               internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
@@ -553,7 +553,7 @@ def test_jit_grad_composition_order_cudss(
 
     # Create solver with cuDSS (pass internal_vars to pre-warm CuDSSSolver
     # with concrete values, required for JIT+grad composition)
-    solver_opts = fe.SolverOptions.from_problem(problem)
+    solver_opts = fe.DirectSolverOptions()
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1,
                               internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
@@ -622,12 +622,12 @@ def test_gradient_consistency_upper_vs_full(
     assert problem_full.matrix_view == MatrixView.FULL
     bc_full = bc_config.create_bc(problem_full)
 
-    solver_opts_full = fe.SolverOptions.from_problem(problem_full)
+    solver_opts_full = fe.DirectSolverOptions()
     solver_full = fe.create_solver(
         problem_full, bc_full,
         solver_options=solver_opts_full,
         adjoint_solver_options=solver_opts_full,
-        iter_num=1
+        iter_num=1, internal_vars=internal_vars
     )
     initial_full = fe.zero_like_initial_guess(problem_full, bc_full)
 
@@ -642,12 +642,12 @@ def test_gradient_consistency_upper_vs_full(
     assert problem_upper.matrix_view == MatrixView.UPPER
     bc_upper = bc_config.create_bc(problem_upper)
 
-    solver_opts_upper = fe.SolverOptions.from_problem(problem_upper)
+    solver_opts_upper = fe.DirectSolverOptions()
     solver_upper = fe.create_solver(
         problem_upper, bc_upper,
         solver_options=solver_opts_upper,
         adjoint_solver_options=solver_opts_upper,
-        iter_num=1
+        iter_num=1, internal_vars=internal_vars
     )
     initial_upper = fe.zero_like_initial_guess(problem_upper, bc_upper)
 

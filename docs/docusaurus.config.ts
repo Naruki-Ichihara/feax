@@ -8,7 +8,7 @@ import rehypeKatex from 'rehype-katex';
 
 const config: Config = {
   title: 'FEAX',
-  tagline: 'Finite Element Analysis with JAX',
+  tagline: 'Fully Differentiable Finite Element Engine',
   favicon: 'img/favicon.svg',
 
   // Custom head tags for multiple favicon formats
@@ -63,6 +63,7 @@ const config: Config = {
       'classic',
       {
         docs: {
+          routeBasePath: '/',  // Serve docs at site root (with sidebar)
           sidebarPath: './sidebars.ts',
           // Please change this to your repo.
           // Remove this to remove the "edit this page" links.
@@ -71,21 +72,7 @@ const config: Config = {
           remarkPlugins: [remarkMath],
           rehypePlugins: [rehypeKatex],
         },
-        blog: {
-          showReadingTime: true,
-          feedOptions: {
-            type: ['rss', 'atom'],
-            xslt: true,
-          },
-          // Please change this to your repo.
-          // Remove this to remove the "edit this page" links.
-          editUrl:
-            'https://github.com/Naruki-Ichihara/feax/tree/main/docs/',
-          // Useful options to enforce blogging best practices
-          onInlineTags: 'warn',
-          onInlineAuthors: 'warn',
-          onUntruncatedBlogPosts: 'warn',
-        },
+        blog: false,
         theme: {
           customCss: './src/css/custom.css',
         },
@@ -133,7 +120,6 @@ const config: Config = {
           position: 'left',
           label: 'API',
         },
-        {to: '/blog', label: 'Blog', position: 'left'},
         {
           href: 'https://github.com/Naruki-Ichihara/feax',
           label: 'GitHub',
@@ -149,7 +135,7 @@ const config: Config = {
           items: [
             {
               label: 'Documentation',
-              to: '/docs/intro',
+              to: '/',
             },
           ],
         },
@@ -160,19 +146,11 @@ const config: Config = {
               label: 'JAX',
               href: 'https://github.com/google/jax',
             },
-            {
-              label: 'JAX-FEM',
-              href: 'https://github.com/tianjuxue/jax_fem',
-            },
           ],
         },
         {
           title: 'More',
           items: [
-            {
-              label: 'Blog',
-              to: '/blog',
-            },
             {
               label: 'GitHub',
               href: 'https://github.com/Naruki-Ichihara/feax',

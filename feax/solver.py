@@ -8,11 +8,12 @@ solvers for performance and Python-based solvers for debugging.
 Key Features:
 - Newton-Raphson solvers with line search and convergence control
 - Multiple solver variants: while loop, fixed iterations, and Python debugging
-- Comprehensive solver configuration through SolverOptions dataclass
+- Solver configuration via AbstractSolverOptions hierarchy
+  (DirectSolverOptions, IterativeSolverOptions, or legacy SolverOptions)
 - Support for multipoint constraints via prolongation matrices
 
 Linear solver implementations and preconditioners are provided in
-`linear_solve.py`. Solver configuration options are in `solver_option.py`.
+``linear_solver.py``. Solver configuration options are in ``solver_option.py``.
 """
 
 import jax
@@ -25,7 +26,7 @@ from .assembler import create_J_bc_function, create_res_bc_function
 from .DCboundary import DirichletBC
 from .problem import MatrixView, Problem
 from .solver_option import (
-    SolverOptions, CUDSSOptions, CUDSSMatrixType, CUDSSMatrixView,
+    AbstractSolverOptions, SolverOptions, CUDSSOptions, CUDSSMatrixType, CUDSSMatrixView,
     DirectSolverOptions, IterativeSolverOptions,
     detect_matrix_property, resolve_direct_solver, resolve_iterative_solver,
 )
@@ -94,7 +95,7 @@ def create_x0(bc_rows=None, bc_vals=None, P_mat=None):
     Examples
     --------
     >>> x0_fn = create_x0(bc_rows=[0, 1, 2], bc_vals=[1.0, 0.0, 2.0])
-    >>> solver_options = SolverOptions(linear_solver_x0_fn=x0_fn)
+    >>> solver_options = IterativeSolverOptions(x0_fn=x0_fn)
 
     >>> # Usage with reduced problem
     >>> x0_fn = create_x0(bc_rows, bc_vals, P_mat=P)
@@ -837,77 +838,70 @@ def _create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_option
 def create_solver(
     problem: Problem,
     bc: DirichletBC,
-    solver_options=None,
-    adjoint_solver_options=None,
+    solver_options: Optional[AbstractSolverOptions] = None,
+    adjoint_solver_options: Optional[AbstractSolverOptions] = None,
     iter_num: Optional[int] = None,
     P: Optional[BCOO] = None,
     internal_vars=None,
-) -> Callable[[Any, jax.Array], jax.Array]:
-    """Create a differentiable solver that returns gradients w.r.t. internal_vars using custom VJP.
-
-    This solver uses the self-adjoint approach for efficient gradient computation:
-    - Forward mode: standard Newton solve
-    - Backward mode: solve adjoint system to compute gradients
+) -> Callable:
+    """Create a differentiable solver with custom VJP for gradient computation.
 
     Parameters
     ----------
     problem : Problem
-        The feax Problem instance (modular API - no internal_vars in constructor)
+        The feax Problem instance.
     bc : DirichletBC
-        Boundary conditions
-    solver_options : SolverOptions or DirectSolverOptions or IterativeSolverOptions, optional
-        Options for the forward linear solve. Accepts:
-        - ``SolverOptions``: Legacy unified options (backward compatible, default)
-        - ``DirectSolverOptions``: Direct solver options (cudss, spsolve, lineax)
-        - ``IterativeSolverOptions``: Iterative solver options (cg, bicgstab, gmres)
-        When solver="auto", the algorithm is automatically selected at setup time
-        by assembling the initial Jacobian and calling ``detect_matrix_property``.
-        Defaults to SolverOptions() if not specified.
-    adjoint_solver_options : SolverOptions or DirectSolverOptions or IterativeSolverOptions, optional
+        Boundary conditions.
+    solver_options : AbstractSolverOptions, optional
+        Options for the forward linear solve. Accepts any subclass of
+        ``AbstractSolverOptions``:
+
+        - ``DirectSolverOptions``: Direct solvers (cudss, spsolve, cholesky, lu, qr).
+        - ``IterativeSolverOptions``: Iterative solvers (cg, bicgstab, gmres).
+        - ``SolverOptions``: Legacy unified options (backward compatible).
+
+        When ``solver="auto"``, the algorithm is selected automatically by
+        assembling the initial Jacobian and calling ``detect_matrix_property``.
+        Defaults to ``SolverOptions()`` if not specified.
+    adjoint_solver_options : AbstractSolverOptions, optional
         Options for the adjoint solve in the backward pass.
-        Defaults to same as solver_options.
+        Defaults to same as ``solver_options``.
     iter_num : int, optional
-        Number of iterations to perform. Controls which solver is used:
-        - None: Use while loop newton_solve (adaptive iterations, NOT vmappable)
-        - 1: Use linear_solve (single iteration for linear problems, vmappable)
-        - >1: Use newton_solve_fori with fixed number of iterations (vmappable)
-        Note: When iter_num is not None, the solver is vmappable since it uses fixed iterations.
-        Recommended: Use iter_num=1 for linear problems for optimal performance.
+        Number of Newton iterations:
+
+        - ``None``: Adaptive Newton solve with while loop (NOT vmappable).
+        - ``1``: Single linear solve (vmappable). Recommended for linear problems.
+        - ``>1``: Fixed-iteration Newton solve (vmappable).
     P : BCOO matrix, optional
-        Prolongation matrix for periodic boundary conditions (maps reduced to full DOFs).
-        If provided, solver works in reduced space using matrix-free operations for memory efficiency.
+        Prolongation matrix for periodic boundary conditions.
     internal_vars : InternalVars, optional
-        Sample internal variables for auto solver selection. Required when
-        solver_options is DirectSolverOptions or IterativeSolverOptions with
-        solver="auto". Used to assemble an initial Jacobian for
-        ``detect_matrix_property``. Not used during the actual solve.
+        Sample internal variables for auto solver selection and cuDSS
+        pre-warming. Required when ``solver="auto"`` or cuDSS is used.
 
     Returns
     -------
-    differentiable_solve : callable
-        Function that takes (internal_vars, initial_guess) and returns solution with gradient support
-
-    Notes
-    -----
-    The returned function has signature: differentiable_solve(internal_vars, initial_guess) -> solution
-    where gradients flow through internal_vars (material properties, loadings, etc.)
-
-    When iter_num is specified (not None), the solver becomes vmappable as it uses fixed
-    iterations without dynamic control flow. This is essential for parallel solving of
-    multiple parameter sets using jax.vmap.
+    callable
+        When ``DirectSolverOptions`` is used:
+            ``solver(internal_vars) -> solution``
+            (``initial_guess`` is optional and ignored if provided.)
+        When ``IterativeSolverOptions`` or ``SolverOptions`` is used:
+            ``solver(internal_vars, initial_guess) -> solution``
 
     Examples
     --------
-    >>> # Legacy API (backward compatible)
-    >>> solver = create_solver(problem, bc, SolverOptions(linear_solver="cg"))
+    >>> # Direct solver (auto-selects cuDSS on GPU, spsolve on CPU)
+    >>> solver = create_solver(problem, bc, DirectSolverOptions(),
+    ...                        iter_num=1, internal_vars=internal_vars)
+    >>> solution = solver(internal_vars)
     >>>
     >>> # Iterative solver with auto selection
     >>> solver = create_solver(problem, bc, IterativeSolverOptions(),
-    ...                        internal_vars=internal_vars)
+    ...                        iter_num=1, internal_vars=internal_vars)
+    >>> solution = solver(internal_vars, initial_guess)
     >>>
-    >>> # Explicit solver selection (no internal_vars needed)
-    >>> solver = create_solver(problem, bc, IterativeSolverOptions(solver="gmres"))
-    >>>
+    >>> # Explicit solver selection (no internal_vars needed for non-cuDSS)
+    >>> solver = create_solver(problem, bc, IterativeSolverOptions(solver="gmres"),
+    ...                        iter_num=1)
     >>> solution = solver(internal_vars, initial_guess)
     """
 
@@ -981,7 +975,7 @@ def create_solver(
         if isinstance(solver_options, _new_option_types) and solver_options.solver == "auto":
             _category = "direct" if isinstance(solver_options, DirectSolverOptions) else "iterative"
             if isinstance(solver_options, DirectSolverOptions):
-                solver_options = resolve_direct_solver(solver_options, _mp)
+                solver_options = resolve_direct_solver(solver_options, _mp, matrix_view=problem.matrix_view)
             else:
                 solver_options = resolve_iterative_solver(solver_options, _mp)
             print(f"[feax] Auto solver ({_category}): backend={_backend.name}, matrix_property={_mp.name} -> {solver_options.solver}")
@@ -991,7 +985,7 @@ def create_solver(
         elif isinstance(adjoint_solver_options, _new_option_types) and adjoint_solver_options.solver == "auto":
             _category = "direct" if isinstance(adjoint_solver_options, DirectSolverOptions) else "iterative"
             if isinstance(adjoint_solver_options, DirectSolverOptions):
-                adjoint_solver_options = resolve_direct_solver(adjoint_solver_options, _mp)
+                adjoint_solver_options = resolve_direct_solver(adjoint_solver_options, _mp, matrix_view=problem.matrix_view)
             else:
                 adjoint_solver_options = resolve_iterative_solver(adjoint_solver_options, _mp)
             print(f"[feax] Auto adjoint solver ({_category}): backend={_backend.name}, matrix_property={_mp.name} -> {adjoint_solver_options.solver}")
@@ -1076,6 +1070,27 @@ def create_solver(
             linear_solve_fn=linear_solve_fn, armijo_search_fn=armijo_fn, x0_fn=x0_fn
         )
 
+    # Determine if the solver can omit initial_guess.
+    # Direct solvers on linear problems (iter_num == 1) don't need an
+    # initial guess because there is no Newton iteration.  Non-linear
+    # problems always need one because the Newton loop updates it.
+    def _solver_can_omit_x0(opts, iters):
+        """Return True when the caller may omit initial_guess."""
+        if iters != 1:
+            return False          # Newton solver always needs initial_guess
+        if isinstance(opts, DirectSolverOptions):
+            return True
+        if isinstance(opts, IterativeSolverOptions):
+            return False
+        if isinstance(opts, SolverOptions):
+            return opts.linear_solver not in {"cg", "bicgstab", "gmres"}
+        return False
+
+    _can_omit_x0 = _solver_can_omit_x0(solver_options, iter_num)
+    if _can_omit_x0:
+        from .utils import zero_like_initial_guess as _zero_init
+        _default_initial_guess = _zero_init(problem, bc)
+
     @jax.custom_vjp
     def differentiable_solve(internal_vars, initial_guess):
         return solve_fn(internal_vars, initial_guess)[0]
@@ -1132,4 +1147,20 @@ def create_solver(
         return (vjp_result, None)
 
     differentiable_solve.defvjp(f_fwd, f_bwd)
-    return differentiable_solve
+
+    if not _can_omit_x0:
+        return differentiable_solve
+
+    # Linear + direct solver wrapper: initial_guess is optional
+    import warnings
+
+    def solver_wrapper(internal_vars, initial_guess=None):
+        if initial_guess is not None:
+            warnings.warn(
+                "initial_guess is ignored for direct solvers. "
+                "You can omit it: solver(internal_vars)",
+                stacklevel=2,
+            )
+        return differentiable_solve(internal_vars, _default_initial_guess)
+
+    return solver_wrapper

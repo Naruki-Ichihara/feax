@@ -15,6 +15,7 @@ from .assembler import get_jacobian_info, get_res, create_J_bc_function, create_
 from .mesh import Mesh
 from .DCboundary import DirichletBC, apply_boundary_to_J, apply_boundary_to_res, DirichletBCSpec, DirichletBCConfig, dirichlet_bc_config
 from .solver_option import (
+    AbstractSolverOptions,
     SolverOptions, CUDSSOptions, CUDSSMatrixType, CUDSSMatrixView,
     Backend, detect_backend, is_cuda, is_cpu, has_cudss, has_spsolve,
     MatrixProperty, detect_matrix_property,

@@ -151,7 +151,7 @@ def create_direct_solve_fn(options: DirectSolverOptions):
                 "Run on CPU or use an iterative solver on GPU."
             )
 
-        def solve(A, b, _):
+        def solve(A, b, x0=None):
             A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A.sum_duplicates(nse=A.nse))
             x = jax.experimental.sparse.linalg.spsolve(
                 A_bcsr.data, A_bcsr.indices, A_bcsr.indptr, b,
@@ -175,7 +175,7 @@ def create_direct_solve_fn(options: DirectSolverOptions):
             ) from e
         cudss_solver = None
 
-        def solve(A, b, _):
+        def solve(A, b, x0=None):
             nonlocal cudss_solver
             A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A.sum_duplicates(nse=A.nse))
 

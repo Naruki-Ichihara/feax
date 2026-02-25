@@ -292,7 +292,29 @@ class CUDSSOptions:
 
 
 @dataclass(frozen=True)
-class SolverOptions:
+class AbstractSolverOptions:
+    """Base class for all solver option types.
+
+    Common parameters shared by DirectSolverOptions,
+    IterativeSolverOptions, and SolverOptions.
+
+    Parameters
+    ----------
+    verbose : bool, default False
+        Whether to print solver diagnostics.
+    check_convergence : bool, default False
+        Whether to verify solution by checking residual norm.
+    convergence_threshold : float, default 0.1
+        Maximum allowable relative residual for convergence check.
+        Only used when check_convergence=True.
+    """
+    verbose: bool = False
+    check_convergence: bool = False
+    convergence_threshold: float = 0.1
+
+
+@dataclass(frozen=True)
+class SolverOptions(AbstractSolverOptions):
     """Configuration options for the Newton solver.
 
     Parameters
@@ -330,16 +352,6 @@ class SolverOptions:
         Armijo constant for sufficient decrease condition
     line_search_rho : float, default 0.5
         Backtracking factor for line search (alpha *= rho each iteration)
-    verbose : bool, default False
-        Whether to print convergence information during iterations
-        Uses jax.debug.print() for JIT/vmap compatibility
-    check_convergence : bool, default False
-        Whether to verify linear solver convergence by checking residual.
-        If True and residual is too large, returns NaN to signal failure.
-        Useful for detecting ill-conditioned problems.
-    convergence_threshold : float, default 0.1
-        Maximum allowable relative residual for convergence check.
-        Only used when check_convergence=True.
     """
 
     tol: float = 1e-6
@@ -357,9 +369,6 @@ class SolverOptions:
     line_search_max_backtracks: int = 30
     line_search_c1: float = 1e-4
     line_search_rho: float = 0.5
-    verbose: bool = False
-    check_convergence: bool = False
-    convergence_threshold: float = 0.1
 
     def __post_init__(self):
         """Auto-detect backend and set appropriate defaults."""
@@ -383,83 +392,13 @@ class SolverOptions:
         if self.cudss_options is None:
             object.__setattr__(self, 'cudss_options', CUDSSOptions())
 
-    @classmethod
-    def from_problem(cls, problem, **kwargs):
-        """Create SolverOptions with automatic configuration based on Problem.
-
-        This factory method auto-configures solver options to match the Problem's
-        matrix storage format. For Problems with UPPER/LOWER matrix_view, it
-        automatically sets the cuDSS solver to use matching matrix view.
-
-        Parameters
-        ----------
-        problem : Problem
-            The finite element problem instance
-        **kwargs : dict
-            Additional SolverOptions parameters to override defaults
-
-        Returns
-        -------
-        SolverOptions
-            Configured solver options matching the problem structure
-
-        Examples
-        --------
-        >>> problem = Problem(mesh, vec=3, dim=3, matrix_view='UPPER')
-        >>> solver_opts = SolverOptions.from_problem(problem, tol=1e-8)
-        >>> # Automatically sets cudss_options.matrix_view = UPPER
-
-        Notes
-        -----
-        - UPPER/LOWER matrix_view requires SYMMETRIC matrix type
-        - Automatically validates compatibility
-        """
-        from feax.problem import MatrixView
-
-        # Determine cudss_options based on problem.matrix_view
-        cudss_kwargs = {}
-        if hasattr(problem, 'matrix_view'):
-            if problem.matrix_view == MatrixView.UPPER:
-                cudss_kwargs['matrix_view'] = CUDSSMatrixView.UPPER
-                logger.info("Problem uses UPPER triangular storage → Setting cuDSS matrix_view=UPPER")
-            elif problem.matrix_view == MatrixView.LOWER:
-                cudss_kwargs['matrix_view'] = CUDSSMatrixView.LOWER
-                logger.info("Problem uses LOWER triangular storage → Setting cuDSS matrix_view=LOWER")
-            elif problem.matrix_view == MatrixView.FULL:
-                cudss_kwargs['matrix_view'] = CUDSSMatrixView.FULL
-
-            # For UPPER/LOWER, force SYMMETRIC matrix type
-            if problem.matrix_view in (MatrixView.UPPER, MatrixView.LOWER):
-                cudss_kwargs['matrix_type'] = CUDSSMatrixType.SYMMETRIC
-                logger.info("Triangular storage requires SYMMETRIC matrix type → Setting matrix_type=SYMMETRIC")
-
-        # Allow user to override cudss_options
-        if 'cudss_options' not in kwargs:
-            kwargs['cudss_options'] = CUDSSOptions(**cudss_kwargs)
-        else:
-            # User provided cudss_options - validate compatibility
-            user_cudss = kwargs['cudss_options']
-            if hasattr(problem, 'matrix_view'):
-                if problem.matrix_view == MatrixView.UPPER and user_cudss.matrix_view != CUDSSMatrixView.UPPER:
-                    logger.warning(
-                        f"Problem uses UPPER storage but cudss_options.matrix_view={user_cudss.matrix_view.name}. "
-                        f"Consider using matrix_view=CUDSSMatrixView.UPPER for consistency."
-                    )
-                elif problem.matrix_view == MatrixView.LOWER and user_cudss.matrix_view != CUDSSMatrixView.LOWER:
-                    logger.warning(
-                        f"Problem uses LOWER storage but cudss_options.matrix_view={user_cudss.matrix_view.name}. "
-                        f"Consider using matrix_view=CUDSSMatrixView.LOWER for consistency."
-                    )
-
-        return cls(**kwargs)
-
 
 # ============================================================================
 # Direct Solver Options
 # ============================================================================
 
 @dataclass(frozen=True)
-class DirectSolverOptions:
+class DirectSolverOptions(AbstractSolverOptions):
     """Configuration for direct linear solvers.
 
     Parameters
@@ -476,18 +415,9 @@ class DirectSolverOptions:
     cudss_options : CUDSSOptions, optional
         cuDSS-specific configuration. Only used when solver="cudss".
         Auto-configured when solver="auto" and backend is CUDA.
-    check_convergence : bool, default False
-        Whether to verify solution by checking residual norm.
-    convergence_threshold : float, default 0.1
-        Maximum allowable relative residual for convergence check.
-    verbose : bool, default False
-        Whether to print solver diagnostics.
     """
     solver: str = "auto"
     cudss_options: CUDSSOptions = None
-    check_convergence: bool = False
-    convergence_threshold: float = 0.1
-    verbose: bool = False
 
     def __post_init__(self):
         valid_solvers = ("auto", "cudss", "spsolve", "cholesky", "lu", "qr")
@@ -503,6 +433,7 @@ class DirectSolverOptions:
 def resolve_direct_solver(
     options: DirectSolverOptions,
     matrix_property: MatrixProperty,
+    matrix_view=None,
 ) -> DirectSolverOptions:
     """Resolve "auto" to a concrete direct solver based on backend and matrix property.
 
@@ -512,6 +443,9 @@ def resolve_direct_solver(
         Options with solver possibly set to "auto".
     matrix_property : MatrixProperty
         Detected matrix property (SPD, SYMMETRIC, GENERAL).
+    matrix_view : MatrixView, optional
+        Problem's matrix storage format.  When UPPER or LOWER, the cuDSS
+        solver is automatically configured to match.
 
     Returns
     -------
@@ -522,6 +456,8 @@ def resolve_direct_solver(
     if options.solver != "auto":
         return options
 
+    from .problem import MatrixView
+
     backend = jax.default_backend()
     if backend == "gpu":
         # Map MatrixProperty to CUDSSMatrixType
@@ -531,7 +467,15 @@ def resolve_direct_solver(
             MatrixProperty.GENERAL: CUDSSMatrixType.GENERAL,
         }
         cudss_mtype = mp_to_cudss[matrix_property]
-        cudss_mview = options.cudss_options.matrix_view
+
+        # Auto-configure cuDSS matrix_view from problem's storage format
+        if matrix_view == MatrixView.UPPER:
+            cudss_mview = CUDSSMatrixView.UPPER
+        elif matrix_view == MatrixView.LOWER:
+            cudss_mview = CUDSSMatrixView.LOWER
+        else:
+            cudss_mview = options.cudss_options.matrix_view
+
         cudss_opts = CUDSSOptions(
             matrix_type=cudss_mtype,
             matrix_view=cudss_mview,
@@ -569,7 +513,7 @@ def resolve_direct_solver(
 # ============================================================================
 
 @dataclass(frozen=True)
-class IterativeSolverOptions:
+class IterativeSolverOptions(AbstractSolverOptions):
     """Configuration for iterative linear solvers (cg, bicgstab, gmres).
 
     Parameters
@@ -596,12 +540,6 @@ class IterativeSolverOptions:
         Regularization parameter for Jacobi preconditioner.
     x0_fn : callable, optional
         Custom function to compute initial guess: f(current_sol) -> x0.
-    check_convergence : bool, default False
-        Whether to verify solution by checking residual norm.
-    convergence_threshold : float, default 0.1
-        Maximum allowable relative residual for convergence check.
-    verbose : bool, default False
-        Whether to print solver diagnostics.
     """
     solver: str = "auto"
     tol: float = 1e-10
@@ -611,9 +549,6 @@ class IterativeSolverOptions:
     use_jacobi_preconditioner: bool = False
     jacobi_shift: float = 1e-12
     x0_fn: Optional[Callable] = None
-    check_convergence: bool = False
-    convergence_threshold: float = 0.1
-    verbose: bool = False
 
     def __post_init__(self):
         valid_solvers = ("auto", "cg", "bicgstab", "gmres")

@@ -185,8 +185,8 @@ def test_cudss_solver_jit_compatibility_full(
     bc = bc_config.create_bc(problem)
 
     # Create solver with cuDSS
-    solver_opts = fe.SolverOptions.from_problem(problem)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.DirectSolverOptions()
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve with JIT (only JIT version to avoid multiple solver creation)
@@ -220,8 +220,8 @@ def test_cudss_solver_jit_compatibility_upper(
     bc = bc_config.create_bc(problem)
 
     # Create solver with cuDSS for UPPER matrix
-    solver_opts = fe.SolverOptions.from_problem(problem)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.DirectSolverOptions()
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve with JIT (only JIT version to avoid multiple solver creation)
@@ -290,8 +290,8 @@ def test_multiple_jit_compilations_cudss(
     bc = bc_config.create_bc(problem)
 
     # Create solver with cuDSS
-    solver_opts = fe.SolverOptions.from_problem(problem)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.DirectSolverOptions()
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # First JIT compilation

@@ -32,7 +32,8 @@
       "Bash(pip show:*)",
       "Bash(pip index versions:*)",
       "Bash(nvcc:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "WebFetch(domain:docs.jax.dev)"
     ],
     "deny": [],
     "ask": []

@@ -74,8 +74,8 @@ def test_cudss_full_matrix_solver(
     bc = bc_config.create_bc(problem)
 
     # Create solver with cuDSS (default on GPU)
-    solver_opts = fe.SolverOptions.from_problem(problem)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.DirectSolverOptions()
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve
@@ -110,8 +110,8 @@ def test_cudss_upper_matrix_solver(
     bc = bc_config.create_bc(problem)
 
     # Create solver with cuDSS for UPPER matrix
-    solver_opts = fe.SolverOptions.from_problem(problem)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.DirectSolverOptions()
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve
@@ -143,20 +143,20 @@ def test_cudss_full_vs_upper_consistency(
 
     # Solve with FULL matrix view
     bc_full = bc_config.create_bc(linear_elasticity_problem)
-    solver_opts_full = fe.SolverOptions.from_problem(linear_elasticity_problem)
+    solver_opts_full = fe.DirectSolverOptions()
     solver_full = fe.create_solver(
         linear_elasticity_problem, bc_full,
-        solver_options=solver_opts_full, iter_num=1
+        solver_options=solver_opts_full, iter_num=1, internal_vars=internal_vars
     )
     initial_full = fe.zero_like_initial_guess(linear_elasticity_problem, bc_full)
     sol_full = solver_full(internal_vars, initial_full)
 
     # Solve with UPPER matrix view
     bc_upper = bc_config.create_bc(linear_elasticity_problem_upper)
-    solver_opts_upper = fe.SolverOptions.from_problem(linear_elasticity_problem_upper)
+    solver_opts_upper = fe.DirectSolverOptions()
     solver_upper = fe.create_solver(
         linear_elasticity_problem_upper, bc_upper,
-        solver_options=solver_opts_upper, iter_num=1
+        solver_options=solver_opts_upper, iter_num=1, internal_vars=internal_vars
     )
     initial_upper = fe.zero_like_initial_guess(linear_elasticity_problem_upper, bc_upper)
     sol_upper = solver_upper(internal_vars, initial_upper)
@@ -254,8 +254,8 @@ def test_cudss_vs_cg_consistency(
     bc = bc_config.create_bc(problem)
 
     # Solve with cuDSS (default on GPU with FULL matrix)
-    solver_opts_cudss = fe.SolverOptions.from_problem(problem)
-    solver_cudss = fe.create_solver(problem, bc, solver_options=solver_opts_cudss, iter_num=1)
+    solver_opts_cudss = fe.DirectSolverOptions()
+    solver_cudss = fe.create_solver(problem, bc, solver_options=solver_opts_cudss, iter_num=1, internal_vars=internal_vars)
     initial_cudss = fe.zero_like_initial_guess(problem, bc)
     sol_cudss = solver_cudss(internal_vars, initial_cudss)
 

@@ -11,7 +11,7 @@
 
 **FEAX** (Finite Element Analysis with JAX) is a fully differentiable finite element engine. Every stage — from assembly to solve — runs on XLA and is compatible with `jax.jit`, `jax.grad`, and `jax.vmap`, enabling gradient-based optimization and machine learning directly on PDE simulations.
 
-## Impacts
+## Why FEAX?
 
 FEAX is a fully differentiable finite element engine built on JAX. All solvers — including the GPU-accelerated direct solver via [cuDSS](https://docs.nvidia.com/cuda/cudss/) — are compatible with JAX transformations (`jit`, `grad`, `vmap`). This means you can compute exact gradients through the entire simulation pipeline without any approximation.
 
@@ -64,13 +64,12 @@ internal_vars = fe.InternalVars(volume_vars=(), surface_vars=[(traction,)])
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(), iter_num=1,
     internal_vars=internal_vars)
-initial = fe.zero_like_initial_guess(problem, bc)
 
-# Solve
-sol = solver(internal_vars, initial)
+# Solve (direct solver — no initial guess needed)
+sol = solver(internal_vars)
 
 # Differentiate through the entire solve
-grad_fn = jax.grad(lambda iv: jnp.sum(solver(iv, initial) ** 2))
+grad_fn = jax.grad(lambda iv: jnp.sum(solver(iv) ** 2))
 grads = grad_fn(internal_vars)
 ```
 

@@ -5,80 +5,19 @@ title: feax.solver
 
 Nonlinear and linear solvers for FEAX finite element framework.
 
-This module provides Newton-Raphson solvers, linear solvers, and solver configuration
-utilities for solving finite element problems. It includes both JAX-based solvers
-for performance and Python-based solvers for debugging.
+This module provides Newton-Raphson solvers and solver configuration
+utilities for solving finite element problems. It includes both JAX-based
+solvers for performance and Python-based solvers for debugging.
 
 Key Features:
 - Newton-Raphson solvers with line search and convergence control
 - Multiple solver variants: while loop, fixed iterations, and Python debugging
-- Jacobi preconditioning for improved convergence
-- Comprehensive solver configuration through SolverOptions dataclass
+- Solver configuration via AbstractSolverOptions hierarchy
+  (DirectSolverOptions, IterativeSolverOptions, or legacy SolverOptions)
 - Support for multipoint constraints via prolongation matrices
 
-## SolverOptions Objects
-
-```python
-@dataclass(frozen=True)
-class SolverOptions()
-```
-
-Configuration options for the Newton solver.
-
-Parameters
-----------
-- **tol** (*float, default 1e-6*): Absolute tolerance for residual vector (l2 norm)
-- **rel_tol** (*float, default 1e-8*): Relative tolerance for residual vector (l2 norm)
-- **max_iter** (*int, default 100*): Maximum number of Newton iterations
-- **linear_solver** (*str, default &quot;cg&quot;*): Linear solver type. Options: &quot;cg&quot;, &quot;bicgstab&quot;, &quot;gmres&quot;, &quot;spsolve&quot;, &quot;cudss_solver&quot;
-- **preconditioner** (*callable, optional*): Preconditioner function for linear solver
-- **use_jacobi_preconditioner** (*bool, default False*): Whether to use Jacobi (diagonal) preconditioner automatically
-- **jacobi_shift** (*float, default 1e-12*): Regularization parameter for Jacobi preconditioner
-- **linear_solver_tol** (*float, default 1e-10*): Tolerance for linear solver
-- **linear_solver_atol** (*float, default 1e-10*): Absolute tolerance for linear solver
-- **linear_solver_maxiter** (*int, default 10000*): Maximum iterations for linear solver
-- **linear_solver_x0_fn** (*callable, optional*): Custom function to compute initial guess: f(current_sol) -&gt; x0
-- **line_search_max_backtracks** (*int, default 30*): Maximum number of backtracking steps in Armijo line search
-- **line_search_c1** (*float, default 1e-4*): Armijo constant for sufficient decrease condition
-- **line_search_rho** (*float, default 0.5*): Backtracking factor for line search (alpha *= rho each iteration)
-- **verbose** (*bool, default False*): Whether to print convergence information during iterations Uses jax.debug.print() for JIT/vmap compatibility
-
-
-#### linear\_solver
-
-Options: &quot;cg&quot;, &quot;bicgstab&quot;, &quot;gmres&quot;, &quot;spsolve&quot;, &quot;cudss_solver&quot;
-
-#### linear\_solver\_x0\_fn
-
-Function to compute initial guess: f(current_sol) -&gt; x0
-
-#### create\_jacobi\_preconditioner
-
-```python
-def create_jacobi_preconditioner(
-        A: jax.experimental.sparse.BCOO,
-        shift: float = 1e-12) -> jax.experimental.sparse.BCOO
-```
-
-Create Jacobi (diagonal) preconditioner from sparse matrix.
-
-Parameters
-----------
-- **A** (*BCOO sparse matrix*): The system matrix to precondition
-- **shift** (*float, default 1e-12*): Small value added to diagonal for numerical stability
-
-
-Returns
--------
-- **M** (*LinearOperator*): Jacobi preconditioner as diagonal inverse matrix
-
-
-Notes
------
-This creates a diagonal preconditioner M = diag(A)^{`-1`} with regularization.
-The preconditioner is JAX-compatible and avoids dynamic indexing.
-For elasticity problems with extreme material contrasts, this helps
-condition number significantly.
+Linear solver implementations and preconditioners are provided in
+``linear_solver.py``. Solver configuration options are in ``solver_option.py``.
 
 #### create\_x0
 
@@ -114,38 +53,13 @@ x0 = P.T @ (x0_1 - x0_2) - transform back to reduced space
 Examples
 --------
 ```python
->>> # Usage with BC information
 >>> x0_fn = create_x0(bc_rows=[0, 1, 2], bc_vals=[1.0, 0.0, 2.0])
->>> solver_options = SolverOptions(linear_solver_x0_fn=x0_fn)
+>>> solver_options = IterativeSolverOptions(x0_fn=x0_fn)
 ```
 ```python
 >>> # Usage with reduced problem
 >>> x0_fn = create_x0(bc_rows, bc_vals, P_mat=P)
 ```
-
-#### create\_linear\_solve\_fn
-
-```python
-def create_linear_solve_fn(solver_options: SolverOptions)
-```
-
-Create a linear solve function based on the configured solver options.
-
-Parameters
-----------
-- **solver_options** (*SolverOptions*): Solver configuration, including linear solver selection and tolerances
-
-
-Returns
--------
-- **solve** (*callable*): Function with signature (A, b, x0) -> x
-
-
-Notes
------
-The returned function selects between "cg", "bicgstab", "gmres", "spsolve", and "cudss_solver".
-The "spsolve" option is only available on CPU, while "cudss_solver" is only available on CUDA GPUs
-(tested with CUDA 12). To install the cudss solver, use `pip install feax[cuda12]`.
 
 #### create\_armijo\_line\_search\_jax
 
@@ -171,6 +85,33 @@ Parameters
 Returns
 -------
 - **line_search_fn** (*callable*): Line search function with signature: (sol, delta_sol, initial_res_norm, internal_vars=None) -&gt; (new_sol, new_norm, alpha, success)
+
+
+#### create\_armijo\_line\_search\_scan
+
+```python
+def create_armijo_line_search_scan(res_bc_applied,
+                                   c1=1e-4,
+                                   rho=0.5,
+                                   max_backtracks=30)
+```
+
+Create JAX-compatible Armijo backtracking line search using jax.lax.scan.
+
+This version uses scan (fixed iterations) and is vmap-compatible.
+Use this for newton_solve_fori where vmap support is required.
+
+Parameters
+----------
+- **res_bc_applied** (*callable*): Residual function with boundary conditions applied.
+- **c1** (*float, default 1e-4*): Armijo constant for sufficient decrease condition
+- **rho** (*float, default 0.5*): Backtracking factor
+- **max_backtracks** (*int, default 30*): Number of backtracking steps (all are always evaluated)
+
+
+Returns
+-------
+- **line_search_fn** (*callable*): Line search function with same signature as while_loop version.
 
 
 #### create\_armijo\_line\_search\_python
@@ -208,7 +149,10 @@ def newton_solve(J_bc_applied,
                  bc: DirichletBC,
                  solver_options: SolverOptions,
                  internal_vars=None,
-                 P_mat=None)
+                 P_mat=None,
+                 linear_solve_fn=None,
+                 armijo_search_fn=None,
+                 x0_fn=None)
 ```
 
 Newton solver using JAX while_loop for JIT compatibility.
@@ -222,12 +166,15 @@ Parameters
 - **solver_options** (*SolverOptions*): Solver configuration
 - **internal_vars** (*InternalVars, optional*): Material properties and parameters
 - **P_mat** (*BCOO matrix, optional*): Prolongation matrix for MPC/periodic BC
+- **linear_solve_fn** (*callable, optional*): Pre-created linear solve function. If None, created internally.
+- **armijo_search_fn** (*callable, optional*): Pre-created Armijo line search function. If None, created internally.
+- **x0_fn** (*callable, optional*): Pre-created initial guess function. If None, created internally.
 
 
 Returns
 -------
-sol, res_norm, rel_res_norm, iter_count : tuple
-    Solution, residual norms, and iteration count
+sol, res_norm, initial_res_norm, iter_count : tuple
+    Solution, residual norm, initial residual norm, and iteration count
 
 #### newton\_solve\_fori
 
@@ -239,12 +186,16 @@ def newton_solve_fori(J_bc_applied,
                       solver_options: SolverOptions,
                       num_iters: int,
                       internal_vars=None,
-                      P_mat=None)
+                      P_mat=None,
+                      linear_solve_fn=None,
+                      armijo_search_fn=None,
+                      x0_fn=None)
 ```
 
 Newton solver using JAX fori_loop for fixed iterations - optimized for vmap.
 
 Designed for vmap with fixed iterations and consistent computational graph.
+Uses scan-based Armijo line search for vmap compatibility.
 
 Parameters
 ----------
@@ -256,6 +207,9 @@ Parameters
 - **num_iters** (*int*): Fixed number of iterations
 - **internal_vars** (*InternalVars, optional*): Material properties and parameters
 - **P_mat** (*BCOO matrix, optional*): Prolongation matrix for MPC/periodic BC
+- **linear_solve_fn** (*callable, optional*): Pre-created linear solve function. If None, created internally.
+- **armijo_search_fn** (*callable, optional*): Pre-created Armijo line search function. If None, created internally (scan-based).
+- **x0_fn** (*callable, optional*): Pre-created initial guess function. If None, created internally.
 
 
 Returns
@@ -303,8 +257,11 @@ def linear_solve(J_bc_applied,
                  initial_guess,
                  bc: DirichletBC,
                  solver_options: SolverOptions,
+                 matrix_view: MatrixView,
                  internal_vars=None,
-                 P_mat=None)
+                 P_mat=None,
+                 linear_solve_fn=None,
+                 x0_fn=None)
 ```
 
 Linear solver for problems that converge in one iteration.
@@ -318,8 +275,11 @@ Parameters
 - **initial_guess** (*array*): Initial solution guess
 - **bc** (*DirichletBC*): Boundary conditions
 - **solver_options** (*SolverOptions*): Solver configuration
+- **matrix_view** (*MatrixView*): Matrix storage format from the problem.
 - **internal_vars** (*InternalVars, optional*): Material properties and parameters
 - **P_mat** (*BCOO matrix, optional*): Prolongation matrix for MPC/periodic BC
+- **linear_solve_fn** (*callable, optional*): Pre-created linear solve function. If None, created internally.
+- **x0_fn** (*callable, optional*): Pre-created initial guess function. If None, created internally.
 
 
 Returns
@@ -332,83 +292,54 @@ For linear problems, this single iteration achieves the exact solution.
 #### create\_solver
 
 ```python
-def create_solver(problem,
-                  bc,
-                  solver_options=None,
-                  adjoint_solver_options=None,
-                  iter_num=None,
-                  P=None)
+def create_solver(
+        problem: Problem,
+        bc: DirichletBC,
+        solver_options: Optional[AbstractSolverOptions] = None,
+        adjoint_solver_options: Optional[AbstractSolverOptions] = None,
+        iter_num: Optional[int] = None,
+        P: Optional[BCOO] = None,
+        internal_vars=None) -> Callable
 ```
 
-Create a differentiable solver that returns gradients w.r.t. internal_vars using custom VJP.
-
-This solver uses the self-adjoint approach for efficient gradient computation:
-- Forward mode: standard Newton solve
-- Backward mode: solve adjoint system to compute gradients
+Create a differentiable solver with custom VJP for gradient computation.
 
 Parameters
 ----------
-- **problem** (*Problem*)
-- **bc** (*DirichletBC*)
-- **solver_options** (*SolverOptions, optional*)
-- **adjoint_solver_options** (*dict, optional*)
-- **iter_num** (*int, optional*)
-- **Note** (*When iter_num is not None, the solver is vmappable since it uses fixed iterations.*)
-- **Recommended** (*Use iter_num=1 for linear problems for optimal performance.*)
-- **P** (*BCOO matrix, optional*)
+- **problem** (*Problem*): The feax Problem instance.
+- **bc** (*DirichletBC*): Boundary conditions.
+- **solver_options** (*AbstractSolverOptions, optional*): Options for the forward linear solve. Accepts any subclass of ``AbstractSolverOptions``:
+- **adjoint_solver_options** (*AbstractSolverOptions, optional*): Options for the adjoint solve in the backward pass. Defaults to same as ``solver_options``.
+- **iter_num** (*int, optional*): Number of Newton iterations:
+- **P** (*BCOO matrix, optional*): Prolongation matrix for periodic boundary conditions.
+- **internal_vars** (*InternalVars, optional*): Sample internal variables for auto solver selection and cuDSS pre-warming. Required when ``solver=&quot;auto&quot;`` or cuDSS is used.
 
 
 Returns
 -------
-- **differentiable_solve** (*callable*)
-
-
-Notes
------
-The returned function has signature: differentiable_solve(internal_vars, initial_guess) -&gt; solution
-where gradients flow through internal_vars (material properties, loadings, etc.)
-
-The initial_guess parameter is required to avoid conditionals that slow down JAX compilation.
-For the first solve, you can pass zeros with BC values set:
-initial_guess = jnp.zeros(problem.num_total_dofs_all_vars)
-initial_guess = initial_guess.at[bc.bc_rows].set(bc.bc_vals)
-
-When iter_num is specified (not None), the solver becomes vmappable as it uses fixed
-iterations without dynamic control flow. This is essential for parallel solving of
-multiple parameter sets using jax.vmap.
+callable
+    When ``DirectSolverOptions`` is used:
+        ``solver(internal_vars) -&gt; solution``
+        (``initial_guess`` is optional and ignored if provided.)
+    When ``IterativeSolverOptions`` or ``SolverOptions`` is used:
+        ``solver(internal_vars, initial_guess) -&gt; solution``
 
 Examples
 --------
 ```python
->>> # Create differentiable solver
->>> diff_solve = create_solver(problem, bc)
+>>> # Direct solver (auto-selects cuDSS on GPU, spsolve on CPU)
+>>> solver = create_solver(problem, bc, DirectSolverOptions(),
+...                        iter_num=1, internal_vars=internal_vars)
+>>> solution = solver(internal_vars)
 >>>
->>> # Prepare initial guess
->>> initial_guess = jnp.zeros(problem.num_total_dofs_all_vars)
->>> initial_guess = initial_guess.at[bc.bc_rows].set(bc.bc_vals)
+>>> # Iterative solver with auto selection
+>>> solver = create_solver(problem, bc, IterativeSolverOptions(),
+...                        iter_num=1, internal_vars=internal_vars)
+>>> solution = solver(internal_vars, initial_guess)
 >>>
->>> # First solve
->>> solution = diff_solve(internal_vars, initial_guess)
->>>
->>> # For time-dependent problems, update initial guess each timestep
->>> for t in timesteps:
->>>     solution = diff_solve(internal_vars_at_t, solution)  # Use previous solution
->>>
->>> # For linear problems (e.g., linear elasticity), use single iteration for best performance
->>> # This is both faster and vmappable
->>> diff_solve_linear = create_solver(problem, bc, iter_num=1)
->>>
->>> # For fixed iteration count (e.g., for vmap)
->>> diff_solve_fixed = create_solver(problem, bc, iter_num=10)
->>>
->>> # Define loss function
->>> def loss_fn(internal_vars):
-...     initial_guess = jnp.zeros(problem.num_total_dofs_all_vars)
-...     initial_guess = initial_guess.at[bc.bc_rows].set(bc.bc_vals)
-...     sol = diff_solve(internal_vars, initial_guess)
-...     return jnp.sum(sol**2)  # Example loss
->>>
->>> # Compute gradients w.r.t. internal_vars
->>> grad_fn = jax.grad(loss_fn)
->>> gradients = grad_fn(internal_vars)
+>>> # Explicit solver selection (no internal_vars needed for non-cuDSS)
+>>> solver = create_solver(problem, bc, IterativeSolverOptions(solver=&quot;gmres&quot;),
+...                        iter_num=1)
+>>> solution = solver(internal_vars, initial_guess)
 ```
+
