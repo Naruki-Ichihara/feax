@@ -3,11 +3,15 @@
 </div>
 
 
-# [FEAX](https://github.com/Naruki-Ichihara/feax) 
+# [FEAX](https://naruki-ichihara.github.io/feax/) 
 
 [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![JAX](https://img.shields.io/badge/JAX-0.7%2B-green.svg)](https://github.com/google/jax) 
+
+[**Documentation**](https://naruki-ichihara.github.io/feax/)
+| [**Install guide**](https://naruki-ichihara.github.io/feax/getting-started/installation)
+| [**API**](https://naruki-ichihara.github.io/feax/api/)
 
 **FEAX** (Finite Element Analysis with JAX) is a fully differentiable finite element engine. Every stage — from assembly to solve — runs on XLA and is compatible with `jax.jit`, `jax.grad`, and `jax.vmap`, enabling gradient-based optimization and machine learning directly on PDE simulations.
 
@@ -94,9 +98,6 @@ See [examples/](examples/) for more, including topology optimization.
 pip install feax[cuda13]
 pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
 ```
-
-## Documentation
-To be.
 
 ## License
 
