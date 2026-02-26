@@ -742,11 +742,47 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
     return sol, None
 
 
+def _get_reduced_solver_params(opts: IterativeSolverOptions):
+    """Extract (solver_name, tol, atol, maxiter) from IterativeSolverOptions.
+
+    ``"auto"`` resolves to ``"cg"`` because P^T K P is SPD for well-posed
+    linear elastic unit cells.
+    """
+    name = opts.solver if opts.solver != "auto" else "cg"
+    return name, opts.tol, opts.atol, opts.maxiter
+
+
+def _reduced_iterative_solve(matvec, rhs, x0, solver_name, tol, atol, maxiter):
+    """Dispatch to the appropriate JAX sparse iterative solver."""
+    if solver_name == "cg":
+        return jax.scipy.sparse.linalg.cg(
+            matvec, rhs, x0=x0, tol=tol, atol=atol, maxiter=maxiter
+        )
+    elif solver_name == "bicgstab":
+        return jax.scipy.sparse.linalg.bicgstab(
+            matvec, rhs, x0=x0, tol=tol, atol=atol, maxiter=maxiter
+        )
+    elif solver_name == "gmres":
+        return jax.scipy.sparse.linalg.gmres(
+            matvec, rhs, x0=x0, tol=tol, atol=atol, maxiter=maxiter
+        )
+    else:
+        raise ValueError(
+            f"Unsupported iterative solver for reduced problem: {solver_name!r}. "
+            "Choose 'cg', 'bicgstab', or 'gmres'."
+        )
+
+
 def _create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options, iter_num):
     """Create matrix-free reduced solver for periodic boundary conditions."""
 
     J_bc_func = create_J_bc_function(problem, bc)
     res_bc_func = create_res_bc_function(problem, bc)
+
+    fwd_name, fwd_tol, fwd_atol, fwd_maxiter = _get_reduced_solver_params(solver_options)
+    adj_name, adj_tol, adj_atol, adj_maxiter = _get_reduced_solver_params(adjoint_solver_options)
+    fwd_verbose = solver_options.verbose
+    adj_verbose = adjoint_solver_options.verbose
 
     def create_reduced_matvec(sol_full, internal_vars):
         J_full = J_bc_func(sol_full, internal_vars)
@@ -766,9 +802,16 @@ def _create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_option
         res_reduced = compute_reduced_residual(initial_guess_full, internal_vars)
         J_reduced_matvec = create_reduced_matvec(initial_guess_full, internal_vars)
 
-        sol_reduced, _ = jax.scipy.sparse.linalg.cg(J_reduced_matvec, -res_reduced,
-                                                   tol=solver_options.tol,
-                                                   maxiter=solver_options.linear_solver_maxiter)
+        x0 = jnp.zeros(P.shape[1])
+        sol_reduced, info = _reduced_iterative_solve(
+            J_reduced_matvec, -res_reduced, x0,
+            fwd_name, fwd_tol, fwd_atol, fwd_maxiter,
+        )
+        if fwd_verbose:
+            jax.debug.print(
+                "    [{name}] info={info} (0=converged, >0=max_iter reached)",
+                name=fwd_name, info=info,
+            )
         sol_full = P @ sol_reduced
         return sol_full, None
 
@@ -778,12 +821,17 @@ def _create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_option
 
     def f_fwd(internal_vars, initial_guess):
         sol = differentiable_solve(internal_vars, initial_guess)
-        return sol, (internal_vars, sol)
+        # Save initial_guess so f_bwd can reconstruct the total displacement
+        # u_total = sol (= P @ u'_red) + initial_guess
+        return sol, (internal_vars, sol, initial_guess)
 
     def f_bwd(res, v):
-        internal_vars, sol = res
+        internal_vars, sol, initial_guess = res
 
-        J_full = J_bc_func(sol, internal_vars)
+        # Evaluate Jacobian and VJP at the total displacement u_total,
+        # not just the periodic fluctuation P @ u'_red.
+        u_total = sol + initial_guess
+        J_full = J_bc_func(u_total, internal_vars)
         rhs_reduced = P.T @ v
 
         def adjoint_matvec(adjoint_reduced):
@@ -792,14 +840,15 @@ def _create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_option
             return P.T @ Jt_adjoint_full
 
         x0_reduced = jnp.zeros_like(rhs_reduced)
-
-        adjoint_reduced, _ = jax.scipy.sparse.linalg.cg(
-            adjoint_matvec, rhs_reduced,
-            x0=x0_reduced,
-            tol=adjoint_solver_options.linear_solver_tol,
-            atol=adjoint_solver_options.linear_solver_atol,
-            maxiter=adjoint_solver_options.linear_solver_maxiter
+        adjoint_reduced, adj_info = _reduced_iterative_solve(
+            adjoint_matvec, rhs_reduced, x0_reduced,
+            adj_name, adj_tol, adj_atol, adj_maxiter,
         )
+        if adj_verbose:
+            jax.debug.print(
+                "    [{name} adjoint] info={info} (0=converged, >0=max_iter reached)",
+                name=adj_name, info=adj_info,
+            )
 
         adjoint_full = P @ adjoint_reduced
 
@@ -824,8 +873,8 @@ def _create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_option
                 return val
             return vjp_linear_fn
 
-        sol_list = problem.unflatten_fn_sol_list(sol)
-        vjp_linear_fn = get_vjp_contraint_fn_params(internal_vars, sol_list)
+        u_total_list = problem.unflatten_fn_sol_list(u_total)
+        vjp_linear_fn = get_vjp_contraint_fn_params(internal_vars, u_total_list)
         vjp_result = vjp_linear_fn(problem.unflatten_fn_sol_list(adjoint_full))
         vjp_result = jax.tree_util.tree_map(_safe_negate, vjp_result)
 
@@ -843,6 +892,7 @@ def create_solver(
     iter_num: Optional[int] = None,
     P: Optional[BCOO] = None,
     internal_vars=None,
+    internal_jit: bool = False,
 ) -> Callable:
     """Create a differentiable solver with custom VJP for gradient computation.
 
@@ -877,6 +927,15 @@ def create_solver(
     internal_vars : InternalVars, optional
         Sample internal variables for auto solver selection and cuDSS
         pre-warming. Required when ``solver="auto"`` or cuDSS is used.
+    internal_jit : bool, optional
+        When ``True`` and ``iter_num != 1``, wraps the internal linear solver
+        with ``jax.jit`` so that each Newton iteration's linear solve is
+        compiled separately from the outer computation graph.  This is most
+        effective for iterative solvers (CG, BiCGSTAB, GMRES) called only once;
+        for repeated outer calls prefer ``jax.jit(solver)`` instead.
+        Ignored (with a warning) when ``iter_num == 1`` because the linear
+        solver is invoked only once per solve and internal JIT provides no
+        benefit.  Default: ``False``.
 
     Returns
     -------
@@ -904,6 +963,26 @@ def create_solver(
     ...                        iter_num=1)
     >>> solution = solver(internal_vars, initial_guess)
     """
+
+    # Reduced (matrix-free) path: requires IterativeSolverOptions
+    if P is not None:
+        if solver_options is None:
+            solver_options = IterativeSolverOptions()
+        elif not isinstance(solver_options, IterativeSolverOptions):
+            raise ValueError(
+                "solver_options must be IterativeSolverOptions when P (prolongation matrix) "
+                f"is provided, got {type(solver_options).__name__}. "
+                "The reduced problem is matrix-free and only supports iterative solvers "
+                "(cg, bicgstab, gmres)."
+            )
+        if adjoint_solver_options is None:
+            adjoint_solver_options = solver_options
+        elif not isinstance(adjoint_solver_options, IterativeSolverOptions):
+            raise ValueError(
+                "adjoint_solver_options must be IterativeSolverOptions when P is provided, "
+                f"got {type(adjoint_solver_options).__name__}."
+            )
+        return _create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options, iter_num)
 
     if solver_options is None:
         solver_options = SolverOptions()
@@ -953,9 +1032,6 @@ def create_solver(
                 "or specify the solver explicitly (e.g. IterativeSolverOptions(solver='cg'))."
             )
 
-    if P is not None:
-        return _create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options, iter_num)
-
     J_bc_func = create_J_bc_function(problem, bc)
     res_bc_func = create_res_bc_function(problem, bc)
 
@@ -1004,7 +1080,8 @@ def create_solver(
     # jax.grad traces through custom_vjp (the nonlocal cudss_solver is
     # already set, so the initialization branch is skipped during tracing).
     linear_solve_fn = create_linear_solve_fn(solver_options)
-    if adjoint_solver_options is solver_options:
+    _adjoint_fn_shared = adjoint_solver_options is solver_options
+    if _adjoint_fn_shared:
         adjoint_linear_solve_fn = linear_solve_fn
     else:
         adjoint_linear_solve_fn = create_linear_solve_fn(adjoint_solver_options)
@@ -1019,6 +1096,29 @@ def create_solver(
             print("[feax] Pre-warming cuDSS solver (adjoint) with sample Jacobian...")
             adjoint_linear_solve_fn(_sample_J, _b_tmp, _b_tmp)
             print("[feax] cuDSS solver (adjoint) initialized.")
+
+    # internal_jit: wrap linear solve functions with jax.jit so that each
+    # Newton iteration's linear solve is compiled independently.  Must be
+    # applied AFTER cuDSS pre-warming to avoid tracer leaks.
+    if internal_jit:
+        import warnings as _warnings
+        if iter_num == 1:
+            _warnings.warn(
+                "[feax] internal_jit=True is ignored when iter_num=1: "
+                "the linear solver is called only once per solve and "
+                "internal JIT provides no benefit. "
+                "Use jax.jit(solver) to JIT the entire solve instead.",
+                UserWarning,
+                stacklevel=2,
+            )
+        else:
+            print("[feax] internal_jit=True: JIT-compiling internal linear solver (forward).")
+            linear_solve_fn = jax.jit(linear_solve_fn)
+            if _adjoint_fn_shared:
+                adjoint_linear_solve_fn = linear_solve_fn
+            else:
+                print("[feax] internal_jit=True: JIT-compiling internal linear solver (adjoint).")
+                adjoint_linear_solve_fn = jax.jit(adjoint_linear_solve_fn)
 
     # Extract x0_fn from the appropriate option type
     _x0_fn_from_opts = None

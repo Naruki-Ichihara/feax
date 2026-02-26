@@ -28,33 +28,37 @@ FEAX is a fully differentiable finite element engine built on JAX. All solvers â
 ```python
 import feax as fe
 import jax
-import jax.numpy as jnp
+import jax.numpy as np
 
 # Mesh and material
 mesh = fe.mesh.box_mesh((100, 10, 10), mesh_size=2)
 E, nu = 70e3, 0.3
 
 # Define the constitutive law
-class LinearElasticity(fe.Problem):
+class LinearElasticity(fe.problem.Problem):
     def get_tensor_map(self):
         def stress(u_grad, *args):
-            mu = E / (2 * (1 + nu))
+            mu = E / (2. * (1. + nu))
             lmbda = E * nu / ((1 + nu) * (1 - 2 * nu))
             eps = 0.5 * (u_grad + u_grad.T)
-            return lmbda * jnp.trace(eps) * jnp.eye(3) + 2 * mu * eps
+            return lmbda * np.trace(eps) * np.eye(self.dim) + 2 * mu * eps
         return stress
 
     def get_surface_maps(self):
-        return [lambda u, x, t: jnp.array([0., 0., t])]
+        def surface_map(u, x, traction_mag):
+            return np.array([0., 0., traction_mag])
+        return [surface_map]
 
-problem = LinearElasticity(mesh, vec=3, dim=3,
-    location_fns=[lambda p: jnp.isclose(p[0], 100., 1e-5)])
+left  = lambda point: np.isclose(point[0], 0.,   atol=1e-5)
+right = lambda point: np.isclose(point[0], 100., atol=1e-5)
+
+problem = LinearElasticity(mesh, vec=3, dim=3, location_fns=[right])
 
 # Boundary conditions: fix the left face
-bc = fe.DirichletBCConfig([
-    fe.DirichletBCSpec(location=lambda p: jnp.isclose(p[0], 0., 1e-5),
-                       component="all", value=0.)
-]).create_bc(problem)
+bc_config = fe.DCboundary.DirichletBCConfig([
+    fe.DCboundary.DirichletBCSpec(location=left, component="all", value=0.)
+])
+bc = bc_config.create_bc(problem)
 
 # Internal variables (surface traction magnitude)
 traction = fe.InternalVars.create_uniform_surface_var(problem, 1e-3)
@@ -64,12 +68,13 @@ internal_vars = fe.InternalVars(volume_vars=(), surface_vars=[(traction,)])
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(), iter_num=1,
     internal_vars=internal_vars)
+initial = fe.zero_like_initial_guess(problem, bc)
 
-# Solve (direct solver â€” no initial guess needed)
-sol = solver(internal_vars)
+# Solve
+sol = solver(internal_vars, initial)
 
 # Differentiate through the entire solve
-grad_fn = jax.grad(lambda iv: jnp.sum(solver(iv) ** 2))
+grad_fn = jax.grad(lambda iv: np.sum(solver(iv, initial) ** 2))
 grads = grad_fn(internal_vars)
 ```
 

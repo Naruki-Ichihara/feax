@@ -47,7 +47,7 @@ problem = LinearElasticity(mesh=mesh, vec=3, dim=3, ele_type='HEX8', location_fn
 
 # Create lattice density field using graph
 print("Creating BCC strut structure...")
-lattice_func = flat.graph.create_lattice_function(nodes, edges, radius=0.05)
+lattice_func = flat.graph.create_lattice_function(nodes, edges, radius=0.1)
 rho = flat.graph.create_lattice_density_field(problem, lattice_func, density_solid=1.0, density_void=0.01)
 
 # Periodic boundary conditions
@@ -68,14 +68,10 @@ internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), s
 
 # Homogenization solver
 print("Creating homogenization solver...")
-solver_options = fe.solver.SolverOptions(
-    tol=1e-8,
-    linear_solver="cudss",
-    verbose=False
-)
+solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-10, atol=1e-10, maxiter=10000, verbose=True)
 
 compute_C_hom = flat.solver.create_homogenization_solver(
-    problem, bc, P, solver_options, mesh, dim=3
+    problem, bc, P, mesh, solver_options=solver_options, dim=3
 )
 
 # Compute homogenized stiffness

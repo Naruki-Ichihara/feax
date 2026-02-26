@@ -9,7 +9,6 @@ from . import solver
 from . import unitcell
 from . import graph
 from . import utils
-from . import spinodoid
 from . import filters
 
 __all__ = [
@@ -18,6 +17,5 @@ __all__ = [
     'unitcell',
     'graph',
     'utils',
-    'spinodoid',
     'filters',
 ]

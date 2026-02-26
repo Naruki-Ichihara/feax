@@ -16,7 +16,7 @@ pip install -U jax
 
 This is sufficient for learning and small-scale problems.
 
-### NVIDIA GPU (CUDA)
+### NVIDIA GPU (CUDA 12)
 
 For NVIDIA GPU acceleration with CUDA 12:
 
@@ -24,15 +24,15 @@ For NVIDIA GPU acceleration with CUDA 12:
 pip install -U "jax[cuda12]"
 ```
 
-For CUDA 12 with locally-installed CUDA/cuDNN:
+**Requirements:** NVIDIA driver ≥525
+
+### NVIDIA GPU (CUDA 13)
+
+For CUDA 13:
 
 ```bash
-pip install -U "jax[cuda12-local]"
+pip install -U "jax[cuda13]"
 ```
-
-**Requirements:**
-- NVIDIA driver ≥525 (for CUDA 12)
-- NVIDIA driver ≥550 (for CUDA 12.3+)
 
 For more details, see the [official JAX installation guide](https://jax.readthedocs.io/en/latest/installation.html).
 
@@ -53,6 +53,8 @@ This will automatically install all required dependencies including:
 - `fenics-basix` - Finite element basis functions
 - `matplotlib` - Visualization
 - `pandas` - Data handling
+- `equinox` - Neural networks / pytree utilities
+- `lineax` - Linear solvers
 
 ### Install from Source
 
@@ -70,17 +72,46 @@ cd feax
 pip install -e .
 ```
 
+### Optional Extras
+
+FEAX provides optional dependency groups via `pyproject.toml`:
+
+| Extra | Contents | Usage |
+|---|---|---|
+| `.[cuda12]` | JAX (cuda12) + cuDSS for CUDA 12 | GPU acceleration (CUDA 12) |
+| `.[cuda13]` | cuDSS + cuBLAS + cuDNN for CUDA 13 | GPU acceleration (CUDA 13, without JAX) |
+| `.[jax]` | `jax[cuda13]` | JAX for CUDA 13 (use with `cuda13`) |
+| `.[dev]` | pytest, black, ruff, mypy | Development and testing |
+
+For GPU use outside Docker, combine `cuda13` with `jax`:
+
+```bash
+pip install "feax[cuda13,jax]"
+```
+
+### cuDSS Direct Solver
+
+When using the cuDSS direct solver, the `spineax` package is also required:
+
+```bash
+pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
+```
+
+> **Note:** This is pre-installed in the Docker image.
+
 ## Docker
 
-FEAX provides a Dockerfile based on NVIDIA's JAX image with GPU support and optional dependencies.
+FEAX provides a Dockerfile based on NVIDIA's JAX image (`nvcr.io/nvidia/jax:25.10-py3`), which includes JAX pre-compiled for CUDA 13. JAX is **not** reinstalled during the build.
 
-### Build Options
+### Build Arguments
 
-The Dockerfile supports build arguments:
-- `INSTALL_CLAUDE`: Install Claude Code (default: `false`)
-- `INSTALL_FENICSX`: Install FEniCSX suite for debugging purposes (default: `false`, not required for normal use)
+| Argument | Default | Description |
+|---|---|---|
+| `INSTALL_DOCS` | `false` | Install Node.js 20 + pydoc-markdown + Docusaurus dependencies |
 
 ### Build Docker Image
+
+Standard build:
 
 ```bash
 git clone https://github.com/Naruki-Ichihara/feax.git
@@ -88,16 +119,10 @@ cd feax
 docker build -t feax:latest .
 ```
 
-Build with Claude Code (for development):
+Build with Docusaurus support (for docs development):
 
 ```bash
-docker build --build-arg INSTALL_CLAUDE=true -t feax:latest .
-```
-
-Build with FEniCSX (for debugging):
-
-```bash
-docker build --build-arg INSTALL_FENICSX=true -t feax:latest .
+docker build --build-arg INSTALL_DOCS=true -t feax:latest .
 ```
 
 ### Run Container
@@ -120,7 +145,49 @@ The docker-compose configuration includes:
 - GPU support (`deploy.resources.reservations.devices`)
 - Volume mounting for development (`./:/workspace`)
 - WSL2 display support (for GUI applications like gmsh)
-- Shared memory configuration
+- Shared memory configuration (`shm_size: 4gb`)
+
+## Docs Development
+
+To develop the documentation site locally, Node.js 20+ and pydoc-markdown are required.
+
+### Install Dependencies
+
+```bash
+# Node.js 20
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt-get install -y nodejs
+
+# pydoc-markdown (API doc generator)
+pip install pydoc-markdown
+
+# Docusaurus + npm packages
+cd docs
+npm install
+```
+
+### Start Dev Server
+
+Use the provided script to generate API docs and start the server in one step:
+
+```bash
+./docs/dev.sh
+```
+
+Or manually:
+
+```bash
+cd docs
+npm run api:generate   # Generate API reference from Python source
+npm run start          # Start dev server at http://localhost:3000
+```
+
+### Build for Production
+
+```bash
+cd docs
+npm run build
+```
 
 ## Colab
 
@@ -152,43 +219,6 @@ import jax
 print(jax.devices())  # Should show GPU
 ```
 
-### With TPU Support
-
-For TPU acceleration:
-
-```python
-!apt update
-!apt install -y libglu1 libxcursor-dev libxft2 libxinerama1 libfltk1.3-dev libfreetype6-dev libgl1-mesa-dev libocct-foundation-dev libocct-data-exchange-dev
-!pip install "jax[tpu]" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-!pip install feax
-
-# Verify TPU
-import jax
-print(jax.devices())  # Should show TPU cores
-```
-
-### Example Colab Notebook
-
-```python
-# Install system dependencies
-!apt update
-!apt install -y libglu1 libxcursor-dev libxft2 libxinerama1 libfltk1.3-dev libfreetype6-dev libgl1-mesa-dev libocct-foundation-dev libocct-data-exchange-dev
-
-# Install FEAX
-!pip install feax
-
-# Import and verify
-import jax
-import feax
-print(f"JAX version: {jax.__version__}")
-print(f"JAX devices: {jax.devices()}")
-
-# Run a simple example
-from feax.mesh import box_mesh
-mesh = box_mesh(size=1.0, mesh_size=0.2)
-print(f"Mesh created with {mesh.points.shape[0]} nodes")
-```
-
 ## Verification
 
 After installation, verify your setup:
@@ -207,7 +237,7 @@ print(f"JAX 64-bit enabled: {jax.config.jax_enable_x64}")
 Expected output:
 ```
 JAX version: 0.4.x
-FEAX version: x.x.x
+FEAX version: 0.1.0
 JAX devices: [CpuDevice(id=0)] or [GpuDevice(id=0)]
 JAX 64-bit enabled: True
 ```

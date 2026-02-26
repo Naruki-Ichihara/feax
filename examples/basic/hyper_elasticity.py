@@ -1,12 +1,24 @@
 """
 Hyperelastic solver example using automatic differentiation.
 Demonstrates solving nonlinear hyperelasticity problems with Neo-Hookean material model.
+A torsional surface traction is applied to the right face (load-controlled twist).
 """
 
 import feax as fe
 import jax
 import jax.numpy as np
 import os
+
+# Box geometry
+Lx, Ly, Lz = 5., 1., 1.
+mesh_size   = 0.1
+
+# Cross-section centroid of the right face (used in torsional traction)
+y_c = Ly / 2.
+z_c = Lz / 2.
+
+# Torsional traction magnitude
+T = 20.
 
 
 class HyperElasticityFeax(fe.problem.Problem):
@@ -30,53 +42,47 @@ class HyperElasticityFeax(fe.problem.Problem):
             return P
 
         return first_PK_stress
-    
-mesh = fe.mesh.box_mesh((1, 1, 1), mesh_size=0.2)
 
-# Define boundary locations.
+    def get_surface_maps(self):
+        def traction_map(u_grad, surface_quad_point, traction_magnitude):
+            # Torsional traction about x-axis: tangential in yz-plane
+            y = surface_quad_point[1]
+            z = surface_quad_point[2]
+            return np.array([0., -traction_magnitude * (z - z_c), traction_magnitude * (y - y_c)])
+        return [traction_map]
+
+
+mesh = fe.mesh.box_mesh((Lx, Ly, Lz), mesh_size=mesh_size)
+
+# Boundary locations
 def left(point):
     return np.isclose(point[0], 0., atol=1e-5)
 
 def right(point):
-    return np.isclose(point[0], 1, atol=1e-5)
+    return np.isclose(point[0], Lx, atol=1e-5)
 
-def zero_dirichlet_val(point):
-    return 0.
-
-def dirichlet_val_x2(point):
-    return (0.5 + (point[1] - 0.5) * np.cos(np.pi / 3.) -
-            (point[2] - 0.5) * np.sin(np.pi / 3.) - point[1]) / 2.
-
-def dirichlet_val_x3(point):
-    return (0.5 + (point[1] - 0.5) * np.sin(np.pi / 3.) +
-            (point[2] - 0.5) * np.cos(np.pi / 3.) - point[2]) / 2.
-
-# Create boundary conditions using dataclass approach
+# Fix left face (clamped)
 bc_config = fe.DCboundary.DirichletBCConfig([
-    # Left boundary - fix all components to zero
-    fe.DCboundary.DirichletBCSpec(location=left, component='x', value=zero_dirichlet_val),
-    fe.DCboundary.DirichletBCSpec(location=left, component='y', value=dirichlet_val_x2),
-    fe.DCboundary.DirichletBCSpec(location=left, component='z', value=dirichlet_val_x3),
-    # Right boundary - fix all components to zero  
-    fe.DCboundary.DirichletBCSpec(location=right, component='all', value=zero_dirichlet_val)
+    fe.DCboundary.DirichletBCSpec(location=left, component='all', value=0.)
 ])
 
-feax_problem = HyperElasticityFeax(mesh,
-                          vec=3,
-                          dim=3)
+feax_problem = HyperElasticityFeax(mesh, vec=3, dim=3, location_fns=[right])
 
-internal_vars = fe.internal_vars.InternalVars()
+traction_surface = fe.internal_vars.InternalVars.create_uniform_surface_var(feax_problem, T)
+internal_vars = fe.internal_vars.InternalVars(
+    volume_vars=[],
+    surface_vars=[(traction_surface,)]
+)
 
 bc = bc_config.create_bc(feax_problem)
 
-solver_options = fe.solver.SolverOptions(tol=1e-8, linear_solver="cudss", verbose=True)
-solver = fe.solver.create_solver(feax_problem, bc, solver_options)
+solver_options = fe.solver.DirectSolverOptions(verbose=True)
+solver = fe.solver.create_solver(feax_problem, bc, solver_options, internal_vars=internal_vars, internal_jit=True)
 
-def solve_fn(internal_vars):
-    sol = solver(internal_vars, fe.utils.zero_like_initial_guess(feax_problem, bc))
+def solve_fn(iv):
+    sol = solver(iv, fe.utils.zero_like_initial_guess(feax_problem, bc))
     return sol
 
-print("Solving...")
 sol = solve_fn(internal_vars)
 sol_unflat = feax_problem.unflatten_fn_sol_list(sol)
 displacement = sol_unflat[0]

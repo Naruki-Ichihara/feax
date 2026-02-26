@@ -19,22 +19,48 @@ import HeroSection, {FeatureCards} from '@site/src/components/HeroSection';
 ```python
 import feax as fe
 import jax
-import jax.numpy as jnp
+import jax.numpy as np
 
 mesh = fe.mesh.box_mesh((100, 10, 10), mesh_size=2)
+E, nu = 70e3, 0.3
 
-# Define problem, boundary conditions, and solver
-problem = LinearElasticity(mesh, vec=3, dim=3,
-    location_fns=[lambda p: jnp.isclose(p[0], 100., 1e-5)])
+class LinearElasticity(fe.problem.Problem):
+    def get_tensor_map(self):
+        def stress(u_grad, *args):
+            mu = E / (2. * (1. + nu))
+            lmbda = E * nu / ((1 + nu) * (1 - 2 * nu))
+            eps = 0.5 * (u_grad + u_grad.T)
+            return lmbda * np.trace(eps) * np.eye(self.dim) + 2 * mu * eps
+        return stress
+
+    def get_surface_maps(self):
+        def surface_map(u, x, traction_mag):
+            return np.array([0., 0., traction_mag])
+        return [surface_map]
+
+left  = lambda point: np.isclose(point[0], 0.,   atol=1e-5)
+right = lambda point: np.isclose(point[0], 100., atol=1e-5)
+
+problem = LinearElasticity(mesh, vec=3, dim=3, location_fns=[right])
+
+bc_config = fe.DCboundary.DirichletBCConfig([
+    fe.DCboundary.DirichletBCSpec(location=left, component="all", value=0.)
+])
+bc = bc_config.create_bc(problem)
+
+traction = fe.InternalVars.create_uniform_surface_var(problem, 1e-3)
+internal_vars = fe.InternalVars(volume_vars=(), surface_vars=[(traction,)])
+
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(), iter_num=1,
     internal_vars=internal_vars)
+initial = fe.zero_like_initial_guess(problem, bc)
 
-# Solve (direct solver — no initial guess needed)
-sol = solver(internal_vars)
+# Solve
+sol = solver(internal_vars, initial)
 
 # Differentiate through the entire solve
-grad_fn = jax.grad(lambda iv: jnp.sum(solver(iv) ** 2))
+grad_fn = jax.grad(lambda iv: np.sum(solver(iv, initial) ** 2))
 grads = grad_fn(internal_vars)
 ```
 
@@ -44,15 +70,6 @@ New to FEAX? Start here:
 
 1. **[Installation](getting-started/installation.md)** - Install FEAX and its dependencies
 2. **[Basic Tutorials](basic/index.md)** - Learn the fundamentals with hands-on examples
-
-## Tutorials
-
-| Basic | Advanced |
-|---|---|
-| [Linear Elasticity](basic/linear_elasticity.md) - 3D elasticity with traction | [Periodic BCs](advanced/periodic_boundary_conditions.md) - Unit cell analysis |
-| [Hyperelasticity](basic/hyperelasticity.md) - Nonlinear Neo-Hookean | [Lattice Homogenization](advanced/lattice_homogenization.md) - Graph-based lattices |
-| [JIT Transform](basic/jit_transform.md) - JIT compilation | [Spinodoid Metamaterials](advanced/spinodoid_metamaterials.md) - Spinodoid generation |
-| [Vmap Transform](basic/vmap_transform.md) - Vectorization | |
 
 ## API Reference
 
