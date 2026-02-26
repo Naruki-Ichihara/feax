@@ -299,7 +299,8 @@ def create_solver(
         adjoint_solver_options: Optional[AbstractSolverOptions] = None,
         iter_num: Optional[int] = None,
         P: Optional[BCOO] = None,
-        internal_vars=None) -> Callable
+        internal_vars=None,
+        internal_jit: bool = False) -> Callable
 ```
 
 Create a differentiable solver with custom VJP for gradient computation.
@@ -313,6 +314,7 @@ Parameters
 - **iter_num** (*int, optional*): Number of Newton iterations:
 - **P** (*BCOO matrix, optional*): Prolongation matrix for periodic boundary conditions.
 - **internal_vars** (*InternalVars, optional*): Sample internal variables for auto solver selection and cuDSS pre-warming. Required when ``solver=&quot;auto&quot;`` or cuDSS is used.
+- **internal_jit** (*bool, optional*): When ``True`` and ``iter_num != 1``, wraps the internal linear solver with ``jax.jit`` so that each Newton iteration&#x27;s linear solve is compiled separately from the outer computation graph.  This is most effective for iterative solvers (CG, BiCGSTAB, GMRES) called only once; for repeated outer calls prefer ``jax.jit(solver)`` instead. Ignored (with a warning) when ``iter_num == 1`` because the linear solver is invoked only once per solve and internal JIT provides no benefit.  Default: ``False``.
 
 
 Returns

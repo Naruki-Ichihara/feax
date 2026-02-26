@@ -107,11 +107,24 @@ def _average_stress(problem, u_total: np.ndarray, internal_vars, dim: int) -> np
     u_grads = np.einsum('cqnd,cnv->cqvd', shape_grads, cell_sol)
 
     # Broadcast volume internal vars to (num_cells, num_quads)
+    num_cells = u_grads.shape[0]
     num_quads = JxW.shape[1]
+
+    # shape_vals: (num_quads, num_nodes_per_cell) — for node-based interpolation
+    shape_vals    = problem.fes[0].shape_vals
+    cell_node_ids = problem.cells_list[0]   # (num_cells, nodes_per_cell)
+
     vol_vars_quad = []
     for var in internal_vars.volume_vars:
         if var.ndim == 1:
-            vol_vars_quad.append(np.tile(var[:, None], (1, num_quads)))
+            if var.shape[0] == num_cells:
+                # cell-based: same value at every quad point
+                vol_vars_quad.append(np.tile(var[:, None], (1, num_quads)))
+            else:
+                # node-based: interpolate to Gauss points via shape functions
+                var_cell_nodes = var[cell_node_ids]                          # (num_cells, nodes_per_cell)
+                var_at_quads   = np.einsum('qn,cn->cq', shape_vals, var_cell_nodes)  # (num_cells, num_quads)
+                vol_vars_quad.append(var_at_quads)
         else:
             vol_vars_quad.append(var)
 

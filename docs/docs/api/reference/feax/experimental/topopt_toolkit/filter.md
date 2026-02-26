@@ -86,9 +86,13 @@ Helmholtz filtering to specific design variable updates with no conditional over
 ```python
 ```python
 ```python
+```python
+```python
 ...     optax.adam(0.01),
 ...     filter_transform
 ... )
+```
+```
 ```
 ```
 ```
@@ -135,10 +139,14 @@ The transform clips the update such that param + update stays within [lower, upp
 ```python
 ```python
 ```python
+```python
+```python
 ...     optax.adam(0.01),
 ...     create_helmholtz_transform(problem, &#x27;rho&#x27;, radius=0.05),
 ...     box_transform
 ... )
+```
+```
 ```
 ```
 ```
@@ -184,11 +192,15 @@ where x is the unconstrained variable.
 ```python
 ```python
 ```python
+```python
+```python
 ...     optax.adam(0.01),
 ...     mdmm.optax_prepare_update(),
 ...     sigmoid_transform,
 ...     filter_transform
 ... )
+```
+```
 ```
 ```
 ```

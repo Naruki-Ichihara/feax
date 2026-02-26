@@ -98,6 +98,10 @@ where n_i ~ U(constrained region on S²)
 ```python
 >>> mesh = box_mesh(size=1.0, mesh_size=0.1)
 >>> source = generate_grf_source(mesh, beta=10.0, N=100,
+```python
+```python
 ...                              theta1=np.pi/4, theta2=np.pi/4, theta3=np.pi/4)
+```
+```
 ```
 

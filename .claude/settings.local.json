@@ -33,7 +33,8 @@
       "Bash(pip index versions:*)",
       "Bash(nvcc:*)",
       "Bash(grep:*)",
-      "WebFetch(domain:docs.jax.dev)"
+      "WebFetch(domain:docs.jax.dev)",
+      "Bash(wc -l /workspace/docs/docs/**/*.md)"
     ],
     "deny": [],
     "ask": []

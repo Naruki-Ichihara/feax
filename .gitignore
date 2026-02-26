@@ -5,6 +5,7 @@ CLAUDE.md
 *.vtk
 *.h5
 *.xdmf
+examples/private/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
