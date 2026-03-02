@@ -5,6 +5,7 @@ import re
 import sys
 from pathlib import Path
 
+
 def format_examples_in_file(file_path):
     """Add Python code blocks around example sections."""
     with open(file_path, 'r', encoding='utf-8') as f:

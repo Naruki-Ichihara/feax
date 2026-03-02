@@ -1,29 +1,60 @@
 import jax
+
 jax.config.update("jax_enable_x64", True)
 
 # Version info
 try:
-    from importlib.metadata import version, PackageNotFoundError
+    from importlib.metadata import PackageNotFoundError, version
     __version__ = version("feax")
 except (ImportError, PackageNotFoundError):
     __version__ = "0.1.0"
 
 # Main API
-from .problem import Problem, MatrixView
-from .internal_vars import InternalVars
-from .assembler import get_jacobian_info, get_res, create_J_bc_function, create_res_bc_function
-from .mesh import Mesh
-from .DCboundary import DirichletBC, apply_boundary_to_J, apply_boundary_to_res, DirichletBCSpec, DirichletBCConfig, dirichlet_bc_config
-from .solver_option import (
-    AbstractSolverOptions,
-    SolverOptions, CUDSSOptions, CUDSSMatrixType, CUDSSMatrixView,
-    Backend, detect_backend, is_cuda, is_cpu, has_cudss, has_spsolve,
-    MatrixProperty, detect_matrix_property,
-    DirectSolverOptions, IterativeSolverOptions,
-    resolve_direct_solver, resolve_iterative_solver,
+from .assembler import create_J_bc_function, create_res_bc_function, get_jacobian_info, get_res
+from .DCboundary import (
+    DirichletBC,
+    DirichletBCConfig,
+    DirichletBCSpec,
+    apply_boundary_to_J,
+    apply_boundary_to_res,
+    dirichlet_bc_config,
 )
-from .linear_solver import create_linear_solver, create_direct_solve_fn, create_iterative_solve_fn
-from .solver import newton_solve, create_solver, linear_solve, newton_solve_fori, newton_solve_py
+from .internal_vars import InternalVars
+from .mesh import Mesh
+from .problem import MatrixView, Problem
+from .solver import (
+    create_solver,
+)
+from .solvers.common import (
+    check_convergence,
+    create_direct_solve_fn,
+    create_iterative_solve_fn,
+    create_jacobi_preconditioner,
+    create_linear_solve_fn,
+    create_x0,
+)
+from .solvers.linear import create_linear_solver, linear_solve
+from .solvers.newton import newton_solve, newton_solve_fori, newton_solve_py
+from .solvers.options import (
+    AbstractSolverOptions,
+    Backend,
+    CUDSSMatrixType,
+    CUDSSMatrixView,
+    CUDSSOptions,
+    DirectSolverOptions,
+    IterativeSolverOptions,
+    MatrixProperty,
+    NewtonOptions,
+    SolverOptions,
+    detect_backend,
+    detect_matrix_property,
+    has_cudss,
+    has_spsolve,
+    is_cpu,
+    is_cuda,
+    resolve_direct_solver,
+    resolve_iterative_solver,
+)
 from .utils import zero_like_initial_guess
 
 # Note: Experimental features available in feax.experimental

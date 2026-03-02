@@ -20,8 +20,7 @@ Complete API documentation for FEAX (Finite Element Analysis with JAX).
 ### Assembly & Solving
 - **[feax.assembler](./reference/feax/assembler.md)** - System matrix and residual assembly
 - **[feax.solver](./reference/feax/solver.md)** - Newton and linear solvers (`create_solver`)
-- **[feax.solver_option](./reference/feax/solver_option.md)** - Solver options (`AbstractSolverOptions`, `DirectSolverOptions`, `IterativeSolverOptions`)
-- **[feax.linear_solver](./reference/feax/linear_solver.md)** - Linear solver backends (direct, iterative, adjoint)
+- Solver option/backends are implemented under `feax.solvers.*` and re-exported at top-level (`feax.DirectSolverOptions`, `feax.IterativeSolverOptions`, `feax.NewtonOptions`)
 
 ### Boundary Conditions
 - **[feax.DCboundary](./reference/feax/DCboundary.md)** - Dirichlet boundary conditions

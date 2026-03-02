@@ -1,9 +1,11 @@
 ---
 sidebar_label: linear_solver
-title: feax.linear_solver
+title: feax.solvers.linear
 ---
 
 Linear solver implementations for FEAX finite element framework.
+
+`feax.linear_solver` is deprecated. Use `feax.solvers.linear` (or top-level re-exports like `feax.create_linear_solver`).
 
 This module provides low-level linear algebra utilities and solver
 selection logic for solving systems of the form A x = b arising
@@ -180,7 +182,7 @@ def create_linear_solver(
     bc: DirichletBC,
     solver_options: Optional[SolverOptions] = None,
     adjoint_solver_options: Optional[SolverOptions] = None
-) -> Callable[[Any, jnp.ndarray], jnp.ndarray]
+) -> Callable[[Any, np.ndarray], np.ndarray]
 ```
 
 Create a differentiable solver for linear FE problems.
@@ -226,7 +228,6 @@ Examples
 >>> # Gradient w.r.t. internal_vars
 >>> def loss(internal_vars):
 ...     sol = solver(internal_vars, initial)
-...     return jnp.sum(sol ** 2)
+...     return np.sum(sol ** 2)
 >>> grad = jax.grad(loss)(internal_vars)
 ```
-

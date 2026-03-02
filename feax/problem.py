@@ -6,15 +6,16 @@ structure independent of material parameters, enabling efficient optimization
 and parameter studies through JAX transformations.
 """
 
-import jax
-import jax.numpy as np
-import jax.flatten_util
 from dataclasses import dataclass
-from typing import List, Tuple, Union, Optional, Callable, Any
 from enum import Enum
+from typing import Any, Callable, List, Optional, Tuple, Union
 
-from feax.mesh import Mesh
+import jax
+import jax.flatten_util
+import jax.numpy as np
+
 from feax.fe import FiniteElement
+from feax.mesh import Mesh
 
 
 class MatrixView(Enum):
@@ -123,19 +124,19 @@ class Problem:
 
         self.num_vars = len(self.mesh)
 
-        self.fes = [FiniteElement(mesh=self.mesh[i], 
-                                  vec=self.vec[i], 
-                                  dim=self.dim, 
-                                  ele_type=self.ele_type[i], 
+        self.fes = [FiniteElement(mesh=self.mesh[i],
+                                  vec=self.vec[i],
+                                  dim=self.dim,
+                                  ele_type=self.ele_type[i],
                                   gauss_order=self.gauss_order[i] if type(self.gauss_order) == type([]) else self.gauss_order) \
-                    for i in range(self.num_vars)] 
+                    for i in range(self.num_vars)]
 
         self.cells_list = [fe.cells for fe in self.fes]
         # Assume all fes have the same number of cells, same dimension
         self.num_cells = self.fes[0].num_cells
         self.boundary_inds_list = self.fes[0].get_boundary_conditions_inds(self.location_fns)
 
-        self.offset = [0] 
+        self.offset = [0]
         for i in range(len(self.fes) - 1):
             self.offset.append(self.offset[i] + self.fes[i].num_total_dofs)
 
@@ -184,19 +185,19 @@ class Problem:
             self.filter_indices = None
             self.I_filtered = self.I
             self.J_filtered = self.J
-     
+
         self.cells_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*self.cells_list) # (num_cells, num_nodes + ...)
 
         dumb_array_dof = [np.zeros((fe.num_nodes, fe.vec)) for fe in self.fes]
         _, self.unflatten_fn_dof = jax.flatten_util.ravel_pytree(dumb_array_dof)
-        
+
         dumb_sol_list = [np.zeros((fe.num_total_nodes, fe.vec)) for fe in self.fes]
         dumb_dofs, self.unflatten_fn_sol_list = jax.flatten_util.ravel_pytree(dumb_sol_list)
         self.num_total_dofs_all_vars = len(dumb_dofs)
 
         self.num_nodes_cumsum = np.cumsum(np.array([0] + [fe.num_nodes for fe in self.fes]))
         # (num_cells, num_vars, num_quads)
-        self.JxW = np.transpose(np.stack([fe.JxW for fe in self.fes]), axes=(1, 0, 2)) 
+        self.JxW = np.transpose(np.stack([fe.JxW for fe in self.fes]), axes=(1, 0, 2))
         # (num_cells, num_quads, num_nodes +..., dim)
         self.shape_grads = np.concatenate([fe.shape_grads for fe in self.fes], axis=2)
         # (num_cells, num_quads, num_nodes + ..., 1, dim)
@@ -204,7 +205,7 @@ class Problem:
 
         # TODO: assert all vars quad points be the same
         # (num_cells, num_quads, dim)
-        self.physical_quad_points = self.fes[0].get_physical_quad_points()  
+        self.physical_quad_points = self.fes[0].get_physical_quad_points()
 
         self.selected_face_shape_grads = []
         self.nanson_scale = []
@@ -216,7 +217,7 @@ class Problem:
             s_shape_vals = []
             for fe in self.fes:
                 # (num_selected_faces, num_face_quads, num_nodes, dim), (num_selected_faces, num_face_quads)
-                face_shape_grads_physical, nanson_scale = fe.get_face_shape_grads(boundary_inds)  
+                face_shape_grads_physical, nanson_scale = fe.get_face_shape_grads(boundary_inds)
                 selected_face_shape_vals = fe.face_shape_vals[boundary_inds[:, 1]]  # (num_selected_faces, num_face_quads, num_nodes)
                 s_shape_grads.append(face_shape_grads_physical)
                 n_scale.append(nanson_scale)
@@ -225,11 +226,11 @@ class Problem:
             # (num_selected_faces, num_face_quads, num_nodes + ..., dim)
             s_shape_grads = np.concatenate(s_shape_grads, axis=2)
             # (num_selected_faces, num_vars, num_face_quads)
-            n_scale = np.transpose(np.stack(n_scale), axes=(1, 0, 2))  
+            n_scale = np.transpose(np.stack(n_scale), axes=(1, 0, 2))
             # (num_selected_faces, num_face_quads, num_nodes + ...)
             s_shape_vals = np.concatenate(s_shape_vals, axis=2)
             # (num_selected_faces, num_face_quads, dim)
-            physical_surface_quad_points = self.fes[0].get_physical_surface_quad_points(boundary_inds) 
+            physical_surface_quad_points = self.fes[0].get_physical_surface_quad_points(boundary_inds)
 
             self.selected_face_shape_grads.append(s_shape_grads)
             self.nanson_scale.append(n_scale)
@@ -271,10 +272,10 @@ class Problem:
             return  # Single-variable - all kernels allowed
 
         # Check for problematic kernel definitions
-        has_tensor_map = hasattr(self, 'get_tensor_map') and callable(getattr(self, 'get_tensor_map'))
-        has_mass_map = hasattr(self, 'get_mass_map') and callable(getattr(self, 'get_mass_map'))
-        has_surface_maps = hasattr(self, 'get_surface_maps') and callable(getattr(self, 'get_surface_maps'))
-        has_universal = hasattr(self, 'get_universal_kernel') and callable(getattr(self, 'get_universal_kernel'))
+        has_tensor_map = hasattr(self, 'get_tensor_map') and callable(self.get_tensor_map)
+        has_mass_map = hasattr(self, 'get_mass_map') and callable(self.get_mass_map)
+        has_surface_maps = hasattr(self, 'get_surface_maps') and callable(self.get_surface_maps)
+        has_universal = hasattr(self, 'get_universal_kernel') and callable(self.get_universal_kernel)
 
         # For multi-var, must have universal kernel
         if not has_universal:
@@ -328,7 +329,7 @@ class Problem:
         ...     return stress_tensor
         """
         raise NotImplementedError("Subclass must implement get_tensor_map")
-    
+
     def get_surface_maps(self) -> List[Callable]:
         """Get surface map functions for boundary loads.
         
@@ -347,7 +348,7 @@ class Problem:
         provided to the Problem constructor.
         """
         return []
-    
+
     def get_mass_map(self) -> Optional[Callable]:
         """Get mass map function for inertia/reaction terms.
         

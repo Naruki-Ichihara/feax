@@ -5,6 +5,7 @@ import re
 import sys
 from pathlib import Path
 
+
 def format_parameters_in_file(file_path):
     """Convert parameter sections to bullet point format."""
     with open(file_path, 'r', encoding='utf-8') as f:

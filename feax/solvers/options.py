@@ -6,11 +6,12 @@ solver behavior, including linear solver selection, tolerances, and
 CUDA-specific options.
 """
 
-import jax
-from dataclasses import dataclass
-from typing import Optional, Callable, Union
-from enum import Enum
 import logging
+from dataclasses import dataclass
+from enum import Enum
+from typing import Callable, Optional, Union
+
+import jax
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ class MatrixProperty(Enum):
         MatrixView
             GENERAL → FULL, SYMMETRIC/SPD → UPPER.
         """
-        from .problem import MatrixView
+        from ..problem import MatrixView
 
         if self in (MatrixProperty.SYMMETRIC, MatrixProperty.SPD):
             return MatrixView.UPPER
@@ -134,8 +135,9 @@ def detect_matrix_property(A, sym_tol: float = 1e-8, matrix_view=None) -> Matrix
     condition for positive definiteness.  For FEM stiffness matrices
     from well-posed problems this is a reliable indicator.
     """
-    import jax.numpy as jnp
-    from .problem import MatrixView
+    import jax.numpy as np
+
+    from ..problem import MatrixView
 
     # UPPER/LOWER storage implies symmetry by construction
     if matrix_view in (MatrixView.UPPER, MatrixView.LOWER):
@@ -146,7 +148,7 @@ def detect_matrix_property(A, sym_tol: float = 1e-8, matrix_view=None) -> Matrix
         x = jax.random.normal(key, (A.shape[1],), dtype=A.dtype)
         Ax = A @ x
         ATx = A.T @ x
-        sym_err = jnp.linalg.norm(Ax - ATx) / (jnp.linalg.norm(Ax) + 1e-30)
+        sym_err = np.linalg.norm(Ax - ATx) / (np.linalg.norm(Ax) + 1e-30)
         is_symmetric = bool(sym_err < sym_tol)
 
     if not is_symmetric:
@@ -155,10 +157,10 @@ def detect_matrix_property(A, sym_tol: float = 1e-8, matrix_view=None) -> Matrix
     # --- SPD heuristic: diagonal positivity ---
     n = A.shape[0]
     diag_mask = A.indices[:, 0] == A.indices[:, 1]
-    diag_idx = jnp.where(diag_mask, A.indices[:, 0], n)
-    diag_val = jnp.where(diag_mask, A.data, 0.0)
-    diag = jnp.zeros(n, dtype=A.dtype).at[diag_idx].add(diag_val)
-    is_diag_positive = bool(jnp.all(diag > 0))
+    diag_idx = np.where(diag_mask, A.indices[:, 0], n)
+    diag_val = np.where(diag_mask, A.data, 0.0)
+    diag = np.zeros(n, dtype=A.dtype).at[diag_idx].add(diag_val)
+    is_diag_positive = bool(np.all(diag > 0))
 
     if is_diag_positive:
         return MatrixProperty.SPD
@@ -280,6 +282,21 @@ class CUDSSOptions:
                     f"Valid values: 0-2"
                 )
 
+        # Supported FEAX/cuDSS matrix type subset.
+        if self.matrix_type not in (CUDSSMatrixType.GENERAL, CUDSSMatrixType.SYMMETRIC, CUDSSMatrixType.SPD):
+            raise ValueError(
+                "cudss_options.matrix_type must be GENERAL, SYMMETRIC, or SPD. "
+                f"Got: {self.matrix_type.name}."
+            )
+
+        # Triangular storage is typically paired with symmetric/SPD factorizations.
+        if self.matrix_view in (CUDSSMatrixView.UPPER, CUDSSMatrixView.LOWER):
+            if self.matrix_type not in (CUDSSMatrixType.SYMMETRIC, CUDSSMatrixType.SPD):
+                logger.warning(
+                    f"Using matrix_view={self.matrix_view.name} with matrix_type={self.matrix_type.name}. "
+                    "For best performance, use matrix_type=SYMMETRIC or SPD with triangular storage."
+                )
+
     @property
     def mtype_id(self) -> int:
         """Get matrix type as integer ID for cuDSS."""
@@ -312,10 +329,57 @@ class AbstractSolverOptions:
     check_convergence: bool = False
     convergence_threshold: float = 0.1
 
+    def uses_x0(self) -> bool:
+        """Whether this solver family consumes an initial iterate ``x0``."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class NewtonOptions:
+    """Configuration for Newton nonlinear iteration and line search.
+
+    Parameters
+    ----------
+    tol : float, default 1e-6
+        Absolute tolerance for residual norm.
+    rel_tol : float, default 1e-8
+        Relative tolerance for residual norm.
+    max_iter : int, default 100
+        Maximum Newton iterations.
+    line_search_max_backtracks : int, default 30
+        Maximum Armijo backtracking steps.
+    line_search_c1 : float, default 1e-4
+        Armijo sufficient decrease constant.
+    line_search_rho : float, default 0.5
+        Backtracking shrink factor (alpha *= rho).
+    internal_jit : bool, default False
+        JIT-compile the internal linear solve used inside Newton iterations.
+        Ignored for ``iter_num == 1`` (linear-only path).
+    """
+
+    tol: float = 1e-6
+    rel_tol: float = 1e-8
+    max_iter: int = 100
+    line_search_max_backtracks: int = 30
+    line_search_c1: float = 1e-4
+    line_search_rho: float = 0.5
+    internal_jit: bool = False
+
 
 @dataclass(frozen=True)
 class SolverOptions(AbstractSolverOptions):
-    """Configuration options for the Newton solver.
+    """Deprecated legacy solver options.
+
+    This class is intentionally disabled.  It previously mixed linear solver
+    configuration and Newton controls in one object, which made solver-path
+    behavior difficult to reason about and maintain.
+
+    Use the new option classes instead:
+
+    - ``DirectSolverOptions`` for direct linear solvers
+    - ``IterativeSolverOptions`` for iterative linear solvers
+
+    Newton/mode-specific options are being migrated separately.
 
     Parameters
     ----------
@@ -371,26 +435,10 @@ class SolverOptions(AbstractSolverOptions):
     line_search_rho: float = 0.5
 
     def __post_init__(self):
-        """Auto-detect backend and set appropriate defaults."""
-        # Auto-detect linear solver based on backend if not specified
-        if self.linear_solver is None:
-            backend = jax.default_backend()
-            if backend == "gpu":
-                # Use cuDSS for GPU (faster direct solver)
-                object.__setattr__(self, 'linear_solver', 'cudss')
-                logger.info(f"JAX backend: {backend.upper()} | Auto-selected linear solver: cudss")
-            else:
-                # Use CG for CPU (JAX-native iterative solver)
-                object.__setattr__(self, 'linear_solver', 'cg')
-                logger.info(f"JAX backend: {backend.upper()} | Auto-selected linear solver: cg")
-        else:
-            # User manually specified solver - just show backend info
-            backend = jax.default_backend()
-            logger.info(f"JAX backend: {backend.upper()} | Linear solver: {self.linear_solver}")
-
-        # Set default cudss_options if not provided
-        if self.cudss_options is None:
-            object.__setattr__(self, 'cudss_options', CUDSSOptions())
+        raise RuntimeError(
+            "SolverOptions has been removed. "
+            "Migrate to DirectSolverOptions or IterativeSolverOptions."
+        )
 
 
 # ============================================================================
@@ -429,6 +477,10 @@ class DirectSolverOptions(AbstractSolverOptions):
         if self.cudss_options is None:
             object.__setattr__(self, 'cudss_options', CUDSSOptions())
 
+    def uses_x0(self) -> bool:
+        """Direct solvers do not consume an initial iterate."""
+        return False
+
 
 def resolve_direct_solver(
     options: DirectSolverOptions,
@@ -456,7 +508,7 @@ def resolve_direct_solver(
     if options.solver != "auto":
         return options
 
-    from .problem import MatrixView
+    from ..problem import MatrixView
 
     backend = jax.default_backend()
     if backend == "gpu":
@@ -558,6 +610,9 @@ class IterativeSolverOptions(AbstractSolverOptions):
                 f"Choose from {valid_solvers}"
             )
 
+    def uses_x0(self) -> bool:
+        """Iterative solvers consume an initial iterate."""
+        return True
 
 def resolve_iterative_solver(
     options: IterativeSolverOptions,

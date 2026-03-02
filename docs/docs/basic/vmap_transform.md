@@ -68,7 +68,7 @@ print(f"Problem: {problem.num_total_dofs_all_vars} DOFs")
 ## Solver
 
 ```python
-solver_options = fe.solver.SolverOptions(tol=1e-8, linear_solver="cudss")
+solver_options = fe.DirectSolverOptions(solver="cudss")
 solver = fe.solver.create_solver(problem, bc, solver_options, iter_num=1)
 ```
 

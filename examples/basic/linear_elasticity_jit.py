@@ -1,9 +1,11 @@
-import feax as fe
+import os
+import time
+
 import jax
 import jax.numpy as np
-import time
 import matplotlib.pyplot as plt
-import os
+
+import feax as fe
 
 # Problem parameters
 elastic_moduli = 70e3

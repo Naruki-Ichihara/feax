@@ -2,9 +2,10 @@
 Pytest configuration and shared fixtures for feax tests.
 """
 
-import pytest
 import jax
-import jax.numpy as jnp
+import jax.numpy as np
+import pytest
+
 import feax as fe
 from feax.problem import MatrixView
 
@@ -55,7 +56,7 @@ def material_params():
 def boundary_condition(material_params):
     """Boundary condition function for reuse."""
     tol = material_params['tol']
-    return lambda p: jnp.isclose(p[0], 10., tol)
+    return lambda p: np.isclose(p[0], 10., tol)
 
 
 @pytest.fixture(scope="function")
@@ -69,11 +70,11 @@ def linear_elasticity_problem(simple_mesh, material_params, boundary_condition):
                 mu = E / (2 * (1 + nu))
                 lmbda = E * nu / ((1 + nu) * (1 - 2 * nu))
                 eps = 0.5 * (u_grad + u_grad.T)
-                return lmbda * jnp.trace(eps) * jnp.eye(3) + 2 * mu * eps
+                return lmbda * np.trace(eps) * np.eye(3) + 2 * mu * eps
             return stress
 
         def get_surface_maps(self):
-            return [lambda u, x, t: jnp.array([0., 0., t])]
+            return [lambda u, x, t: np.array([0., 0., t])]
 
     return LinearElasticity(
         simple_mesh, vec=3, dim=3,
@@ -93,11 +94,11 @@ def linear_elasticity_problem_upper(simple_mesh, material_params, boundary_condi
                 mu = E / (2 * (1 + nu))
                 lmbda = E * nu / ((1 + nu) * (1 - 2 * nu))
                 eps = 0.5 * (u_grad + u_grad.T)
-                return lmbda * jnp.trace(eps) * jnp.eye(3) + 2 * mu * eps
+                return lmbda * np.trace(eps) * np.eye(3) + 2 * mu * eps
             return stress
 
         def get_surface_maps(self):
-            return [lambda u, x, t: jnp.array([0., 0., t])]
+            return [lambda u, x, t: np.array([0., 0., t])]
 
     return LinearElasticity(
         simple_mesh, vec=3, dim=3,
@@ -117,11 +118,11 @@ def linear_elasticity_problem_lower(simple_mesh, material_params, boundary_condi
                 mu = E / (2 * (1 + nu))
                 lmbda = E * nu / ((1 + nu) * (1 - 2 * nu))
                 eps = 0.5 * (u_grad + u_grad.T)
-                return lmbda * jnp.trace(eps) * jnp.eye(3) + 2 * mu * eps
+                return lmbda * np.trace(eps) * np.eye(3) + 2 * mu * eps
             return stress
 
         def get_surface_maps(self):
-            return [lambda u, x, t: jnp.array([0., 0., t])]
+            return [lambda u, x, t: np.array([0., 0., t])]
 
     return LinearElasticity(
         simple_mesh, vec=3, dim=3,

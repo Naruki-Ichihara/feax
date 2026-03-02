@@ -4,10 +4,12 @@ Demonstrates solving nonlinear hyperelasticity problems with Neo-Hookean materia
 A torsional surface traction is applied to the right face (load-controlled twist).
 """
 
-import feax as fe
+import os
+
 import jax
 import jax.numpy as np
-import os
+
+import feax as fe
 
 # Box geometry
 Lx, Ly, Lz = 5., 1., 1.
@@ -77,7 +79,14 @@ internal_vars = fe.internal_vars.InternalVars(
 bc = bc_config.create_bc(feax_problem)
 
 solver_options = fe.solver.DirectSolverOptions(verbose=True)
-solver = fe.solver.create_solver(feax_problem, bc, solver_options, internal_vars=internal_vars, internal_jit=True)
+newton_options = fe.NewtonOptions(internal_jit=True)
+solver = fe.solver.create_solver(
+    feax_problem,
+    bc,
+    solver_options,
+    internal_vars=internal_vars,
+    newton_options=newton_options,
+)
 
 def solve_fn(iv):
     sol = solver(iv, fe.utils.zero_like_initial_guess(feax_problem, bc))

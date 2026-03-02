@@ -6,13 +6,15 @@ quadrature rules, and geometric computations for individual variables in
 finite element problems.
 """
 
+from dataclasses import dataclass
+from typing import Callable, List, Optional, Tuple
+
 import jax
 import jax.numpy as np
 from jax import Array
-from dataclasses import dataclass
-from typing import List, Tuple, Callable, Optional
-from feax.mesh import Mesh
+
 from feax.basis import get_face_shape_vals_and_grads, get_shape_vals_and_grads
+from feax.mesh import Mesh
 
 
 @dataclass
@@ -210,7 +212,7 @@ class FiniteElement:
         # (num_selected_faces, num_face_quads, num_nodes, 1) * (num_selected_faces, 1, num_nodes, dim) -> (num_selected_faces, num_face_quads, dim)
         physical_surface_quad_points = np.sum(selected_face_shape_vals[:, :, :, None] * selected_coos[:, None, :, :], axis=2)
         return physical_surface_quad_points
-    
+
 
     def get_boundary_conditions_inds(self, location_fns: Optional[List[Callable]]) -> List[Array]:
         """Identify boundary faces that satisfy location function conditions.
@@ -310,7 +312,7 @@ class FiniteElement:
         cells_old_sol = sol[self.cells]  # (num_cells, num_nodes, vec)
         selected_cell_sols = cells_old_sol[boundary_inds[:, 0]]  # (num_selected_faces, num_nodes, vec))
         selected_face_shape_vals = self.face_shape_vals[boundary_inds[:, 1]]  # (num_selected_faces, num_face_quads, num_nodes)
-        # (num_selected_faces, 1, num_nodes, vec) * (num_selected_faces, num_face_quads, num_nodes, 1) 
+        # (num_selected_faces, 1, num_nodes, vec) * (num_selected_faces, num_face_quads, num_nodes, 1)
         # -> (num_selected_faces, num_face_quads, vec)
         u = np.sum(selected_cell_sols[:, None, :, :] * selected_face_shape_vals[:, :, :, None], axis=2)
         return u
@@ -344,25 +346,25 @@ class FiniteElement:
         Use DirichletBC class from DCboundary module for BC handling.
         """
         if hasattr(self, 'neumann_boundary_inds_list'):
-            print(f"\n\n### Neumann B.C. is specified")
+            print("\n\n### Neumann B.C. is specified")
             for i in range(len(self.neumann_boundary_inds_list)):
                 print(f"\nNeumann Boundary part {i + 1} information:")
                 print(self.neumann_boundary_inds_list[i])
                 print(
                     f"Array.shape = (num_selected_faces, 2) = {self.neumann_boundary_inds_list[i].shape}"
                 )
-                print(f"Interpretation:")
+                print("Interpretation:")
                 print(
-                    f"    Array[i, 0] returns the global cell index of the ith selected face"
+                    "    Array[i, 0] returns the global cell index of the ith selected face"
                 )
                 print(
-                    f"    Array[i, 1] returns the local face index of the ith selected face"
+                    "    Array[i, 1] returns the local face index of the ith selected face"
                 )
         else:
-            print(f"\n\n### No Neumann B.C. found.")
+            print("\n\n### No Neumann B.C. found.")
 
         if len(self.node_inds_list) != 0:
-            print(f"\n\n### Dirichlet B.C. is specified")
+            print("\n\n### Dirichlet B.C. is specified")
             for i in range(len(self.node_inds_list)):
                 print(f"\nDirichlet Boundary part {i + 1} information:")
                 bc_array = np.stack([
@@ -372,15 +374,15 @@ class FiniteElement:
                 print(bc_array)
                 print(
                     f"Array.shape = (num_selected_dofs, 3) = {bc_array.shape}")
-                print(f"Interpretation:")
+                print("Interpretation:")
                 print(
-                    f"    Array[i, 0] returns the node index of the ith selected dof"
+                    "    Array[i, 0] returns the node index of the ith selected dof"
                 )
                 print(
-                    f"    Array[i, 1] returns the vec index of the ith selected dof"
+                    "    Array[i, 1] returns the vec index of the ith selected dof"
                 )
                 print(
-                    f"    Array[i, 2] returns the value assigned to ith selected dof"
+                    "    Array[i, 2] returns the value assigned to ith selected dof"
                 )
         else:
-            print(f"\n\n### No Dirichlet B.C. found.")
+            print("\n\n### No Dirichlet B.C. found.")

@@ -8,10 +8,10 @@ This module tests mesh generation including:
 - Mesh size parameters
 """
 
+import jax.numpy as np
 import pytest
-import jax.numpy as jnp
-import feax as fe
 
+import feax as fe
 
 # ============================================================================
 # Slim Tests - Mesh Generation
@@ -45,12 +45,12 @@ def test_box_mesh_dimensions(simple_mesh):
     assert points.shape[1] == 3
 
     # Check bounding box dimensions
-    min_coords = jnp.min(points, axis=0)
-    max_coords = jnp.max(points, axis=0)
+    min_coords = np.min(points, axis=0)
+    max_coords = np.max(points, axis=0)
 
     # Should span from 0 to 10 in each dimension
-    assert jnp.allclose(min_coords, jnp.array([0., 0., 0.]), atol=1e-10)
-    assert jnp.allclose(max_coords, jnp.array([10., 10., 10.]), atol=1e-10)
+    assert np.allclose(min_coords, np.array([0., 0., 0.]), atol=1e-10)
+    assert np.allclose(max_coords, np.array([10., 10., 10.]), atol=1e-10)
 
 
 @pytest.mark.cpu
@@ -126,14 +126,14 @@ def test_box_mesh_aspect_ratio():
     points = mesh.points
 
     # Check bounding box
-    min_coords = jnp.min(points, axis=0)
-    max_coords = jnp.max(points, axis=0)
+    min_coords = np.min(points, axis=0)
+    max_coords = np.max(points, axis=0)
 
     dimensions = max_coords - min_coords
 
-    assert jnp.isclose(dimensions[0], 20., atol=1e-10)
-    assert jnp.isclose(dimensions[1], 10., atol=1e-10)
-    assert jnp.isclose(dimensions[2], 5., atol=1e-10)
+    assert np.isclose(dimensions[0], 20., atol=1e-10)
+    assert np.isclose(dimensions[1], 10., atol=1e-10)
+    assert np.isclose(dimensions[2], 5., atol=1e-10)
 
 
 @pytest.mark.cpu
@@ -145,12 +145,12 @@ def test_box_mesh_node_connectivity(simple_mesh):
     elements = mesh.cells
 
     # All node indices should be within valid range
-    assert jnp.all(elements >= 0)
-    assert jnp.all(elements < num_nodes)
+    assert np.all(elements >= 0)
+    assert np.all(elements < num_nodes)
 
     # No element should have duplicate nodes (each HEX8 element has 8 unique nodes)
     for elem in elements:
-        assert len(jnp.unique(elem)) == 8
+        assert len(np.unique(elem)) == 8
 
 
 @pytest.mark.cpu
@@ -163,5 +163,5 @@ def test_box_mesh_reproducibility():
     mesh2 = fe.mesh.box_mesh((L, W, H), mesh_size=mesh_size)
 
     # Same parameters should produce identical meshes
-    assert jnp.allclose(mesh1.points, mesh2.points)
-    assert jnp.array_equal(mesh1.cells, mesh2.cells)
+    assert np.allclose(mesh1.points, mesh2.points)
+    assert np.array_equal(mesh1.cells, mesh2.cells)

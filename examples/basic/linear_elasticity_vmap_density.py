@@ -7,13 +7,13 @@ Demonstrates:
 3. Benchmark comparison between for-loop and vmap approaches
 4. Density range: 0.1-1.0 with batch sizes 1 and 10
 """
-import feax as fe
+import gc
+import time
+
 import jax
 import jax.numpy as np
-import time
-import os
-import gc
-import matplotlib.pyplot as plt
+
+import feax as fe
 
 # Problem setup
 E0 = 70e3
@@ -36,7 +36,7 @@ class DensityElasticityProblem(fe.problem.Problem):
             sigma = lam * np.trace(strain) * np.eye(self.dim) + 2.0 * mu * strain
             return sigma
         return stress
-    
+
     def get_surface_maps(self):
         def traction_map(u_grad, surface_quad_point, traction_magnitude):
             return np.array([0.0, 0.0, -traction_magnitude])  # Fixed traction in -z direction
@@ -66,7 +66,7 @@ problem = DensityElasticityProblem(
 )
 
 bc = bc_config.create_bc(problem)
-solver_options = fe.solver.SolverOptions(tol=1e-8, linear_solver="cudss")
+solver_options = fe.DirectSolverOptions(solver="cudss")
 solver = fe.solver.create_solver(problem, bc, solver_options, iter_num=1)
 
 print(f"Problem: {problem.num_total_dofs_all_vars} DOFs")
@@ -76,15 +76,15 @@ def single_solve(density):
     """Solve for a single density value using SIMP material interpolation."""
     # Create uniform density field
     rho = fe.internal_vars.InternalVars.create_uniform_volume_var(problem, density)
-    
+
     # Create fixed traction
     traction_z = fe.internal_vars.InternalVars.create_uniform_surface_var(problem, T)
-    
+
     internal_vars = fe.internal_vars.InternalVars(
         volume_vars=[rho],
         surface_vars=[(traction_z,)]
     )
-    
+
     # Solve with zero initial guess
     return solver(internal_vars, fe.utils.zero_like_initial_guess(problem, bc))
 
@@ -99,24 +99,24 @@ for density_config in density_ranges:
     print(f"{density_config['name']} Range: {density_config['range'][0]}-{density_config['range'][1]}")
 
     results = {'batch_size': [], 'for_loop_time': [], 'vmap_time': [], 'speedup': []}
-    
+
     # Pre-compile both strategies with small batch to avoid compilation overhead
     print("Pre-compiling strategies...")
     compile_density = np.array([0.5])
     solve_vmap = jax.vmap(single_solve)
-    
-    # Compile vmap version  
+
+    # Compile vmap version
     print("  Compiling vmap...")
     _ = solve_vmap(compile_density)
     jax.block_until_ready(_)
-    
+
     # Run benchmarks for each batch size
     for batch_size in batch_sizes:
         print(f"=== Batch Size: {batch_size} ===")
-        
+
         # Create density values for this batch size
         density_values = np.linspace(density_config['range'][0], density_config['range'][1], batch_size)
-        
+
         # Benchmark 2: Vmap approach
         print(f"  Testing vmap with {batch_size} solves...")
         start_time = time.time()
@@ -124,5 +124,5 @@ for density_config in density_ranges:
         jax.block_until_ready(vmap_solutions)
         vmap_time = time.time() - start_time
         print(f"  Vmap time: {vmap_time:.4f}s")
-        
+
         gc.collect()

@@ -1,7 +1,8 @@
-import feax as fe
-import jax
-import jax.numpy as np
 import os
+
+import jax.numpy as np
+
+import feax as fe
 
 elastic_moduli = 70e3
 poisson_ratio = 0.3

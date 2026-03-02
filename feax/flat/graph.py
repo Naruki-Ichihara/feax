@@ -39,10 +39,11 @@ Example:
     >>> internal_vars = InternalVars(volume_vars=(rho,), surface_vars=[])
 """
 
-import jax.numpy as np
 from functools import partial
+from typing import Any, Callable
+
 import jax
-from typing import Callable, Tuple, Any
+import jax.numpy as np
 
 
 def _segment_distance(x: np.ndarray, p0: np.ndarray, p1: np.ndarray) -> np.ndarray:
@@ -58,17 +59,17 @@ def _segment_distance(x: np.ndarray, p0: np.ndarray, p1: np.ndarray) -> np.ndarr
     """
     v = p1 - p0
     w = x - p0
-    
+
     # Compute projection parameter, clipped to [0, 1] for segment bounds
     v_dot_v = np.dot(v, v)
     t = np.where(v_dot_v > 0, np.clip(np.dot(w, v) / v_dot_v, 0.0, 1.0), 0.0)
-    
+
     # Find closest point on segment and compute distance
     proj = p0 + t * v
     return np.linalg.norm(x - proj)
 
 
-def universal_graph(x: np.ndarray, nodes: np.ndarray, edges: np.ndarray, 
+def universal_graph(x: np.ndarray, nodes: np.ndarray, edges: np.ndarray,
                    radius: float) -> np.ndarray:
     """Evaluate if a point lies within the graph structure defined by nodes and edges.
     
@@ -84,16 +85,16 @@ def universal_graph(x: np.ndarray, nodes: np.ndarray, edges: np.ndarray,
     """
     if radius < 0:
         raise ValueError(f"Radius must be non-negative, got {radius}")
-        
+
     def check_edge(edge: np.ndarray) -> np.ndarray:
         """Check if point is within radius of a specific edge."""
         i, j = edge
         return _segment_distance(x, nodes[i], nodes[j]) <= radius
-    
+
     # Handle empty edges case
     if edges.shape[0] == 0:
         return 0.0
-    
+
     # Use vmap to check all edges in parallel
     edge_checks = jax.vmap(check_edge)(edges)
     return np.where(np.any(edge_checks), 1.0, 0.0)

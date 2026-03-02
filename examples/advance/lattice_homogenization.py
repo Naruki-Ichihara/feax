@@ -5,9 +5,11 @@ using periodic boundary conditions and visualizes the stiffness distribution.
 """
 
 import os
+
+import jax.numpy as np
+
 import feax as fe
 import feax.flat as flat
-import jax.numpy as np
 
 # Material properties
 E_base = 210e9  # Pa (steel)
@@ -90,7 +92,7 @@ E_eff = (C11 - C12) * (C11 + 2*C12) / (C11 + C12)
 nu_eff = C12 / (C11 + C12)
 G_eff = C44
 
-print(f"\nHomogenized properties:")
+print("\nHomogenized properties:")
 print(f"  Effective Young's modulus: {E_eff/1e9:.2f} GPa")
 print(f"  Effective Poisson's ratio: {nu_eff:.3f}")
 print(f"  Effective shear modulus: {G_eff/1e9:.2f} GPa")

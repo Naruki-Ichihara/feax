@@ -5,15 +5,16 @@ This module provides the Mesh class for managing finite element meshes and utili
 functions for mesh generation, validation, and format conversion.
 """
 
-import os
-from typing import Tuple, Callable, Optional, Union
-import numpy as onp
-import meshio
-from feax.basis import get_face_shape_vals_and_grads
+from typing import Callable, Optional, Tuple, Union
+
+import gmsh
 import jax
 import jax.numpy as np
+import meshio
+import numpy as onp
 from jax import Array
-import gmsh
+
+from feax.basis import get_face_shape_vals_and_grads
 
 
 class Mesh():

@@ -1,9 +1,11 @@
 ---
 sidebar_label: solver_option
-title: feax.solver_option
+title: feax.solvers.options
 ---
 
 Solver configuration options for FEAX finite element framework.
+
+`feax.solver_option` is deprecated. Use `feax.solvers.options` (or top-level re-exports like `feax.DirectSolverOptions` and `feax.IterativeSolverOptions`).
 
 This module provides configuration dataclasses and enums for controlling
 solver behavior, including linear solver selection, tolerances, and
@@ -406,4 +408,3 @@ Returns
 IterativeSolverOptions
     Options with solver resolved to a concrete algorithm.
     If solver != &quot;auto&quot;, returns the input unchanged.
-

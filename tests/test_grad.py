@@ -8,12 +8,12 @@ This module tests that gradients can be computed through solvers:
 - Gradient consistency across solvers
 """
 
-import pytest
 import jax
-import jax.numpy as jnp
+import jax.numpy as np
+import pytest
+
 import feax as fe
 from feax.problem import MatrixView
-
 
 # ============================================================================
 # Environment Checks
@@ -31,7 +31,7 @@ def has_gpu():
 def has_cudss():
     """Check if cuDSS backend is available."""
     try:
-        from feax.solver_option import CUDSSOptions
+        from feax.solvers.options import CUDSSOptions
         return has_gpu()  # cuDSS requires GPU
     except ImportError:
         return False
@@ -64,20 +64,20 @@ def test_cg_solver_grad(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG
-    solver_opts = fe.SolverOptions(linear_solver="cg")
+    solver_opts = fe.IterativeSolverOptions(solver="cg")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate: norm of solution
     def loss_fn(internal_vars):
         sol = solver(internal_vars, initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     # Compute gradient
     grad_fn = jax.grad(loss_fn)
@@ -86,10 +86,10 @@ def test_cg_solver_grad(
     # Check that gradients exist and are finite
     assert grads is not None
     surface_grads = grads.surface_vars[0][0]
-    assert jnp.all(jnp.isfinite(surface_grads)), "Gradients contain inf or nan"
+    assert np.all(np.isfinite(surface_grads)), "Gradients contain inf or nan"
 
     # Gradients should be non-trivial
-    grad_norm = jnp.linalg.norm(surface_grads)
+    grad_norm = np.linalg.norm(surface_grads)
     assert grad_norm > 0, f"Gradient is trivial (norm={grad_norm})"
 
 
@@ -104,20 +104,20 @@ def test_bicgstab_solver_grad(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
 
     # Create solver with BICGSTAB
-    solver_opts = fe.SolverOptions(linear_solver="bicgstab")
+    solver_opts = fe.IterativeSolverOptions(solver="bicgstab")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
     def loss_fn(internal_vars):
         sol = solver(internal_vars, initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     # Compute gradient
     grad_fn = jax.grad(loss_fn)
@@ -126,9 +126,9 @@ def test_bicgstab_solver_grad(
     # Check gradients
     assert grads is not None
     surface_grads = grads.surface_vars[0][0]
-    assert jnp.all(jnp.isfinite(surface_grads)), "Gradients contain inf or nan"
+    assert np.all(np.isfinite(surface_grads)), "Gradients contain inf or nan"
 
-    grad_norm = jnp.linalg.norm(surface_grads)
+    grad_norm = np.linalg.norm(surface_grads)
     assert grad_norm > 0, f"Gradient is trivial (norm={grad_norm})"
 
 
@@ -143,20 +143,20 @@ def test_gmres_solver_grad(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
 
     # Create solver with GMRES
-    solver_opts = fe.SolverOptions(linear_solver="gmres")
+    solver_opts = fe.IterativeSolverOptions(solver="gmres")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
     def loss_fn(internal_vars):
         sol = solver(internal_vars, initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     # Compute gradient
     grad_fn = jax.grad(loss_fn)
@@ -165,9 +165,9 @@ def test_gmres_solver_grad(
     # Check gradients
     assert grads is not None
     surface_grads = grads.surface_vars[0][0]
-    assert jnp.all(jnp.isfinite(surface_grads)), "Gradients contain inf or nan"
+    assert np.all(np.isfinite(surface_grads)), "Gradients contain inf or nan"
 
-    grad_norm = jnp.linalg.norm(surface_grads)
+    grad_norm = np.linalg.norm(surface_grads)
     assert grad_norm > 0, f"Gradient is trivial (norm={grad_norm})"
 
 
@@ -187,7 +187,7 @@ def test_cudss_solver_grad_full(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -200,7 +200,7 @@ def test_cudss_solver_grad_full(
     # Define function to differentiate
     def loss_fn(internal_vars):
         sol = solver(internal_vars, initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     # Compute gradient
     grad_fn = jax.grad(loss_fn)
@@ -209,9 +209,9 @@ def test_cudss_solver_grad_full(
     # Check gradients
     assert grads is not None
     surface_grads = grads.surface_vars[0][0]
-    assert jnp.all(jnp.isfinite(surface_grads)), "Gradients contain inf or nan"
+    assert np.all(np.isfinite(surface_grads)), "Gradients contain inf or nan"
 
-    grad_norm = jnp.linalg.norm(surface_grads)
+    grad_norm = np.linalg.norm(surface_grads)
     assert grad_norm > 0, f"Gradient is trivial (norm={grad_norm})"
 
 
@@ -230,7 +230,7 @@ def test_cudss_solver_grad_upper(
     assert problem.matrix_view == MatrixView.UPPER
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -243,7 +243,7 @@ def test_cudss_solver_grad_upper(
     # Define function to differentiate
     def loss_fn(internal_vars):
         sol = solver(internal_vars, initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     # Compute gradient
     grad_fn = jax.grad(loss_fn)
@@ -252,9 +252,9 @@ def test_cudss_solver_grad_upper(
     # Check gradients
     assert grads is not None
     surface_grads = grads.surface_vars[0][0]
-    assert jnp.all(jnp.isfinite(surface_grads)), "Gradients contain inf or nan"
+    assert np.all(np.isfinite(surface_grads)), "Gradients contain inf or nan"
 
-    grad_norm = jnp.linalg.norm(surface_grads)
+    grad_norm = np.linalg.norm(surface_grads)
     assert grad_norm > 0, f"Gradient is trivial (norm={grad_norm})"
 
 
@@ -273,7 +273,7 @@ def test_gradient_consistency_cg_bicgstab(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -283,26 +283,26 @@ def test_gradient_consistency_cg_bicgstab(
     # Create CG solver and compute gradient
     solver_cg = fe.create_solver(
         problem, bc,
-        solver_options=fe.SolverOptions(linear_solver="cg"),
+        solver_options=fe.IterativeSolverOptions(solver="cg"),
         iter_num=1
     )
 
     def loss_cg(internal_vars):
         sol = solver_cg(internal_vars, initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     grad_cg = jax.grad(loss_cg)(internal_vars)
 
     # Create BICGSTAB solver and compute gradient
     solver_bicgstab = fe.create_solver(
         problem, bc,
-        solver_options=fe.SolverOptions(linear_solver="bicgstab"),
+        solver_options=fe.IterativeSolverOptions(solver="bicgstab"),
         iter_num=1
     )
 
     def loss_bicgstab(internal_vars):
         sol = solver_bicgstab(internal_vars, initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     grad_bicgstab = jax.grad(loss_bicgstab)(internal_vars)
 
@@ -310,8 +310,8 @@ def test_gradient_consistency_cg_bicgstab(
     grad_cg_surf = grad_cg.surface_vars[0][0]
     grad_bicgstab_surf = grad_bicgstab.surface_vars[0][0]
 
-    diff = jnp.linalg.norm(grad_cg_surf - grad_bicgstab_surf)
-    norm = jnp.linalg.norm(grad_cg_surf)
+    diff = np.linalg.norm(grad_cg_surf - grad_bicgstab_surf)
+    norm = np.linalg.norm(grad_cg_surf)
     rel_diff = diff / norm
 
     # Gradients should be similar (within tolerance)
@@ -333,20 +333,20 @@ def test_grad_jit_compatibility_cg(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG
-    solver_opts = fe.SolverOptions(linear_solver="cg")
+    solver_opts = fe.IterativeSolverOptions(solver="cg")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
     def loss_fn(internal_vars):
         sol = solver(internal_vars, initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     # JIT the gradient function
     grad_fn = jax.jit(jax.grad(loss_fn))
@@ -355,9 +355,9 @@ def test_grad_jit_compatibility_cg(
     # Check gradients
     assert grads is not None
     surface_grads = grads.surface_vars[0][0]
-    assert jnp.all(jnp.isfinite(surface_grads)), "Gradients contain inf or nan"
+    assert np.all(np.isfinite(surface_grads)), "Gradients contain inf or nan"
 
-    grad_norm = jnp.linalg.norm(surface_grads)
+    grad_norm = np.linalg.norm(surface_grads)
     assert grad_norm > 0, f"Gradient is trivial (norm={grad_norm})"
 
 
@@ -372,20 +372,20 @@ def test_grad_jit_compatibility_bicgstab(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
 
     # Create solver with BICGSTAB
-    solver_opts = fe.SolverOptions(linear_solver="bicgstab")
+    solver_opts = fe.IterativeSolverOptions(solver="bicgstab")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
     def loss_fn(internal_vars):
         sol = solver(internal_vars, initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     # JIT the gradient function
     grad_fn = jax.jit(jax.grad(loss_fn))
@@ -394,9 +394,9 @@ def test_grad_jit_compatibility_bicgstab(
     # Check gradients
     assert grads is not None
     surface_grads = grads.surface_vars[0][0]
-    assert jnp.all(jnp.isfinite(surface_grads)), "Gradients contain inf or nan"
+    assert np.all(np.isfinite(surface_grads)), "Gradients contain inf or nan"
 
-    grad_norm = jnp.linalg.norm(surface_grads)
+    grad_norm = np.linalg.norm(surface_grads)
     assert grad_norm > 0, f"Gradient is trivial (norm={grad_norm})"
 
 
@@ -411,20 +411,20 @@ def test_grad_jit_compatibility_gmres(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
 
     # Create solver with GMRES
-    solver_opts = fe.SolverOptions(linear_solver="gmres")
+    solver_opts = fe.IterativeSolverOptions(solver="gmres")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
     def loss_fn(internal_vars):
         sol = solver(internal_vars, initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     # JIT the gradient function
     grad_fn = jax.jit(jax.grad(loss_fn))
@@ -433,9 +433,9 @@ def test_grad_jit_compatibility_gmres(
     # Check gradients
     assert grads is not None
     surface_grads = grads.surface_vars[0][0]
-    assert jnp.all(jnp.isfinite(surface_grads)), "Gradients contain inf or nan"
+    assert np.all(np.isfinite(surface_grads)), "Gradients contain inf or nan"
 
-    grad_norm = jnp.linalg.norm(surface_grads)
+    grad_norm = np.linalg.norm(surface_grads)
     assert grad_norm > 0, f"Gradient is trivial (norm={grad_norm})"
 
 
@@ -451,7 +451,7 @@ def test_grad_jit_compatibility_cudss(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -466,7 +466,7 @@ def test_grad_jit_compatibility_cudss(
     # Define function to differentiate
     def loss_fn(internal_vars):
         sol = solver(internal_vars, initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     # JIT the gradient function
     grad_fn = jax.jit(jax.grad(loss_fn))
@@ -475,9 +475,9 @@ def test_grad_jit_compatibility_cudss(
     # Check gradients
     assert grads is not None
     surface_grads = grads.surface_vars[0][0]
-    assert jnp.all(jnp.isfinite(surface_grads)), "Gradients contain inf or nan"
+    assert np.all(np.isfinite(surface_grads)), "Gradients contain inf or nan"
 
-    grad_norm = jnp.linalg.norm(surface_grads)
+    grad_norm = np.linalg.norm(surface_grads)
     assert grad_norm > 0, f"Gradient is trivial (norm={grad_norm})"
 
 
@@ -496,20 +496,20 @@ def test_jit_grad_composition_order_cg(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG
-    solver_opts = fe.SolverOptions(linear_solver="cg")
+    solver_opts = fe.IterativeSolverOptions(solver="cg")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
     def loss_fn(internal_vars):
         sol = solver(internal_vars, initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     # Test 1: jax.jit(jax.grad(loss_fn))
     grad_fn_1 = jax.jit(jax.grad(loss_fn))
@@ -523,12 +523,12 @@ def test_jit_grad_composition_order_cg(
     surface_grads_1 = grads_1.surface_vars[0][0]
     surface_grads_2 = grads_2.surface_vars[0][0]
 
-    assert jnp.all(jnp.isfinite(surface_grads_1))
-    assert jnp.all(jnp.isfinite(surface_grads_2))
+    assert np.all(np.isfinite(surface_grads_1))
+    assert np.all(np.isfinite(surface_grads_2))
 
     # Gradients should be similar (allow small numerical differences)
-    diff = jnp.linalg.norm(surface_grads_1 - surface_grads_2)
-    norm = jnp.linalg.norm(surface_grads_1)
+    diff = np.linalg.norm(surface_grads_1 - surface_grads_2)
+    norm = np.linalg.norm(surface_grads_1)
     rel_diff = diff / norm
 
     assert rel_diff < 1e-8, f"Different composition orders produce different gradients: {rel_diff:.2e}"
@@ -546,7 +546,7 @@ def test_jit_grad_composition_order_cudss(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -561,7 +561,7 @@ def test_jit_grad_composition_order_cudss(
     # Define function to differentiate
     def loss_fn(internal_vars):
         sol = solver(internal_vars, initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     # Test 1: jax.jit(jax.grad(loss_fn))
     grad_fn_1 = jax.jit(jax.grad(loss_fn))
@@ -575,12 +575,12 @@ def test_jit_grad_composition_order_cudss(
     surface_grads_1 = grads_1.surface_vars[0][0]
     surface_grads_2 = grads_2.surface_vars[0][0]
 
-    assert jnp.all(jnp.isfinite(surface_grads_1))
-    assert jnp.all(jnp.isfinite(surface_grads_2))
+    assert np.all(np.isfinite(surface_grads_1))
+    assert np.all(np.isfinite(surface_grads_2))
 
     # Gradients should be similar (allow small numerical differences)
-    diff = jnp.linalg.norm(surface_grads_1 - surface_grads_2)
-    norm = jnp.linalg.norm(surface_grads_1)
+    diff = np.linalg.norm(surface_grads_1 - surface_grads_2)
+    norm = np.linalg.norm(surface_grads_1)
     rel_diff = diff / norm
 
     assert rel_diff < 1e-8, f"Different composition orders produce different gradients: {rel_diff:.2e}"
@@ -613,7 +613,7 @@ def test_gradient_consistency_upper_vs_full(
     tol = material_params['tol']
 
     # Setup boundary conditions (same for both)
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
 
@@ -633,7 +633,7 @@ def test_gradient_consistency_upper_vs_full(
 
     def objective_full(internal_vars):
         sol = solver_full(internal_vars, initial_full)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     grad_full = jax.grad(objective_full)(internal_vars)
 
@@ -653,7 +653,7 @@ def test_gradient_consistency_upper_vs_full(
 
     def objective_upper(internal_vars):
         sol = solver_upper(internal_vars, initial_upper)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     grad_upper = jax.grad(objective_upper)(internal_vars)
 
@@ -661,8 +661,8 @@ def test_gradient_consistency_upper_vs_full(
     grad_full_surf = grad_full.surface_vars[0][0]
     grad_upper_surf = grad_upper.surface_vars[0][0]
 
-    diff = jnp.linalg.norm(grad_full_surf - grad_upper_surf)
-    norm = jnp.linalg.norm(grad_full_surf)
+    diff = np.linalg.norm(grad_full_surf - grad_upper_surf)
+    norm = np.linalg.norm(grad_full_surf)
     rel_diff = diff / norm
 
     # Gradients should be essentially identical (within numerical precision)

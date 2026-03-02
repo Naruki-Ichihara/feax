@@ -60,7 +60,7 @@ Solves: ρ̃ - r² ∇²ρ̃ = ρ_source
 - `mesh` - Mesh object
 - `radius` - Filter radius (controls smoothness - larger = smoother)
 - `P` - Optional prolongation matrix for periodic boundary conditions (default None)
-- `solver_options` - Optional SolverOptions (default: tol=1e-8, cg solver)
+- `solver_options` - Optional IterativeSolverOptions (default: solver="cg", tol=1e-8)
 
 
 **Returns**:
@@ -111,7 +111,7 @@ Solves: ρ̃ - r² ∇²ρ̃ = ρ_source
 - `mesh` - Mesh object
 - `radius` - Filter radius (controls smoothness - larger = smoother)
 - `P` - Optional prolongation matrix for periodic boundary conditions (default None)
-- `solver_options` - Optional SolverOptions (default: tol=1e-8, cg solver)
+- `solver_options` - Optional IterativeSolverOptions (default: solver="cg", tol=1e-8)
 
 
 **Returns**:
@@ -129,7 +129,7 @@ Solves: ρ̃ - r² ∇²ρ̃ = ρ_source
 >>> # For use with jax.grad, use create_helmholtz_filter instead:
 >>> filter_fn = create_helmholtz_filter(mesh, radius=0.1)
 >>> def objective(rho):
-...     return jnp.sum(filter_fn(rho))
+...     return np.sum(filter_fn(rho))
 >>> grad_fn = jax.grad(objective)
 ```
 
@@ -276,7 +276,6 @@ filter function once.
 >>> # For repeated use or with jax.grad, use create_density_filter instead:
 >>> filter_fn = create_density_filter(mesh, radius=3.0)
 >>> def objective(rho):
-...     return jnp.sum(filter_fn(rho))
+...     return np.sum(filter_fn(rho))
 >>> grad_fn = jax.grad(objective)
 ```
-
