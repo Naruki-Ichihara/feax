@@ -239,4 +239,5 @@ def create_solver(
             bc=bc,
             solver_options=linear_options,
             adjoint_solver_options=adjoint_linear_options,
+            internal_vars=internal_vars,
         )

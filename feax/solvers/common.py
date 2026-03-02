@@ -238,6 +238,47 @@ def create_linear_solve_fn(solver_options):
     )
 
 
+def prewarm_cudss_solvers(
+    problem,
+    bc,
+    internal_vars,
+    J_bc_func,
+    forward_options,
+    adjoint_options,
+    forward_solve_fn,
+    adjoint_solve_fn,
+):
+    """Pre-warm cuDSS solve closures with concrete CSR structure.
+
+    This must run outside JAX tracing so the first-call cuDSS initialization
+    does not capture tracers in closure state.
+    """
+
+    def _is_cudss(opts):
+        return isinstance(opts, DirectSolverOptions) and opts.solver == "cudss"
+
+    if internal_vars is None:
+        return
+
+    if not (_is_cudss(forward_options) or _is_cudss(adjoint_options)):
+        return
+
+    from ..utils import zero_like_initial_guess
+
+    initial_tmp = zero_like_initial_guess(problem, bc)
+    sample_J = J_bc_func(initial_tmp, internal_vars)
+    b_tmp = np.zeros(sample_J.shape[0])
+
+    if _is_cudss(forward_options):
+        print("[feax] Pre-warming cuDSS solver (forward) with sample Jacobian...")
+        forward_solve_fn(sample_J, b_tmp, b_tmp)
+        print("[feax] cuDSS solver (forward) initialized.")
+    if _is_cudss(adjoint_options) and adjoint_solve_fn is not forward_solve_fn:
+        print("[feax] Pre-warming cuDSS solver (adjoint) with sample Jacobian...")
+        adjoint_solve_fn(sample_J, b_tmp, b_tmp)
+        print("[feax] cuDSS solver (adjoint) initialized.")
+
+
 def _extract_sparse_diagonal(A):
     """Extract sparse matrix diagonal as dense vector."""
     n = A.shape[0]

@@ -16,6 +16,7 @@ from .common import (
     _safe_negate,
     check_convergence,
     create_linear_solve_fn,
+    prewarm_cudss_solvers,
     create_x0,
 )
 from .linear import linear_solve_adjoint
@@ -187,26 +188,16 @@ def create_newton_solver(
     else:
         adjoint_linear_solve_fn = create_linear_solve_fn(adjoint_linear_options)
 
-    def _is_cudss(opts):
-        from .options import DirectSolverOptions
-        return isinstance(opts, DirectSolverOptions) and opts.solver == "cudss"
-
-    sample_J = None
-    if internal_vars is not None and (_is_cudss(linear_options) or _is_cudss(adjoint_linear_options)):
-        from ..utils import zero_like_initial_guess
-        initial_tmp = zero_like_initial_guess(problem, bc)
-        sample_J = J_bc_func(initial_tmp, internal_vars)
-
-    if sample_J is not None:
-        b_tmp = np.zeros(sample_J.shape[0])
-        if _is_cudss(linear_options):
-            print("[feax] Pre-warming cuDSS solver (forward) with sample Jacobian...")
-            linear_solve_fn(sample_J, b_tmp, b_tmp)
-            print("[feax] cuDSS solver (forward) initialized.")
-        if _is_cudss(adjoint_linear_options) and adjoint_linear_solve_fn is not linear_solve_fn:
-            print("[feax] Pre-warming cuDSS solver (adjoint) with sample Jacobian...")
-            adjoint_linear_solve_fn(sample_J, b_tmp, b_tmp)
-            print("[feax] cuDSS solver (adjoint) initialized.")
+    prewarm_cudss_solvers(
+        problem=problem,
+        bc=bc,
+        internal_vars=internal_vars,
+        J_bc_func=J_bc_func,
+        forward_options=linear_options,
+        adjoint_options=adjoint_linear_options,
+        forward_solve_fn=linear_solve_fn,
+        adjoint_solve_fn=adjoint_linear_solve_fn,
+    )
 
     if newton_options is None:
         newton_options = NewtonOptions()
@@ -249,27 +240,6 @@ def create_newton_solver(
         solve_fn=solve_fn,
         adjoint_solver_options=adjoint_linear_options,
         adjoint_linear_solve_fn=adjoint_linear_solve_fn,
-    )
-
-
-def create_newton_differentiable_solver(
-    problem,
-    bc,
-    solver_options,
-    adjoint_solver_options,
-    iter_num: Optional[int],
-    newton_options: Optional[NewtonOptions] = None,
-    internal_vars=None,
-):
-    """Backward-compatible alias for ``create_newton_solver``."""
-    return create_newton_solver(
-        problem=problem,
-        bc=bc,
-        linear_options=solver_options,
-        adjoint_linear_options=adjoint_solver_options,
-        iter_num=iter_num,
-        newton_options=newton_options,
-        internal_vars=internal_vars,
     )
 
 def create_armijo_line_search_jax(res_bc_applied, c1=1e-4, rho=0.5, max_backtracks=30):

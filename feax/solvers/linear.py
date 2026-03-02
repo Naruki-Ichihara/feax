@@ -26,6 +26,7 @@ from .common import (
     _safe_negate,
     check_convergence,
     create_linear_solve_fn,
+    prewarm_cudss_solvers,
     create_x0,
 )
 from .options import (
@@ -158,6 +159,7 @@ def create_linear_solver(
     bc: DirichletBC,
     solver_options: Optional[AbstractSolverOptions] = None,
     adjoint_solver_options: Optional[AbstractSolverOptions] = None,
+    internal_vars=None,
 ) -> Callable[[Any, np.ndarray], np.ndarray]:
     """Create a differentiable solver for linear FE problems.
 
@@ -177,6 +179,10 @@ def create_linear_solver(
     adjoint_solver_options : DirectSolverOptions or IterativeSolverOptions, optional
         Options for the adjoint solve used in the backward pass.
         Defaults to the same options as the forward solve.
+    internal_vars : InternalVars, optional
+        Sample internal variables used to pre-warm cuDSS with concrete CSR
+        structure before any JAX tracing. Recommended when using cuDSS and
+        composing ``jax.jit`` with ``jax.grad``.
 
     Returns
     -------
@@ -265,6 +271,17 @@ def create_linear_solver(
     else:
         adjoint_linear_solve_fn = create_linear_solve_fn(adjoint_solver_options)
     x0_fn = solver_options.x0_fn if isinstance(solver_options, IterativeSolverOptions) else None
+
+    prewarm_cudss_solvers(
+        problem=problem,
+        bc=bc,
+        internal_vars=internal_vars,
+        J_bc_func=J_bc_func,
+        forward_options=solver_options,
+        adjoint_options=adjoint_solver_options,
+        forward_solve_fn=linear_solve_fn,
+        adjoint_solve_fn=adjoint_linear_solve_fn,
+    )
 
     @jax.custom_vjp
     def differentiable_solve(internal_vars, initial_guess):
