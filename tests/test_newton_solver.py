@@ -9,7 +9,7 @@ This module tests hyperelasticity with:
 """
 
 import jax
-import jax.numpy as jnp
+import jax.numpy as np
 import pytest
 
 import feax as fe
@@ -67,21 +67,21 @@ def test_neohookean_solver_convergence(
             def first_PK_stress(u_grad, *args):
                 """First Piola-Kirchhoff stress for Neo-Hookean material."""
                 # Deformation gradient F = I + grad(u)
-                F = jnp.eye(self.dim) + u_grad
+                F = np.eye(self.dim) + u_grad
 
                 # Right Cauchy-Green tensor C = F^T F
                 C = F.T @ F
 
                 # Invariants
-                J = jnp.linalg.det(F)
-                I1 = jnp.trace(C)
+                J = np.linalg.det(F)
+                I1 = np.trace(C)
 
                 # Neo-Hookean strain energy derivatives
                 # W = (mu/2)(I1 - 3) - mu*ln(J) + (kappa/2)(J-1)^2
 
                 # First Piola-Kirchhoff stress
                 # P = mu(F - F^-T) + kappa(J-1)J F^-T
-                F_inv_T = jnp.linalg.inv(F).T
+                F_inv_T = np.linalg.inv(F).T
                 P = mu * (F - F_inv_T) + kappa * (J - 1) * J * F_inv_T
 
                 return P
@@ -89,11 +89,11 @@ def test_neohookean_solver_convergence(
             return first_PK_stress
 
         def get_surface_maps(self):
-            return [lambda u, x, t: jnp.array([0., 0., t])]
+            return [lambda u, x, t: np.array([0., 0., t])]
 
     # Boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
-    right = lambda p: jnp.isclose(p[0], 10., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
+    right = lambda p: np.isclose(p[0], 10., tol)
 
     # Create problem
     problem = NeoHookean(
@@ -125,7 +125,7 @@ def test_neohookean_solver_convergence(
     solution = solver(internal_vars, initial)
 
     # Check solution is non-trivial
-    solution_norm = jnp.linalg.norm(solution)
+    solution_norm = np.linalg.norm(solution)
     assert solution_norm > 0, f"Solution is trivial (norm={solution_norm})"
 
     # Check solution magnitude is reasonable
@@ -147,12 +147,12 @@ def test_neohookean_residual_convergence(
     class NeoHookean(fe.Problem):
         def get_tensor_map(self):
             def first_PK_stress(u_grad, *args):
-                F = jnp.eye(self.dim) + u_grad
+                F = np.eye(self.dim) + u_grad
                 C = F.T @ F
-                J = jnp.linalg.det(F)
-                I1 = jnp.trace(C)
+                J = np.linalg.det(F)
+                I1 = np.trace(C)
 
-                F_inv_T = jnp.linalg.inv(F).T
+                F_inv_T = np.linalg.inv(F).T
                 P = mu * (F - F_inv_T) + kappa * (J - 1) * J * F_inv_T
 
                 return P
@@ -160,11 +160,11 @@ def test_neohookean_residual_convergence(
             return first_PK_stress
 
         def get_surface_maps(self):
-            return [lambda u, x, t: jnp.array([0., 0., t])]
+            return [lambda u, x, t: np.array([0., 0., t])]
 
     # Boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
-    right = lambda p: jnp.isclose(p[0], 10., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
+    right = lambda p: np.isclose(p[0], 10., tol)
 
     problem = NeoHookean(
         simple_mesh, vec=3, dim=3,
@@ -194,9 +194,9 @@ def test_neohookean_residual_convergence(
     # Check final residual
     sol_list = problem.unflatten_fn_sol_list(solution)
     residual_list = fe.get_res(problem, sol_list, internal_vars)
-    residual = jnp.concatenate([r.flatten() for r in residual_list])
+    residual = np.concatenate([r.flatten() for r in residual_list])
     residual_bc = fe.apply_boundary_to_res(bc, residual, solution)
-    residual_norm = jnp.linalg.norm(residual_bc)
+    residual_norm = np.linalg.norm(residual_bc)
 
     # Residual should be small after Newton iterations
     assert residual_norm < 1e-4, f"Residual too large: {residual_norm}"
@@ -217,19 +217,19 @@ def test_neohookean_different_solvers(
     class NeoHookean(fe.Problem):
         def get_tensor_map(self):
             def first_PK_stress(u_grad, *args):
-                F = jnp.eye(self.dim) + u_grad
-                J = jnp.linalg.det(F)
-                F_inv_T = jnp.linalg.inv(F).T
+                F = np.eye(self.dim) + u_grad
+                J = np.linalg.det(F)
+                F_inv_T = np.linalg.inv(F).T
                 P = mu * (F - F_inv_T) + kappa * (J - 1) * J * F_inv_T
                 return P
 
             return first_PK_stress
 
         def get_surface_maps(self):
-            return [lambda u, x, t: jnp.array([0., 0., t])]
+            return [lambda u, x, t: np.array([0., 0., t])]
 
-    left = lambda p: jnp.isclose(p[0], 0., tol)
-    right = lambda p: jnp.isclose(p[0], 10., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
+    right = lambda p: np.isclose(p[0], 10., tol)
 
     problem = NeoHookean(
         simple_mesh, vec=3, dim=3,
@@ -262,12 +262,12 @@ def test_neohookean_different_solvers(
         solutions.append(solution)
 
         # Check solution is non-trivial
-        assert jnp.linalg.norm(solution) > 0
+        assert np.linalg.norm(solution) > 0
 
     # All solvers should give similar solutions
     sol_tol = 1e-3
-    diff_cg_bicgstab = jnp.linalg.norm(solutions[0] - solutions[1]) / jnp.linalg.norm(solutions[0])
-    diff_cg_gmres = jnp.linalg.norm(solutions[0] - solutions[2]) / jnp.linalg.norm(solutions[0])
+    diff_cg_bicgstab = np.linalg.norm(solutions[0] - solutions[1]) / np.linalg.norm(solutions[0])
+    diff_cg_gmres = np.linalg.norm(solutions[0] - solutions[2]) / np.linalg.norm(solutions[0])
 
     assert diff_cg_bicgstab < sol_tol, f"CG and BICGSTAB solutions differ by {diff_cg_bicgstab:.2e}"
     assert diff_cg_gmres < sol_tol, f"CG and GMRES solutions differ by {diff_cg_gmres:.2e}"
@@ -290,18 +290,18 @@ def test_newton_cudss_grad_prewarm_regression(
     class NeoHookean(fe.Problem):
         def get_tensor_map(self):
             def first_PK_stress(u_grad, *args):
-                F = jnp.eye(self.dim) + u_grad
-                J = jnp.linalg.det(F)
-                F_inv_T = jnp.linalg.inv(F).T
+                F = np.eye(self.dim) + u_grad
+                J = np.linalg.det(F)
+                F_inv_T = np.linalg.inv(F).T
                 return mu * (F - F_inv_T) + kappa * (J - 1) * J * F_inv_T
 
             return first_PK_stress
 
         def get_surface_maps(self):
-            return [lambda u, x, t: jnp.array([0.0, 0.0, t])]
+            return [lambda u, x, t: np.array([0.0, 0.0, t])]
 
-    left = lambda p: jnp.isclose(p[0], 0.0, tol)
-    right = lambda p: jnp.isclose(p[0], 10.0, tol)
+    left = lambda p: np.isclose(p[0], 0.0, tol)
+    right = lambda p: np.isclose(p[0], 10.0, tol)
 
     problem = NeoHookean(
         simple_mesh, vec=3, dim=3,
@@ -329,7 +329,7 @@ def test_newton_cudss_grad_prewarm_regression(
         surf = fe.InternalVars.create_uniform_surface_var(problem, traction)
         iv = fe.InternalVars((), [(surf,)])
         sol = solver(iv, initial)
-        return jnp.sum(sol ** 2)
+        return np.sum(sol ** 2)
 
     grad_val = jax.grad(loss)(traction0)
-    assert jnp.isfinite(grad_val), "Gradient should be finite for Newton+cuDSS path"
+    assert np.isfinite(grad_val), "Gradient should be finite for Newton+cuDSS path"

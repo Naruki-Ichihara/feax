@@ -8,7 +8,7 @@ This module tests that solvers work correctly with JAX JIT compilation:
 """
 
 import jax
-import jax.numpy as jnp
+import jax.numpy as np
 import pytest
 
 import feax as fe
@@ -63,7 +63,7 @@ def test_cg_solver_jit_compatibility(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -81,12 +81,12 @@ def test_cg_solver_jit_compatibility(
     sol_with_jit = solver_jit(internal_vars, initial)
 
     # Solutions should be identical
-    diff = jnp.linalg.norm(sol_no_jit - sol_with_jit)
+    diff = np.linalg.norm(sol_no_jit - sol_with_jit)
     assert diff < 1e-10, f"JIT and non-JIT CG solutions differ by {diff:.2e}"
 
     # Both should be non-trivial
-    assert jnp.linalg.norm(sol_no_jit) > 0
-    assert jnp.linalg.norm(sol_with_jit) > 0
+    assert np.linalg.norm(sol_no_jit) > 0
+    assert np.linalg.norm(sol_with_jit) > 0
 
 
 @pytest.mark.cpu
@@ -100,7 +100,7 @@ def test_bicgstab_solver_jit_compatibility(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -118,12 +118,12 @@ def test_bicgstab_solver_jit_compatibility(
     sol_with_jit = solver_jit(internal_vars, initial)
 
     # Solutions should be identical
-    diff = jnp.linalg.norm(sol_no_jit - sol_with_jit)
+    diff = np.linalg.norm(sol_no_jit - sol_with_jit)
     assert diff < 1e-10, f"JIT and non-JIT BICGSTAB solutions differ by {diff:.2e}"
 
     # Both should be non-trivial
-    assert jnp.linalg.norm(sol_no_jit) > 0
-    assert jnp.linalg.norm(sol_with_jit) > 0
+    assert np.linalg.norm(sol_no_jit) > 0
+    assert np.linalg.norm(sol_with_jit) > 0
 
 
 @pytest.mark.cpu
@@ -137,7 +137,7 @@ def test_gmres_solver_jit_compatibility(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -155,12 +155,12 @@ def test_gmres_solver_jit_compatibility(
     sol_with_jit = solver_jit(internal_vars, initial)
 
     # Solutions should be identical
-    diff = jnp.linalg.norm(sol_no_jit - sol_with_jit)
+    diff = np.linalg.norm(sol_no_jit - sol_with_jit)
     assert diff < 1e-10, f"JIT and non-JIT GMRES solutions differ by {diff:.2e}"
 
     # Both should be non-trivial
-    assert jnp.linalg.norm(sol_no_jit) > 0
-    assert jnp.linalg.norm(sol_with_jit) > 0
+    assert np.linalg.norm(sol_no_jit) > 0
+    assert np.linalg.norm(sol_with_jit) > 0
 
 
 # ============================================================================
@@ -179,7 +179,7 @@ def test_cudss_solver_jit_compatibility_full(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -194,7 +194,7 @@ def test_cudss_solver_jit_compatibility_full(
     sol_with_jit = solver_jit(internal_vars, initial)
 
     # Solution should be non-trivial and reasonable
-    solution_norm = jnp.linalg.norm(sol_with_jit)
+    solution_norm = np.linalg.norm(sol_with_jit)
     assert solution_norm > 0, f"Solution is trivial (norm={solution_norm})"
     assert solution_norm < 1.0, f"Solution norm too large: {solution_norm}"
 
@@ -214,7 +214,7 @@ def test_cudss_solver_jit_compatibility_upper(
     assert problem.matrix_view == MatrixView.UPPER
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -229,7 +229,7 @@ def test_cudss_solver_jit_compatibility_upper(
     sol_with_jit = solver_jit(internal_vars, initial)
 
     # Solution should be non-trivial and reasonable
-    solution_norm = jnp.linalg.norm(sol_with_jit)
+    solution_norm = np.linalg.norm(sol_with_jit)
     assert solution_norm > 0, f"Solution is trivial (norm={solution_norm})"
     assert solution_norm < 1.0, f"Solution norm too large: {solution_norm}"
 
@@ -249,7 +249,7 @@ def test_multiple_jit_compilations_cg(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -268,7 +268,7 @@ def test_multiple_jit_compilations_cg(
     sol2 = solver_jit2(internal_vars, initial)
 
     # Solutions should be identical
-    diff = jnp.linalg.norm(sol1 - sol2)
+    diff = np.linalg.norm(sol1 - sol2)
     assert diff < 1e-12, f"Multiple JIT compilations produce different results: {diff:.2e}"
 
 
@@ -284,7 +284,7 @@ def test_multiple_jit_compilations_cudss(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -303,5 +303,5 @@ def test_multiple_jit_compilations_cudss(
     sol2 = solver_jit2(internal_vars, initial)
 
     # Solutions should be very close
-    diff = jnp.linalg.norm(sol1 - sol2) / jnp.linalg.norm(sol1)
+    diff = np.linalg.norm(sol1 - sol2) / np.linalg.norm(sol1)
     assert diff < 1e-10, f"Multiple JIT compilations produce different results: {diff:.2e}"

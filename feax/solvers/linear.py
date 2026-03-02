@@ -17,7 +17,7 @@ import logging
 from typing import Any, Callable, Optional
 
 import jax
-import jax.numpy as jnp
+import jax.numpy as np
 
 from ..assembler import create_J_bc_function, create_res_bc_function
 from ..DCboundary import DirichletBC
@@ -85,11 +85,11 @@ def linear_solve_adjoint(
     x0 = None
     if solver_options.uses_x0():
         if bc is not None and hasattr(bc, 'bc_rows') and hasattr(bc, 'bc_vals'):
-            x0 = jnp.zeros_like(b)
-            bc_rows_array = jnp.array(bc.bc_rows) if not isinstance(bc.bc_rows, jnp.ndarray) else bc.bc_rows
+            x0 = np.zeros_like(b)
+            bc_rows_array = np.array(bc.bc_rows) if not isinstance(bc.bc_rows, np.ndarray) else bc.bc_rows
             x0 = x0.at[bc_rows_array].set(b[bc_rows_array])
         else:
-            x0 = jnp.zeros_like(b)
+            x0 = np.zeros_like(b)
 
     sol = linear_solve_fn(A, b, x0)
 
@@ -158,7 +158,7 @@ def create_linear_solver(
     bc: DirichletBC,
     solver_options: Optional[AbstractSolverOptions] = None,
     adjoint_solver_options: Optional[AbstractSolverOptions] = None,
-) -> Callable[[Any, jnp.ndarray], jnp.ndarray]:
+) -> Callable[[Any, np.ndarray], np.ndarray]:
     """Create a differentiable solver for linear FE problems.
 
     Simpler and more focused alternative to ``create_solver(iter_num=1)``
@@ -206,7 +206,7 @@ def create_linear_solver(
     >>> # Gradient w.r.t. internal_vars
     >>> def loss(internal_vars):
     ...     sol = solver(internal_vars, initial)
-    ...     return jnp.sum(sol ** 2)
+    ...     return np.sum(sol ** 2)
     >>> grad = jax.grad(loss)(internal_vars)
     """
     # Linear FE problems are typically SPD after Dirichlet elimination.

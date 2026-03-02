@@ -4,7 +4,7 @@ Small stateless utilities used across linear/newton/reduced solver modules.
 """
 
 import jax
-import jax.numpy as jnp
+import jax.numpy as np
 from jax.experimental.sparse import BCOO
 
 from ..problem import MatrixView
@@ -25,25 +25,25 @@ def create_x0(bc_rows=None, bc_vals=None, P_mat=None):
 
     def x0_fn(current_sol):
         if bc_rows is None or bc_vals is None:
-            return jnp.zeros_like(current_sol)
+            return np.zeros_like(current_sol)
 
-        bc_rows_array = jnp.array(bc_rows) if isinstance(bc_rows, (tuple, list)) else bc_rows
-        bc_vals_array = jnp.array(bc_vals) if isinstance(bc_vals, (tuple, list)) else bc_vals
+        bc_rows_array = np.array(bc_rows) if isinstance(bc_rows, (tuple, list)) else bc_rows
+        bc_vals_array = np.array(bc_vals) if isinstance(bc_vals, (tuple, list)) else bc_vals
 
         if P_mat is not None:
-            x0_1 = jnp.zeros(P_mat.shape[0])
+            x0_1 = np.zeros(P_mat.shape[0])
             x0_1 = x0_1.at[bc_rows_array].set(bc_vals_array)
 
             current_sol_full = P_mat @ current_sol
-            x0_2 = jnp.zeros(P_mat.shape[0])
+            x0_2 = np.zeros(P_mat.shape[0])
             x0_2 = x0_2.at[bc_rows_array].set(current_sol_full[bc_rows_array])
 
             x0 = P_mat.T @ (x0_1 - x0_2)
         else:
-            x0_1 = jnp.zeros_like(current_sol)
+            x0_1 = np.zeros_like(current_sol)
             x0_1 = x0_1.at[bc_rows_array].set(bc_vals_array)
 
-            x0_2 = jnp.zeros_like(current_sol)
+            x0_2 = np.zeros_like(current_sol)
             x0_2 = x0_2.at[bc_rows_array].set(current_sol[bc_rows_array])
 
             x0 = x0_1 - x0_2
@@ -143,8 +143,8 @@ def create_direct_solve_fn(options: DirectSolverOptions):
 
             csr_values = A_bcsr.data
             if cudss_solver is None:
-                csr_offsets = A_bcsr.indptr.astype(jnp.int32)
-                csr_columns = A_bcsr.indices.astype(jnp.int32)
+                csr_offsets = A_bcsr.indptr.astype(np.int32)
+                csr_columns = A_bcsr.indices.astype(np.int32)
                 import warnings
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
@@ -242,9 +242,9 @@ def _extract_sparse_diagonal(A):
     """Extract sparse matrix diagonal as dense vector."""
     n = A.shape[0]
     diagonal_mask = A.indices[:, 0] == A.indices[:, 1]
-    diagonal_indices = jnp.where(diagonal_mask, A.indices[:, 0], n)
-    diagonal_values = jnp.where(diagonal_mask, A.data, 0.0)
-    diag = jnp.zeros(n, dtype=A.data.dtype)
+    diagonal_indices = np.where(diagonal_mask, A.indices[:, 0], n)
+    diagonal_values = np.where(diagonal_mask, A.data, 0.0)
+    diag = np.zeros(n, dtype=A.data.dtype)
     return diag.at[diagonal_indices].add(diagonal_values)
 
 
@@ -263,8 +263,8 @@ def _matvec_with_matrix_view(A, x, matrix_view: MatrixView):
 def check_convergence(A, x, b, solver_options, matrix_view: MatrixView, solver_label: str):
     """Check relative residual and return NaN solution when convergence fails."""
     residual = _matvec_with_matrix_view(A, x, matrix_view) - b
-    residual_norm = jnp.linalg.norm(residual)
-    b_norm = jnp.linalg.norm(b)
+    residual_norm = np.linalg.norm(residual)
+    b_norm = np.linalg.norm(b)
     rel_residual = residual_norm / (b_norm + 1e-12)
 
     if getattr(solver_options, "verbose", False):
@@ -275,8 +275,8 @@ def check_convergence(A, x, b, solver_options, matrix_view: MatrixView, solver_l
             rr=rel_residual,
         )
 
-    return jnp.where(
+    return np.where(
         rel_residual < getattr(solver_options, "convergence_threshold", 0.1),
         x,
-        jnp.full_like(x, jnp.nan),
+        np.full_like(x, np.nan),
     )

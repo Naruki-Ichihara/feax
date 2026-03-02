@@ -105,7 +105,7 @@ Solves: ρ̃ - r² ∇²ρ̃ = ρ_source
 >>> # For use with jax.grad, use create_helmholtz_filter instead:
 >>> filter_fn = create_helmholtz_filter(mesh, radius=0.1)
 >>> def objective(rho):
-...     return jnp.sum(filter_fn(rho))
+...     return np.sum(filter_fn(rho))
 >>> grad_fn = jax.grad(objective)
 ```
 

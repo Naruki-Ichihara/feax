@@ -5,7 +5,7 @@ This module contains the P-matrix reduced solve path used by
 """
 
 import jax
-import jax.numpy as jnp
+import jax.numpy as np
 
 from ..assembler import create_J_bc_function, create_res_bc_function
 from .common import _safe_negate, create_iterative_solve_fn
@@ -60,7 +60,7 @@ def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options
         res_reduced = compute_reduced_residual(initial_guess_full, internal_vars)
         J_reduced_matvec = create_reduced_matvec(initial_guess_full, internal_vars)
 
-        x0 = jnp.zeros(P.shape[1])
+        x0 = np.zeros(P.shape[1])
         sol_reduced = fwd_linear_solve_fn(J_reduced_matvec, -res_reduced, x0)
         sol_full = P @ sol_reduced
         return sol_full, None
@@ -89,7 +89,7 @@ def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options
             Jt_adjoint_full = J_full.T @ adjoint_full
             return P.T @ Jt_adjoint_full
 
-        x0_reduced = jnp.zeros_like(rhs_reduced)
+        x0_reduced = np.zeros_like(rhs_reduced)
         adjoint_reduced = adj_linear_solve_fn(adjoint_matvec, rhs_reduced, x0_reduced)
 
         adjoint_full = P @ adjoint_reduced

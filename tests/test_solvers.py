@@ -10,7 +10,7 @@ This module tests JAX iterative solvers:
 - Physical validity of solutions
 """
 
-import jax.numpy as jnp
+import jax.numpy as np
 
 import feax as fe
 
@@ -28,7 +28,7 @@ def test_cg_solver_linear_elasticity(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -42,10 +42,10 @@ def test_cg_solver_linear_elasticity(
     solution = solver(internal_vars, initial)
 
     # Check solution is non-trivial
-    assert jnp.linalg.norm(solution) > 0
+    assert np.linalg.norm(solution) > 0
 
     # Check solution magnitude is reasonable
-    assert jnp.linalg.norm(solution) < 1.0
+    assert np.linalg.norm(solution) < 1.0
 
 
 def test_bicgstab_solver_linear_elasticity(
@@ -58,7 +58,7 @@ def test_bicgstab_solver_linear_elasticity(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -72,10 +72,10 @@ def test_bicgstab_solver_linear_elasticity(
     solution = solver(internal_vars, initial)
 
     # Check solution is non-trivial
-    assert jnp.linalg.norm(solution) > 0
+    assert np.linalg.norm(solution) > 0
 
     # Check solution magnitude is reasonable
-    assert jnp.linalg.norm(solution) < 1.0
+    assert np.linalg.norm(solution) < 1.0
 
 
 def test_gmres_solver_linear_elasticity(
@@ -88,7 +88,7 @@ def test_gmres_solver_linear_elasticity(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -102,10 +102,10 @@ def test_gmres_solver_linear_elasticity(
     solution = solver(internal_vars, initial)
 
     # Check solution is non-trivial
-    assert jnp.linalg.norm(solution) > 0
+    assert np.linalg.norm(solution) > 0
 
     # Check solution magnitude is reasonable
-    assert jnp.linalg.norm(solution) < 1.0
+    assert np.linalg.norm(solution) < 1.0
 
 
 def test_solver_consistency_cg_bicgstab_gmres(
@@ -118,7 +118,7 @@ def test_solver_consistency_cg_bicgstab_gmres(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -144,9 +144,9 @@ def test_solver_consistency_cg_bicgstab_gmres(
     # All solutions should be close to each other
     solution_tol = 1e-4
 
-    diff_cg_bicgstab = jnp.linalg.norm(sol_cg - sol_bicgstab) / jnp.linalg.norm(sol_cg)
-    diff_cg_gmres = jnp.linalg.norm(sol_cg - sol_gmres) / jnp.linalg.norm(sol_cg)
-    diff_bicgstab_gmres = jnp.linalg.norm(sol_bicgstab - sol_gmres) / jnp.linalg.norm(sol_bicgstab)
+    diff_cg_bicgstab = np.linalg.norm(sol_cg - sol_bicgstab) / np.linalg.norm(sol_cg)
+    diff_cg_gmres = np.linalg.norm(sol_cg - sol_gmres) / np.linalg.norm(sol_cg)
+    diff_bicgstab_gmres = np.linalg.norm(sol_bicgstab - sol_gmres) / np.linalg.norm(sol_bicgstab)
 
     assert diff_cg_bicgstab < solution_tol, f"CG and BICGSTAB solutions differ by {diff_cg_bicgstab:.2e}"
     assert diff_cg_gmres < solution_tol, f"CG and GMRES solutions differ by {diff_cg_gmres:.2e}"
@@ -164,7 +164,7 @@ def test_solution_physical_validity_with_cg(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -176,7 +176,7 @@ def test_solution_physical_validity_with_cg(
     solution = solver(internal_vars, initial)
 
     # Check that solution is non-trivial
-    solution_norm = jnp.linalg.norm(solution)
+    solution_norm = np.linalg.norm(solution)
     assert solution_norm > 0, f"Solution is trivial (norm={solution_norm})"
 
     # Check solution magnitude is reasonable
@@ -193,7 +193,7 @@ def test_residual_after_cg_solve(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -209,11 +209,11 @@ def test_residual_after_cg_solve(
     residual_list = fe.get_res(problem, sol_list, internal_vars)
 
     # Flatten residual list to vector by concatenating and flattening each array
-    residual = jnp.concatenate([r.flatten() for r in residual_list])
+    residual = np.concatenate([r.flatten() for r in residual_list])
 
     # Apply boundary conditions to residual
     residual_bc = fe.apply_boundary_to_res(bc, residual, solution)
-    residual_norm = jnp.linalg.norm(residual_bc)
+    residual_norm = np.linalg.norm(residual_bc)
 
     # Residual should be very small after solving
     assert residual_norm < 1e-5, f"Residual too large: {residual_norm}"

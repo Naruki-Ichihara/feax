@@ -135,7 +135,7 @@ def detect_matrix_property(A, sym_tol: float = 1e-8, matrix_view=None) -> Matrix
     condition for positive definiteness.  For FEM stiffness matrices
     from well-posed problems this is a reliable indicator.
     """
-    import jax.numpy as jnp
+    import jax.numpy as np
 
     from ..problem import MatrixView
 
@@ -148,7 +148,7 @@ def detect_matrix_property(A, sym_tol: float = 1e-8, matrix_view=None) -> Matrix
         x = jax.random.normal(key, (A.shape[1],), dtype=A.dtype)
         Ax = A @ x
         ATx = A.T @ x
-        sym_err = jnp.linalg.norm(Ax - ATx) / (jnp.linalg.norm(Ax) + 1e-30)
+        sym_err = np.linalg.norm(Ax - ATx) / (np.linalg.norm(Ax) + 1e-30)
         is_symmetric = bool(sym_err < sym_tol)
 
     if not is_symmetric:
@@ -157,10 +157,10 @@ def detect_matrix_property(A, sym_tol: float = 1e-8, matrix_view=None) -> Matrix
     # --- SPD heuristic: diagonal positivity ---
     n = A.shape[0]
     diag_mask = A.indices[:, 0] == A.indices[:, 1]
-    diag_idx = jnp.where(diag_mask, A.indices[:, 0], n)
-    diag_val = jnp.where(diag_mask, A.data, 0.0)
-    diag = jnp.zeros(n, dtype=A.dtype).at[diag_idx].add(diag_val)
-    is_diag_positive = bool(jnp.all(diag > 0))
+    diag_idx = np.where(diag_mask, A.indices[:, 0], n)
+    diag_val = np.where(diag_mask, A.data, 0.0)
+    diag = np.zeros(n, dtype=A.dtype).at[diag_idx].add(diag_val)
+    is_diag_positive = bool(np.all(diag > 0))
 
     if is_diag_positive:
         return MatrixProperty.SPD

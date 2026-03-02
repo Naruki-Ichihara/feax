@@ -3,7 +3,7 @@
 from typing import Any, Callable, NamedTuple
 
 import jax
-import jax.numpy as jnp
+import jax.numpy as np
 import optax
 
 
@@ -68,7 +68,7 @@ class Constraint(NamedTuple):
     loss: Callable
 
 
-def eq(fun, damping=1., weight=1., reduction=jnp.sum):
+def eq(fun, damping=1., weight=1., reduction=np.sum):
     """Represents an equality constraint, g(x) = 0.
 
     Args:
@@ -87,7 +87,7 @@ def eq(fun, damping=1., weight=1., reduction=jnp.sum):
     """
 
     def init_fn(*args, **kwargs):
-        return {'lambda': LagrangeMultiplier(jnp.zeros_like(fun(*args, **kwargs)))}
+        return {'lambda': LagrangeMultiplier(np.zeros_like(fun(*args, **kwargs)))}
 
     def loss_fn(params, *args, **kwargs):
         inf = fun(*args, **kwargs)
@@ -96,7 +96,7 @@ def eq(fun, damping=1., weight=1., reduction=jnp.sum):
     return Constraint(init_fn, loss_fn)
 
 
-def ineq(fun, damping=1., weight=1., reduction=jnp.sum):
+def ineq(fun, damping=1., weight=1., reduction=np.sum):
     """Represents an inequality constraint, h(x) >= 0, which uses a slack
     variable internally to convert it to an equality constraint.
 
@@ -117,7 +117,7 @@ def ineq(fun, damping=1., weight=1., reduction=jnp.sum):
 
     def init_fn(*args, **kwargs):
         out = fun(*args, **kwargs)
-        return {'lambda': LagrangeMultiplier(jnp.zeros_like(out)),
+        return {'lambda': LagrangeMultiplier(np.zeros_like(out)),
                 'slack': jax.nn.relu(out) ** 0.5}
 
     def loss_fn(params, *args, **kwargs):

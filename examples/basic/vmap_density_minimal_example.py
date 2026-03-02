@@ -1,6 +1,6 @@
 """Minimal vmap example with density-based SIMP material interpolation in feax."""
 import jax
-import jax.numpy as jnp
+import jax.numpy as np
 
 import feax as fe
 
@@ -20,25 +20,25 @@ class DensityElasticityProblem(fe.problem.Problem):
             mu = E / (2.0 * (1.0 + nu))
             lam = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
             strain = 0.5 * (u_grad + u_grad.T)
-            return lam * jnp.trace(strain) * jnp.eye(3) + 2.0 * mu * strain
+            return lam * np.trace(strain) * np.eye(3) + 2.0 * mu * strain
         return stress
 
     def get_surface_maps(self):
         def traction_map(u_grad, quad_pt, mag):
-            return jnp.array([0.0, 0.0, -mag])
+            return np.array([0.0, 0.0, -mag])
         return [traction_map]
 
 # Setup
 mesh = fe.mesh.box_mesh((2, 1, 1), mesh_size=0.2)
 bc_config = fe.DCboundary.DirichletBCConfig([
     fe.DCboundary.DirichletBCSpec(
-        location=lambda p: jnp.isclose(p[0], 0, atol=1e-5),
+        location=lambda p: np.isclose(p[0], 0, atol=1e-5),
         component='all', value=0.0
     )
 ])
 problem = DensityElasticityProblem(
     mesh=mesh, vec=3, dim=3, ele_type='HEX8', gauss_order=2,
-    location_fns=[lambda p: jnp.isclose(p[0], 2, atol=1e-5)]
+    location_fns=[lambda p: np.isclose(p[0], 2, atol=1e-5)]
 )
 bc = bc_config.create_bc(problem)
 solver = fe.solver.create_solver(
@@ -62,7 +62,7 @@ def single_solve(density):
 solve_vmap = jax.vmap(single_solve)
 
 # Run
-density_values = jnp.array([0.1, 0.5, 1.0])
+density_values = np.array([0.1, 0.5, 1.0])
 solutions = solve_vmap(density_values)
 print(f"Input shape: {density_values.shape}")
 print(f"Output shape: {solutions.shape}")

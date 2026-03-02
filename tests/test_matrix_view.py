@@ -10,7 +10,7 @@ This module tests the MatrixView functionality including:
 """
 
 import jax
-import jax.numpy as jnp
+import jax.numpy as np
 import pytest
 
 import feax as fe
@@ -143,7 +143,7 @@ def test_upper_view_indices(linear_elasticity_problem_upper):
     assert len(problem.J_filtered) == 3600
 
     # All filtered entries should satisfy j >= i
-    assert jnp.all(problem.J_filtered >= problem.I_filtered)
+    assert np.all(problem.J_filtered >= problem.I_filtered)
 
 
 @pytest.mark.cpu
@@ -158,7 +158,7 @@ def test_lower_view_indices(linear_elasticity_problem_lower):
     assert len(problem.J_filtered) == 3600
 
     # All filtered entries should satisfy j <= i
-    assert jnp.all(problem.J_filtered <= problem.I_filtered)
+    assert np.all(problem.J_filtered <= problem.I_filtered)
 
 
 @pytest.mark.cpu
@@ -181,7 +181,7 @@ def test_jacobian_info(linear_elasticity_problem, internal_vars):
     problem = linear_elasticity_problem
 
     # Create dummy solution
-    sol = jnp.zeros(problem.num_total_dofs_all_vars)
+    sol = np.zeros(problem.num_total_dofs_all_vars)
     sol_list = problem.unflatten_fn_sol_list(sol)
 
     # Get Jacobian info

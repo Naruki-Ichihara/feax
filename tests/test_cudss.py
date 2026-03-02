@@ -12,7 +12,7 @@ These tests require CUDA/GPU and are marked with @pytest.mark.cuda
 """
 
 import jax
-import jax.numpy as jnp
+import jax.numpy as np
 import pytest
 
 import feax as fe
@@ -68,7 +68,7 @@ def test_cudss_full_matrix_solver(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -82,7 +82,7 @@ def test_cudss_full_matrix_solver(
     solution = solver(internal_vars, initial)
 
     # Check solution is non-trivial
-    solution_norm = jnp.linalg.norm(solution)
+    solution_norm = np.linalg.norm(solution)
     assert solution_norm > 0, f"Solution is trivial (norm={solution_norm})"
 
     # Check solution magnitude is reasonable
@@ -104,7 +104,7 @@ def test_cudss_upper_matrix_solver(
     assert problem.matrix_view == MatrixView.UPPER
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -118,7 +118,7 @@ def test_cudss_upper_matrix_solver(
     solution = solver(internal_vars, initial)
 
     # Check solution is non-trivial
-    solution_norm = jnp.linalg.norm(solution)
+    solution_norm = np.linalg.norm(solution)
     assert solution_norm > 0, f"Solution is trivial (norm={solution_norm})"
 
     # Check solution magnitude is reasonable
@@ -137,7 +137,7 @@ def test_cudss_full_vs_upper_consistency(
     tol = material_params['tol']
 
     # Create boundary conditions (same for both)
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
 
@@ -164,7 +164,7 @@ def test_cudss_full_vs_upper_consistency(
     # Solutions should be very close
     solution_tol = 1e-6
 
-    diff = jnp.linalg.norm(sol_full - sol_upper) / jnp.linalg.norm(sol_full)
+    diff = np.linalg.norm(sol_full - sol_upper) / np.linalg.norm(sol_full)
     assert diff < solution_tol, f"FULL and UPPER solutions differ by {diff:.2e}"
 
 
@@ -180,7 +180,7 @@ def test_cudss_options_configuration(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -205,7 +205,7 @@ def test_cudss_options_configuration(
     solution = solver(internal_vars, initial)
 
     # Check solution
-    solution_norm = jnp.linalg.norm(solution)
+    solution_norm = np.linalg.norm(solution)
     assert solution_norm > 0, f"Solution is trivial (norm={solution_norm})"
     assert solution_norm < 1.0, f"Solution norm too large: {solution_norm}"
 
@@ -248,7 +248,7 @@ def test_cudss_vs_cg_consistency(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -268,6 +268,6 @@ def test_cudss_vs_cg_consistency(
     # Solutions should be very close
     solution_tol = 1e-6
 
-    diff = jnp.linalg.norm(sol_cudss - sol_cg) / jnp.linalg.norm(sol_cudss)
+    diff = np.linalg.norm(sol_cudss - sol_cg) / np.linalg.norm(sol_cudss)
     assert diff < solution_tol, f"cuDSS and CG solutions differ by {diff:.2e}"
 

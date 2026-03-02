@@ -73,7 +73,7 @@ A pair of pure functions implementing a constraint.
 #### eq
 
 ```python
-def eq(fun, damping=1., weight=1., reduction=jnp.sum)
+def eq(fun, damping=1., weight=1., reduction=np.sum)
 ```
 
 Represents an equality constraint, g(x) = 0.
@@ -98,7 +98,7 @@ Represents an equality constraint, g(x) = 0.
 #### ineq
 
 ```python
-def ineq(fun, damping=1., weight=1., reduction=jnp.sum)
+def ineq(fun, damping=1., weight=1., reduction=np.sum)
 ```
 
 Represents an inequality constraint, h(x) &gt;= 0, which uses a slack

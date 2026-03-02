@@ -161,7 +161,7 @@ def helmholtz_filter(rho_source, mesh, radius, P=None, solver_options=None):
         >>> # For use with jax.grad, use create_helmholtz_filter instead:
         >>> filter_fn = create_helmholtz_filter(mesh, radius=0.1)
         >>> def objective(rho):
-        ...     return jnp.sum(filter_fn(rho))
+        ...     return np.sum(filter_fn(rho))
         >>> grad_fn = jax.grad(objective)
     """
     filter_fn = create_helmholtz_filter(mesh, radius, P, solver_options)

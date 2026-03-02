@@ -182,7 +182,7 @@ def create_linear_solver(
     bc: DirichletBC,
     solver_options: Optional[SolverOptions] = None,
     adjoint_solver_options: Optional[SolverOptions] = None
-) -> Callable[[Any, jnp.ndarray], jnp.ndarray]
+) -> Callable[[Any, np.ndarray], np.ndarray]
 ```
 
 Create a differentiable solver for linear FE problems.
@@ -228,6 +228,6 @@ Examples
 >>> # Gradient w.r.t. internal_vars
 >>> def loss(internal_vars):
 ...     sol = solver(internal_vars, initial)
-...     return jnp.sum(sol ** 2)
+...     return np.sum(sol ** 2)
 >>> grad = jax.grad(loss)(internal_vars)
 ```

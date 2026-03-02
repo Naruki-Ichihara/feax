@@ -10,13 +10,13 @@ This module tests that solvers work correctly with JAX vmap transformation:
 
 NOTE: All CPU tests are placed before CUDA tests intentionally.
 A CUDA test failure can corrupt JAX/XLA's device state, causing subsequent
-JAX operations (even simple ones like jnp.take) to abort with a fatal
+JAX operations (even simple ones like np.take) to abort with a fatal
 C-level signal. Running CPU tests first prevents them from being killed
 by CUDA failures.
 """
 
 import jax
-import jax.numpy as jnp
+import jax.numpy as np
 import pytest
 
 import feax as fe
@@ -70,7 +70,7 @@ def test_cg_solver_vmap_compatibility(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -85,7 +85,7 @@ def test_cg_solver_vmap_compatibility(
     surface_var = internal_vars.surface_vars[0][0]
 
     # Create batch with small perturbations
-    batch_surface_vars = jnp.stack([
+    batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
@@ -100,7 +100,7 @@ def test_cg_solver_vmap_compatibility(
     # Check solutions
     assert batch_solutions.shape[0] == batch_size
     for i in range(batch_size):
-        sol_norm = jnp.linalg.norm(batch_solutions[i])
+        sol_norm = np.linalg.norm(batch_solutions[i])
         assert sol_norm > 0, f"Solution {i} is trivial"
         assert sol_norm < 1.0, f"Solution {i} norm too large: {sol_norm}"
 
@@ -116,7 +116,7 @@ def test_bicgstab_solver_vmap_compatibility(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -129,7 +129,7 @@ def test_bicgstab_solver_vmap_compatibility(
     # Create batch of internal_vars
     batch_size = 3
     surface_var = internal_vars.surface_vars[0][0]
-    batch_surface_vars = jnp.stack([
+    batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
@@ -142,7 +142,7 @@ def test_bicgstab_solver_vmap_compatibility(
     # Check solutions
     assert batch_solutions.shape[0] == batch_size
     for i in range(batch_size):
-        sol_norm = jnp.linalg.norm(batch_solutions[i])
+        sol_norm = np.linalg.norm(batch_solutions[i])
         assert sol_norm > 0, f"Solution {i} is trivial"
         assert sol_norm < 1.0, f"Solution {i} norm too large: {sol_norm}"
 
@@ -158,7 +158,7 @@ def test_gmres_solver_vmap_compatibility(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -171,7 +171,7 @@ def test_gmres_solver_vmap_compatibility(
     # Create batch of internal_vars
     batch_size = 3
     surface_var = internal_vars.surface_vars[0][0]
-    batch_surface_vars = jnp.stack([
+    batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
@@ -184,7 +184,7 @@ def test_gmres_solver_vmap_compatibility(
     # Check solutions
     assert batch_solutions.shape[0] == batch_size
     for i in range(batch_size):
-        sol_norm = jnp.linalg.norm(batch_solutions[i])
+        sol_norm = np.linalg.norm(batch_solutions[i])
         assert sol_norm > 0, f"Solution {i} is trivial"
         assert sol_norm < 1.0, f"Solution {i} norm too large: {sol_norm}"
 
@@ -204,7 +204,7 @@ def test_vmap_jit_composition_cg(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -217,7 +217,7 @@ def test_vmap_jit_composition_cg(
     # Create batch of internal_vars
     batch_size = 3
     surface_var = internal_vars.surface_vars[0][0]
-    batch_surface_vars = jnp.stack([
+    batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
@@ -233,7 +233,7 @@ def test_vmap_jit_composition_cg(
     batch_sol_2 = vmapped_solver_2(batch_surface_vars)
 
     # Solutions should be similar
-    diff = jnp.linalg.norm(batch_sol_1 - batch_sol_2)
+    diff = np.linalg.norm(batch_sol_1 - batch_sol_2)
     assert diff < 1e-10, f"Different vmap+JIT compositions produce different results: {diff:.2e}"
 
 
@@ -252,7 +252,7 @@ def test_vmap_grad_composition_cg(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -265,7 +265,7 @@ def test_vmap_grad_composition_cg(
     # Create batch of internal_vars
     batch_size = 3
     surface_var = internal_vars.surface_vars[0][0]
-    batch_surface_vars = jnp.stack([
+    batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
@@ -273,7 +273,7 @@ def test_vmap_grad_composition_cg(
         return fe.InternalVars((), [(surf_var,)])
     def loss_fn(surf_var):
         sol = solver(make_internal_vars(surf_var), initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     # Compute gradients for batch using vmap(grad(...))
     grad_fn = jax.vmap(jax.grad(loss_fn))
@@ -282,8 +282,8 @@ def test_vmap_grad_composition_cg(
     # Check gradients
     assert batch_grads.shape[0] == batch_size
     for i in range(batch_size):
-        assert jnp.all(jnp.isfinite(batch_grads[i])), f"Gradient {i} contains inf or nan"
-        grad_norm = jnp.linalg.norm(batch_grads[i])
+        assert np.all(np.isfinite(batch_grads[i])), f"Gradient {i} contains inf or nan"
+        grad_norm = np.linalg.norm(batch_grads[i])
         assert grad_norm > 0, f"Gradient {i} is trivial"
 
 
@@ -302,7 +302,7 @@ def test_vmap_jit_grad_composition_cg(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -315,7 +315,7 @@ def test_vmap_jit_grad_composition_cg(
     # Create batch of internal_vars
     batch_size = 3
     surface_var = internal_vars.surface_vars[0][0]
-    batch_surface_vars = jnp.stack([
+    batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
@@ -323,7 +323,7 @@ def test_vmap_jit_grad_composition_cg(
         return fe.InternalVars((), [(surf_var,)])
     def loss_fn(surf_var):
         sol = solver(make_internal_vars(surf_var), initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     # Compose all three: jax.jit(jax.vmap(jax.grad(...)))
     grad_fn = jax.jit(jax.vmap(jax.grad(loss_fn)))
@@ -332,8 +332,8 @@ def test_vmap_jit_grad_composition_cg(
     # Check gradients
     assert batch_grads.shape[0] == batch_size
     for i in range(batch_size):
-        assert jnp.all(jnp.isfinite(batch_grads[i])), f"Gradient {i} contains inf or nan"
-        grad_norm = jnp.linalg.norm(batch_grads[i])
+        assert np.all(np.isfinite(batch_grads[i])), f"Gradient {i} contains inf or nan"
+        grad_norm = np.linalg.norm(batch_grads[i])
         assert grad_norm > 0, f"Gradient {i} is trivial"
 
 
@@ -353,7 +353,7 @@ def test_cudss_solver_vmap_compatibility(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -366,7 +366,7 @@ def test_cudss_solver_vmap_compatibility(
     # Create batch of internal_vars
     batch_size = 3
     surface_var = internal_vars.surface_vars[0][0]
-    batch_surface_vars = jnp.stack([
+    batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
@@ -379,7 +379,7 @@ def test_cudss_solver_vmap_compatibility(
     # Check solutions
     assert batch_solutions.shape[0] == batch_size
     for i in range(batch_size):
-        sol_norm = jnp.linalg.norm(batch_solutions[i])
+        sol_norm = np.linalg.norm(batch_solutions[i])
         assert sol_norm > 0, f"Solution {i} is trivial"
         assert sol_norm < 1.0, f"Solution {i} norm too large: {sol_norm}"
 
@@ -400,7 +400,7 @@ def test_vmap_jit_composition_cudss(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -413,7 +413,7 @@ def test_vmap_jit_composition_cudss(
     # Create batch of internal_vars
     batch_size = 3
     surface_var = internal_vars.surface_vars[0][0]
-    batch_surface_vars = jnp.stack([
+    batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
@@ -426,7 +426,7 @@ def test_vmap_jit_composition_cudss(
     # Check solutions
     assert batch_solutions.shape[0] == batch_size
     for i in range(batch_size):
-        sol_norm = jnp.linalg.norm(batch_solutions[i])
+        sol_norm = np.linalg.norm(batch_solutions[i])
         assert sol_norm > 0, f"Solution {i} is trivial"
 
 
@@ -446,7 +446,7 @@ def test_vmap_grad_composition_cudss(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -459,7 +459,7 @@ def test_vmap_grad_composition_cudss(
     # Create batch of internal_vars
     batch_size = 3
     surface_var = internal_vars.surface_vars[0][0]
-    batch_surface_vars = jnp.stack([
+    batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
@@ -467,7 +467,7 @@ def test_vmap_grad_composition_cudss(
         return fe.InternalVars((), [(surf_var,)])
     def loss_fn(surf_var):
         sol = solver(make_internal_vars(surf_var), initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     # Compute gradients for batch using vmap(grad(...))
     grad_fn = jax.vmap(jax.grad(loss_fn))
@@ -476,8 +476,8 @@ def test_vmap_grad_composition_cudss(
     # Check gradients
     assert batch_grads.shape[0] == batch_size
     for i in range(batch_size):
-        assert jnp.all(jnp.isfinite(batch_grads[i])), f"Gradient {i} contains inf or nan"
-        grad_norm = jnp.linalg.norm(batch_grads[i])
+        assert np.all(np.isfinite(batch_grads[i])), f"Gradient {i} contains inf or nan"
+        grad_norm = np.linalg.norm(batch_grads[i])
         assert grad_norm > 0, f"Gradient {i} is trivial"
 
 
@@ -497,7 +497,7 @@ def test_vmap_jit_grad_composition_cudss(
     tol = material_params['tol']
 
     # Create boundary conditions
-    left = lambda p: jnp.isclose(p[0], 0., tol)
+    left = lambda p: np.isclose(p[0], 0., tol)
     left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.)
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
@@ -510,7 +510,7 @@ def test_vmap_jit_grad_composition_cudss(
     # Create batch of internal_vars
     batch_size = 3
     surface_var = internal_vars.surface_vars[0][0]
-    batch_surface_vars = jnp.stack([
+    batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
@@ -518,7 +518,7 @@ def test_vmap_jit_grad_composition_cudss(
         return fe.InternalVars((), [(surf_var,)])
     def loss_fn(surf_var):
         sol = solver(make_internal_vars(surf_var), initial)
-        return jnp.linalg.norm(sol)
+        return np.linalg.norm(sol)
 
     # Compose all three: jax.jit(jax.vmap(jax.grad(...)))
     grad_fn = jax.jit(jax.vmap(jax.grad(loss_fn)))
@@ -527,6 +527,6 @@ def test_vmap_jit_grad_composition_cudss(
     # Check gradients
     assert batch_grads.shape[0] == batch_size
     for i in range(batch_size):
-        assert jnp.all(jnp.isfinite(batch_grads[i])), f"Gradient {i} contains inf or nan"
-        grad_norm = jnp.linalg.norm(batch_grads[i])
+        assert np.all(np.isfinite(batch_grads[i])), f"Gradient {i} contains inf or nan"
+        grad_norm = np.linalg.norm(batch_grads[i])
         assert grad_norm > 0, f"Gradient {i} is trivial"

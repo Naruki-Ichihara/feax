@@ -8,7 +8,7 @@ import logging
 from typing import Optional
 
 import jax
-import jax.numpy as jnp
+import jax.numpy as np
 
 from ..assembler import create_J_bc_function, create_res_bc_function
 from ..problem import MatrixView
@@ -198,7 +198,7 @@ def create_newton_solver(
         sample_J = J_bc_func(initial_tmp, internal_vars)
 
     if sample_J is not None:
-        b_tmp = jnp.zeros(sample_J.shape[0])
+        b_tmp = np.zeros(sample_J.shape[0])
         if _is_cudss(linear_options):
             print("[feax] Pre-warming cuDSS solver (forward) with sample Jacobian...")
             linear_solve_fn(sample_J, b_tmp, b_tmp)
@@ -276,13 +276,13 @@ def create_armijo_line_search_jax(res_bc_applied, c1=1e-4, rho=0.5, max_backtrac
     """Create JAX while_loop Armijo line search."""
 
     def line_search(sol, delta_sol, res, res_norm, internal_vars=None):
-        grad_merit = -jnp.dot(res, res)
+        grad_merit = -np.dot(res, res)
 
         init_state = (1.0, 0, False, sol, res_norm)
 
         def cond_fn(state):
             _, step, found_good, _, _ = state
-            return jnp.logical_not(found_good) & (step < max_backtracks)
+            return np.logical_not(found_good) & (step < max_backtracks)
 
         def body_fn(state):
             alpha, step, _, best_sol, best_norm = state
@@ -291,16 +291,16 @@ def create_armijo_line_search_jax(res_bc_applied, c1=1e-4, rho=0.5, max_backtrac
                 trial_res = res_bc_applied(trial_sol, internal_vars)
             else:
                 trial_res = res_bc_applied(trial_sol)
-            trial_norm = jnp.linalg.norm(trial_res)
+            trial_norm = np.linalg.norm(trial_res)
 
-            is_valid = jnp.logical_not(jnp.any(jnp.isnan(trial_res)))
+            is_valid = np.logical_not(np.any(np.isnan(trial_res)))
             merit_decrease = 0.5 * (trial_norm**2 - res_norm**2)
             armijo_satisfied = merit_decrease <= c1 * alpha * grad_merit
             is_acceptable = is_valid & armijo_satisfied
 
-            new_sol = jnp.where(is_acceptable, trial_sol, best_sol)
-            new_norm = jnp.where(is_acceptable, trial_norm, best_norm)
-            new_alpha = jnp.where(is_acceptable, alpha, alpha * rho)
+            new_sol = np.where(is_acceptable, trial_sol, best_sol)
+            new_norm = np.where(is_acceptable, trial_norm, best_norm)
+            new_alpha = np.where(is_acceptable, alpha, alpha * rho)
 
             return (new_alpha, step + 1, is_acceptable, new_sol, new_norm)
 
@@ -312,11 +312,11 @@ def create_armijo_line_search_jax(res_bc_applied, c1=1e-4, rho=0.5, max_backtrac
             fallback_res = res_bc_applied(fallback_sol, internal_vars)
         else:
             fallback_res = res_bc_applied(fallback_sol)
-        fallback_norm = jnp.linalg.norm(fallback_res)
+        fallback_norm = np.linalg.norm(fallback_res)
 
-        final_sol = jnp.where(found_good, new_sol, fallback_sol)
-        final_norm = jnp.where(found_good, new_norm, fallback_norm)
-        final_alpha_out = jnp.where(found_good, final_alpha, 1e-8)
+        final_sol = np.where(found_good, new_sol, fallback_sol)
+        final_norm = np.where(found_good, new_norm, fallback_norm)
+        final_alpha_out = np.where(found_good, final_alpha, 1e-8)
 
         return final_sol, final_norm, final_alpha_out, found_good
 
@@ -327,7 +327,7 @@ def create_armijo_line_search_scan(res_bc_applied, c1=1e-4, rho=0.5, max_backtra
     """Create JAX scan-based Armijo line search (vmap-friendly)."""
 
     def line_search(sol, delta_sol, res, res_norm, internal_vars=None):
-        grad_merit = -jnp.dot(res, res)
+        grad_merit = -np.dot(res, res)
 
         def scan_fn(carry, _):
             alpha, best_sol, best_norm, found_good = carry
@@ -336,16 +336,16 @@ def create_armijo_line_search_scan(res_bc_applied, c1=1e-4, rho=0.5, max_backtra
                 trial_res = res_bc_applied(trial_sol, internal_vars)
             else:
                 trial_res = res_bc_applied(trial_sol)
-            trial_norm = jnp.linalg.norm(trial_res)
+            trial_norm = np.linalg.norm(trial_res)
 
-            is_valid = jnp.logical_not(jnp.any(jnp.isnan(trial_res)))
+            is_valid = np.logical_not(np.any(np.isnan(trial_res)))
             merit_decrease = 0.5 * (trial_norm**2 - res_norm**2)
             armijo_satisfied = merit_decrease <= c1 * alpha * grad_merit
             is_acceptable = is_valid & armijo_satisfied
 
-            should_update = is_acceptable & jnp.logical_not(found_good)
-            new_sol = jnp.where(should_update, trial_sol, best_sol)
-            new_norm = jnp.where(should_update, trial_norm, best_norm)
+            should_update = is_acceptable & np.logical_not(found_good)
+            new_sol = np.where(should_update, trial_sol, best_sol)
+            new_norm = np.where(should_update, trial_norm, best_norm)
             new_alpha = alpha * rho
             new_found = found_good | is_acceptable
 
@@ -361,11 +361,11 @@ def create_armijo_line_search_scan(res_bc_applied, c1=1e-4, rho=0.5, max_backtra
             fallback_res = res_bc_applied(fallback_sol, internal_vars)
         else:
             fallback_res = res_bc_applied(fallback_sol)
-        fallback_norm = jnp.linalg.norm(fallback_res)
+        fallback_norm = np.linalg.norm(fallback_res)
 
-        final_sol = jnp.where(found_good, best_sol, fallback_sol)
-        final_norm = jnp.where(found_good, best_norm, fallback_norm)
-        final_alpha_out = jnp.where(found_good, final_alpha / rho, 1e-8)
+        final_sol = np.where(found_good, best_sol, fallback_sol)
+        final_norm = np.where(found_good, best_norm, fallback_norm)
+        final_alpha_out = np.where(found_good, final_alpha / rho, 1e-8)
 
         return final_sol, final_norm, final_alpha_out, found_good
 
@@ -376,7 +376,7 @@ def create_armijo_line_search_python(res_bc_applied, c1=1e-4, rho=0.5, max_backt
     """Create Python-loop Armijo line search (debug path)."""
 
     def line_search(sol, delta_sol, res, res_norm, internal_vars=None):
-        grad_merit = -jnp.dot(res, res)
+        grad_merit = -np.dot(res, res)
 
         alpha = 1.0
         for _ in range(max_backtracks):
@@ -385,9 +385,9 @@ def create_armijo_line_search_python(res_bc_applied, c1=1e-4, rho=0.5, max_backt
                 trial_res = res_bc_applied(trial_sol, internal_vars)
             else:
                 trial_res = res_bc_applied(trial_sol)
-            trial_norm = jnp.linalg.norm(trial_res)
+            trial_norm = np.linalg.norm(trial_res)
 
-            is_valid = not jnp.any(jnp.isnan(trial_res))
+            is_valid = not np.any(np.isnan(trial_res))
             merit_decrease = 0.5 * (trial_norm**2 - res_norm**2)
             armijo_satisfied = merit_decrease <= c1 * alpha * grad_merit
 
@@ -401,7 +401,7 @@ def create_armijo_line_search_python(res_bc_applied, c1=1e-4, rho=0.5, max_backt
             fallback_res = res_bc_applied(fallback_sol, internal_vars)
         else:
             fallback_res = res_bc_applied(fallback_sol)
-        fallback_norm = jnp.linalg.norm(fallback_res)
+        fallback_norm = np.linalg.norm(fallback_res)
         return fallback_sol, fallback_norm, 1e-8, False
 
     return line_search
@@ -473,7 +473,7 @@ def newton_solve(J_bc_applied, res_bc_applied, initial_guess, bc, newton_options
         initial_res = res_bc_applied(initial_guess, internal_vars)
     else:
         initial_res = res_bc_applied(initial_guess)
-    initial_res_norm = jnp.linalg.norm(initial_res)
+    initial_res_norm = np.linalg.norm(initial_res)
     initial_state = (initial_guess, initial_res_norm, initial_res_norm, 0)
 
     if linear_solver_options.verbose:
@@ -552,7 +552,7 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc, newton_op
         initial_res = res_bc_applied(initial_guess, internal_vars)
     else:
         initial_res = res_bc_applied(initial_guess)
-    initial_res_norm = jnp.linalg.norm(initial_res)
+    initial_res_norm = np.linalg.norm(initial_res)
 
     if linear_solver_options.verbose:
         jax.debug.print("Newton solver (fori) starting: initial res_norm = {r:.6e}", r=initial_res_norm)
@@ -606,7 +606,7 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc, newton_opti
         initial_res = res_bc_applied(sol, internal_vars)
     else:
         initial_res = res_bc_applied(sol)
-    initial_res_norm = jnp.linalg.norm(initial_res)
+    initial_res_norm = np.linalg.norm(initial_res)
     res_norm = initial_res_norm
     iter_count = 0
 
