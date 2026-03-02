@@ -10,12 +10,12 @@ work correctly with JAX transformations:
 - newton_solve_py as reference implementation
 """
 
-import pytest
 import jax
 import jax.numpy as jnp
+import pytest
+
 import feax as fe
 from feax.problem import MatrixView
-
 
 # ============================================================================
 # Helpers

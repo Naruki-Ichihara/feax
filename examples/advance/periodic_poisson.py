@@ -8,21 +8,22 @@ This example replicates the JAX-FEM reference problem using FEAX:
 - Parameter θ scaling the diffusion tensor
 """
 
+import jax.numpy as np
+
 import feax as fe
 import feax.flat as flat
-import jax
-import jax.numpy as np
+
 
 class PoissonParametric(fe.problem.Problem):
     """Parametric 2D Poisson problem equivalent to ref.py."""
-    
+
     def get_tensor_map(self):
         """Diffusion tensor scaled by parameter θ."""
         def tensor_map(u_grad, theta):
             # Diffusion coefficient is θ
             return theta * u_grad
         return tensor_map
-    
+
     def get_mass_map(self):
         """Source term: x*sin(5πy) + exp(-((x-0.5)² + (y-0.5)²)/0.02)"""
         def mass_map(u, x, theta):
@@ -35,36 +36,36 @@ class PoissonParametric(fe.problem.Problem):
 
 def create_periodic_bc_2d(mesh):
     """Create periodic boundary conditions for left-right boundaries."""
-    
+
     def left_boundary(point):
         return np.isclose(point[0], 0.0, atol=1e-5)
-    
+
     def right_boundary(point):
         return np.isclose(point[0], 1.0, atol=1e-5)
-    
+
     def mapping_x(point_A):
         """Map left boundary to right boundary."""
         return np.array([point_A[0] + 1.0, point_A[1]])
-    
+
     # Create periodic pairing for x-direction (component 0)
     periodic_pairing = flat.pbc.PeriodicPairing(
         location_master=left_boundary,
-        location_slave=right_boundary, 
+        location_slave=right_boundary,
         mapping=mapping_x,
         vec=0  # x-component
     )
-    
+
     return [periodic_pairing]
 
 # 1. Create 2D mesh (unit square)
 print("Creating mesh...")
-Nx, Ny = 32, 32  
+Nx, Ny = 32, 32
 Lx, Ly = 1.0, 1.0
 mesh = fe.mesh.rectangle_mesh(Nx=Nx, Ny=Ny, domain_x=Lx, domain_y=Ly)
-    
+
 print(f"Mesh: {len(mesh.points)} nodes, {len(mesh.cells)} elements")
 ele_type = 'QUAD4'
-    
+
 problem = PoissonParametric(
     mesh=mesh,
     vec=1,
@@ -72,33 +73,33 @@ problem = PoissonParametric(
     ele_type=ele_type,
     location_fns=[]
 )
-    
+
 # 2. Setup periodic boundary conditions (left-right)
 print("Setting up periodic boundary conditions...")
 periodic_pairings = create_periodic_bc_2d(mesh)
 P = flat.pbc.prolongation_matrix(periodic_pairings, mesh, vec=1)
-    
+
 print(f"Prolongation matrix: {P.shape}")
 print(f"DOF reduction: {P.shape[0]} -> {P.shape[1]} ({P.shape[1]/P.shape[0]:.1%})")
-    
+
 # 3. Setup Dirichlet boundary conditions (top-bottom = 0)
 print("Setting up Dirichlet boundary conditions...")
-    
+
 def bottom_boundary(point):
     return np.isclose(point[1], 0.0, atol=1e-5)
-    
+
 def top_boundary(point):
     return np.isclose(point[1], 1.0, atol=1e-5)
-    
+
 def zero_value(point):
     return 0.0
-    
+
 # Create Dirichlet BC config
 bc_config = fe.DCboundary.DirichletBCConfig([
     fe.DCboundary.DirichletBCSpec(bottom_boundary, 0, zero_value),  # Bottom = 0
-    fe.DCboundary.DirichletBCSpec(top_boundary, 0, zero_value),     # Top = 0  
+    fe.DCboundary.DirichletBCSpec(top_boundary, 0, zero_value),     # Top = 0
 ])
-    
+
 bc = bc_config.create_bc(problem)
 print(f"Dirichlet BCs: {len(bc.bc_rows)} constrained DOFs")
 

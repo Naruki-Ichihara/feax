@@ -5,10 +5,12 @@ This module provides the InternalVars dataclass for handling dynamic parameters
 separately from problem structure.
 """
 
+from dataclasses import dataclass
+from typing import Callable, List, Optional, Tuple
+
 import jax
 import jax.numpy as np
-from dataclasses import dataclass
-from typing import Tuple, List, Callable, Optional
+
 from feax.problem import Problem
 
 
@@ -54,7 +56,7 @@ class InternalVars:
     """
     volume_vars: Tuple[np.ndarray, ...] = ()
     surface_vars: Optional[List[Tuple[np.ndarray, ...]]] = None
-    
+
     def __post_init__(self) -> None:
         """Initialize default values for optional fields.
         
@@ -64,7 +66,7 @@ class InternalVars:
         # Initialize surface_vars as empty list if None
         if self.surface_vars is None:
             object.__setattr__(self, 'surface_vars', [])
-    
+
     @staticmethod
     def create_node_var(problem: 'Problem', value: float, var_index: int = 0) -> np.ndarray:
         """Create uniform node-based variable (most memory efficient).
@@ -160,7 +162,7 @@ class InternalVars:
         num_cells = problem.num_cells
         num_quads = problem.fes[var_index].num_quads
         return np.full((num_cells, num_quads), value)
-    
+
     @staticmethod
     def create_uniform_surface_var(problem: 'Problem', value: float, surface_index: int = 0) -> np.ndarray:
         """Create uniform surface variable array for all surface quadrature points.
@@ -191,7 +193,7 @@ class InternalVars:
         num_surface_faces = len(problem.boundary_inds_list[surface_index])
         num_face_quads = problem.fes[0].face_shape_vals.shape[1]
         return np.full((num_surface_faces, num_face_quads), value)
-    
+
     @staticmethod
     def create_node_var_from_fn(problem: 'Problem', var_fn: Callable[[np.ndarray], float],
                                 var_index: int = 0) -> np.ndarray:
@@ -299,9 +301,9 @@ class InternalVars:
         """
         quad_points = problem.physical_quad_points  # (num_cells, num_quads, dim)
         return jax.vmap(jax.vmap(var_fn))(quad_points)
-    
+
     @staticmethod
-    def create_spatially_varying_surface_var(problem: 'Problem', var_fn: Callable[[np.ndarray], float], 
+    def create_spatially_varying_surface_var(problem: 'Problem', var_fn: Callable[[np.ndarray], float],
                                            surface_index: int = 0) -> np.ndarray:
         """Create spatially varying surface variable using a function.
         
@@ -334,7 +336,7 @@ class InternalVars:
         """
         surface_quad_points = problem.physical_surface_quad_points[surface_index]
         return jax.vmap(jax.vmap(var_fn))(surface_quad_points)
-    
+
     def replace_volume_var(self, index: int, new_var: np.ndarray) -> 'InternalVars':
         """Create a new InternalVars with one volume variable replaced.
         
@@ -353,7 +355,7 @@ class InternalVars:
         volume_vars_list = list(self.volume_vars)
         volume_vars_list[index] = new_var
         return InternalVars(tuple(volume_vars_list), self.surface_vars)
-    
+
     def replace_surface_var(self, surface_index: int, var_index: int, new_var: np.ndarray) -> 'InternalVars':
         """Create a new InternalVars with one surface variable replaced.
         

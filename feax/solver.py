@@ -15,40 +15,31 @@ Key Features:
 Linear/backward/newton/reduced implementations live under ``solvers/``.
 """
 
-from jax.experimental.sparse import BCOO
-from typing import Optional, Callable, Any
 import logging
+from typing import Callable, Optional
+
+from jax.experimental.sparse import BCOO
 
 from .assembler import create_J_bc_function
 from .DCboundary import DirichletBC
-from .problem import MatrixView, Problem
-from .solvers.options import (
-    AbstractSolverOptions, SolverOptions,
-    DirectSolverOptions, IterativeSolverOptions, NewtonOptions,
-    detect_matrix_property, resolve_direct_solver, resolve_iterative_solver,
-)
+from .problem import Problem
 from .solvers.linear import (
     create_linear_solver,
 )
-from .solvers.reduced import create_reduced_solver
 from .solvers.newton import (
     create_newton_solver,
-    newton_solve,
-    newton_solve_fori,
-    newton_solve_py,
-    create_armijo_line_search_jax,
-    create_armijo_line_search_scan,
-    create_armijo_line_search_python,
 )
-from .solvers.common import (
-    create_x0,
-    _safe_negate,
-    create_jacobi_preconditioner,
-    create_direct_solve_fn,
-    create_iterative_solve_fn,
-    create_linear_solve_fn,
-    check_convergence,
+from .solvers.options import (
+    AbstractSolverOptions,
+    DirectSolverOptions,
+    IterativeSolverOptions,
+    NewtonOptions,
+    SolverOptions,
+    detect_matrix_property,
+    resolve_direct_solver,
+    resolve_iterative_solver,
 )
+from .solvers.reduced import create_reduced_solver
 
 logger = logging.getLogger(__name__)
 

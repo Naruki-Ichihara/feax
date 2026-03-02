@@ -9,10 +9,12 @@ quadrature rule generation for both volume and surface integrals.
 Note: This implementation is adapted from JAX-FEM.
 """
 
+from typing import List, Optional, Tuple
+
 import basix
 import numpy as onp
-from typing import Tuple, List, Optional
 from jax import Array
+
 
 def get_elements(ele_type: str) -> Tuple[basix.ElementFamily, basix.CellType, basix.CellType, int, int, List[int]]:
     """Get element configuration data for basix library integration.

@@ -11,17 +11,15 @@ Note: This MMA optimizer is NOT JIT-compiled and this is intentional.
       difficult to JIT compile. JAX arrays are used for GPU compatibility
       and automatic differentiation, but the MMA algorithm itself runs eagerly.
 """
-import numpy as np  # Only for scipy interop
-import jax
-import jax.numpy as jnp
-from jax import jit, grad, random, jacfwd, value_and_grad
-from functools import partial
-import time
 import logging
+import time
+
+import jax.numpy as jnp
+import numpy as np  # Only for scipy interop
 import scipy
+from jax import config
 from jax.experimental.sparse import BCOO
 
-from jax import config
 config.update("jax_enable_x64", True)
 
 logger = logging.getLogger(__name__)
@@ -74,59 +72,59 @@ class MMA:
     # The code was modified from [MMA Svanberg 1987]. Please cite the paper if
     # you end up using this code.
     def __init__(self):
-        self.epoch = 0;
+        self.epoch = 0
     def resetMMACounter(self):
-        self.epoch = 0;
+        self.epoch = 0
     def registerMMAIter(self, xval, xold1, xold2):
-        self.epoch += 1;
-        self.xval = xval;
-        self.xold1 = xold1;
-        self.xold2 = xold2;
+        self.epoch += 1
+        self.xval = xval
+        self.xold1 = xold1
+        self.xold2 = xold2
     def setNumConstraints(self, numConstraints):
-        self.numConstraints = numConstraints;
+        self.numConstraints = numConstraints
     def setNumDesignVariables(self, numDesVar):
-        self.numDesignVariables = numDesVar;
+        self.numDesignVariables = numDesVar
     def setMinandMaxBoundsForDesignVariables(self, xmin, xmax):
-        self.xmin = xmin;
-        self.xmax = xmax;
+        self.xmin = xmin
+        self.xmax = xmax
     def setObjectiveWithGradient(self, obj, objGrad):
-        self.objective = obj;
-        self.objectiveGradient = objGrad;
+        self.objective = obj
+        self.objectiveGradient = objGrad
     def setConstraintWithGradient(self, cons, consGrad):
-        self.constraint = cons;
-        self.consGrad = consGrad;
+        self.constraint = cons
+        self.consGrad = consGrad
     def setScalingParams(self, zconst, zscale, ylinscale, yquadscale):
-        self.zconst = zconst;
-        self.zscale = zscale;
-        self.ylinscale = ylinscale;
-        self.yquadscale = yquadscale;
+        self.zconst = zconst
+        self.zscale = zscale
+        self.ylinscale = ylinscale
+        self.yquadscale = yquadscale
     def setMoveLimit(self, movelim):
-        self.moveLimit = movelim;
+        self.moveLimit = movelim
     def setLowerAndUpperAsymptotes(self, low, upp):
-        self.lowAsymp = low;
-        self.upAsymp = upp;
+        self.lowAsymp = low
+        self.upAsymp = upp
 
     def getOptimalValues(self):
-        return self.xmma, self.ymma, self.zmma;
+        return self.xmma, self.ymma, self.zmma
     def getLagrangeMultipliers(self):
-        return self.lam, self.xsi, self.eta, self.mu, self.zet;
+        return self.lam, self.xsi, self.eta, self.mu, self.zet
     def getSlackValue(self):
-        return self.slack;
+        return self.slack
     def getAsymptoteValues(self):
-        return self.lowAsymp, self.upAsymp;
+        return self.lowAsymp, self.upAsymp
 
     # Function for the MMA sub problem
     def mmasub(self, xval):
-        m = self.numConstraints;
-        n = self.numDesignVariables;
-        iter = self.epoch;
-        xmin, xmax = self.xmin, self.xmax;
-        xold1, xold2 = self.xold1, self.xold2;
-        f0val, df0dx = self.objective, self.objectiveGradient;
-        fval, dfdx = self.constraint, self.consGrad;
-        low, upp = self.lowAsymp, self.upAsymp;
-        a0, a, c, d = self.zconst, self.zscale, self.ylinscale, self.yquadscale;
-        move = self.moveLimit;
+        m = self.numConstraints
+        n = self.numDesignVariables
+        iter = self.epoch
+        xmin, xmax = self.xmin, self.xmax
+        xold1, xold2 = self.xold1, self.xold2
+        f0val, df0dx = self.objective, self.objectiveGradient
+        fval, dfdx = self.constraint, self.consGrad
+        low, upp = self.lowAsymp, self.upAsymp
+        a0, a, c, d = self.zconst, self.zscale, self.ylinscale, self.yquadscale
+        move = self.moveLimit
 
         epsimin = 0.0000001
         raa0 = 0.00001
@@ -201,10 +199,10 @@ class MMA:
         xmma,ymma,zmma,lam,xsi,eta,mu,zet,s = subsolv(m,n,epsimin,low,upp,alfa,\
                                                       beta,p0,q0,P,Q,a0,a,b,c,d)
         # Return values
-        self.xmma, self.ymma, self.zmma = xmma, ymma, zmma;
-        self.lam, self.xsi, self.eta, self.mu, self.zet = lam,xsi,eta,mu,zet;
-        self.slack = s;
-        self.lowAsymp, self.upAsymp = low, upp;
+        self.xmma, self.ymma, self.zmma = xmma, ymma, zmma
+        self.lam, self.xsi, self.eta, self.mu, self.zet = lam,xsi,eta,mu,zet
+        self.slack = s
+        self.lowAsymp, self.upAsymp = low, upp
 
 
 def subsolv(m,n,epsimin,low,upp,alfa,beta,p0,q0,P,Q,a0,a,b,c,d):
@@ -486,18 +484,18 @@ def optimize(fe, rho_ini, optimizationParams, objectiveHandle, consHandle, numCo
     mma.setScalingParams(1.0, jnp.zeros((m,1)), \
                          10000*jnp.ones((m,1)), jnp.zeros((m,1)))
     # Move limit is an important parameter that affects TO result; default can be 0.2
-    mma.setMoveLimit(optimizationParams['movelimit']) 
+    mma.setMoveLimit(optimizationParams['movelimit'])
 
     while loop < optimizationParams['maxIters']:
         loop = loop + 1
 
-        logger.info(f"MMA solver...")
-        
+        logger.info("MMA solver...")
+
         if density_filtering:
             rho_physical = applyDensityFilter(ft, rho)
         else:
             rho_physical = rho
-            
+
         J, dJ = objectiveHandle(rho_physical)
         vc, dvc = consHandle(rho_physical, loop)
 

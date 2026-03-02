@@ -11,14 +11,14 @@ import jax
 import jax.numpy as jnp
 
 from ..assembler import create_J_bc_function, create_res_bc_function
-from .linear import linear_solve_adjoint
+from ..problem import MatrixView
 from .common import (
     _safe_negate,
-    create_x0,
-    create_linear_solve_fn,
     check_convergence,
+    create_linear_solve_fn,
+    create_x0,
 )
-from ..problem import MatrixView
+from .linear import linear_solve_adjoint
 from .options import NewtonOptions
 
 logger = logging.getLogger(__name__)

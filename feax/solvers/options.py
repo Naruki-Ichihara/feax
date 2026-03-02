@@ -6,11 +6,12 @@ solver behavior, including linear solver selection, tolerances, and
 CUDA-specific options.
 """
 
-import jax
-from dataclasses import dataclass
-from typing import Optional, Callable, Union
-from enum import Enum
 import logging
+from dataclasses import dataclass
+from enum import Enum
+from typing import Callable, Optional, Union
+
+import jax
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,7 @@ def detect_matrix_property(A, sym_tol: float = 1e-8, matrix_view=None) -> Matrix
     from well-posed problems this is a reliable indicator.
     """
     import jax.numpy as jnp
+
     from ..problem import MatrixView
 
     # UPPER/LOWER storage implies symmetry by construction

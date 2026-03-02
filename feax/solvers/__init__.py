@@ -4,20 +4,6 @@ This package-level module re-exports the stable solver-facing symbols from
 ``options``, ``common``, ``linear``, ``newton``, and ``reduced``.
 """
 
-from .options import (
-    AbstractSolverOptions,
-    CUDSSMatrixType,
-    CUDSSMatrixView,
-    CUDSSOptions,
-    DirectSolverOptions,
-    IterativeSolverOptions,
-    MatrixProperty,
-    NewtonOptions,
-    SolverOptions,
-    detect_matrix_property,
-    resolve_direct_solver,
-    resolve_iterative_solver,
-)
 from .common import (
     check_convergence,
     create_direct_solve_fn,
@@ -32,6 +18,20 @@ from .newton import (
     newton_solve,
     newton_solve_fori,
     newton_solve_py,
+)
+from .options import (
+    AbstractSolverOptions,
+    CUDSSMatrixType,
+    CUDSSMatrixView,
+    CUDSSOptions,
+    DirectSolverOptions,
+    IterativeSolverOptions,
+    MatrixProperty,
+    NewtonOptions,
+    SolverOptions,
+    detect_matrix_property,
+    resolve_direct_solver,
+    resolve_iterative_solver,
 )
 from .reduced import create_reduced_solver
 

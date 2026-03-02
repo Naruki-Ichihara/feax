@@ -8,8 +8,8 @@ import jax
 import jax.numpy as jnp
 
 from ..assembler import create_J_bc_function, create_res_bc_function
-from .options import IterativeSolverOptions, MatrixProperty, resolve_iterative_solver
 from .common import _safe_negate, create_iterative_solve_fn
+from .options import IterativeSolverOptions, MatrixProperty, resolve_iterative_solver
 
 
 def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options):

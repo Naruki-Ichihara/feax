@@ -7,16 +7,17 @@ Jacobian matrices for both volume and surface integrals, supporting various
 physics kernels (Laplace, mass, surface, and universal).
 """
 
+import functools
+from typing import TYPE_CHECKING, Any, Callable, List, Tuple
+
 import jax
+import jax.flatten_util
 import jax.numpy as np
 from jax.experimental import sparse
-import jax.flatten_util
-import functools
-from typing import List, Tuple, Any, Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from feax.problem import Problem
     from feax.DCboundary import DirichletBC
+    from feax.problem import Problem
 
 from feax.internal_vars import InternalVars
 
@@ -94,7 +95,7 @@ def get_laplace_kernel(problem: 'Problem', tensor_map: Callable) -> Callable:
     points for efficiency. The tensor_map function is applied via vmap to all
     quadrature points simultaneously.
     """
-    
+
     def laplace_kernel(cell_sol_flat: np.ndarray,
                       cell_shape_grads: np.ndarray,
                       cell_v_grads_JxW: np.ndarray,
@@ -178,7 +179,7 @@ def get_mass_kernel(problem: 'Problem', mass_map: Callable) -> Callable:
     This kernel is useful for time-dependent problems (inertia terms),
     reaction-diffusion equations, or adding body forces/sources.
     """
-    
+
     def mass_kernel(cell_sol_flat: np.ndarray,
                    x: np.ndarray,
                    cell_JxW: np.ndarray,
@@ -258,12 +259,12 @@ def get_surface_kernel(problem: 'Problem', surface_map: Callable) -> Callable:
     The Nanson scale factor accounts for the transformation from reference to
     physical surface elements, including the Jacobian and surface normal.
     """
-    
-    def surface_kernel(cell_sol_flat: np.ndarray, 
-                      x: np.ndarray, 
-                      face_shape_vals: np.ndarray, 
-                      face_shape_grads: np.ndarray, 
-                      face_nanson_scale: np.ndarray, 
+
+    def surface_kernel(cell_sol_flat: np.ndarray,
+                      x: np.ndarray,
+                      face_shape_vals: np.ndarray,
+                      face_shape_grads: np.ndarray,
+                      face_nanson_scale: np.ndarray,
                       *cell_internal_vars_surface: np.ndarray) -> np.ndarray:
         cell_sol_list = problem.unflatten_fn_dof(cell_sol_flat)
         cell_sol = cell_sol_list[0]
@@ -273,7 +274,7 @@ def get_surface_kernel(problem: 'Problem', surface_map: Callable) -> Callable:
         # (1, num_nodes, vec) * (num_face_quads, num_nodes, 1) -> (num_face_quads, vec)
         u = np.sum(cell_sol[None, :, :] * face_shape_vals[:, :, None], axis=1)
         u_physics = jax.vmap(surface_map)(u, x, *cell_internal_vars_surface)  # (num_face_quads, vec)
-        
+
         # (num_face_quads, 1, vec) * (num_face_quads, num_nodes, 1) * (num_face_quads, 1, 1) -> (num_nodes, vec)
         val = np.sum(u_physics[:, None, :] * face_shape_vals[:, :, None] * face_nanson_scale[:, None, None], axis=0)
 
@@ -308,7 +309,7 @@ def create_volume_kernel(problem: 'Problem') -> Callable:
     and only includes contributions from those that are defined. This allows
     for flexible problem definitions with any combination of physics terms.
     """
-    
+
     def kernel(cell_sol_flat, physical_quad_points, cell_shape_grads, cell_JxW, cell_v_grads_JxW, *cell_internal_vars):
         # For multi-variable problems, only use universal kernel
         # (laplace/mass kernels only support single variable)
@@ -410,9 +411,9 @@ def create_surface_kernel(problem: 'Problem', surface_index: int) -> Callable:
     return kernel
 
 
-def split_and_compute_cell(problem: 'Problem', 
-                           cells_sol_flat: np.ndarray, 
-                           jac_flag: bool, 
+def split_and_compute_cell(problem: 'Problem',
+                           cells_sol_flat: np.ndarray,
+                           jac_flag: bool,
                            internal_vars_volume: Tuple[np.ndarray, ...]) -> Any:
     """Compute volume integrals for residual or Jacobian assembly.
     
@@ -445,7 +446,7 @@ def split_and_compute_cell(problem: 'Problem',
     The function splits computation into batches (default 20) to avoid memory
     issues with large meshes. This is particularly important for 3D problems.
     """
-    
+
     def value_and_jacfwd(f: Callable, x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         pushfwd = functools.partial(jax.jvp, f, (x, ))
         basis = np.eye(len(x.reshape(-1)), dtype=x.dtype).reshape(-1, *x.shape)
@@ -453,7 +454,7 @@ def split_and_compute_cell(problem: 'Problem',
         return y, jac
 
     kernel = create_volume_kernel(problem)
-    
+
     if jac_flag:
         def kernel_jac(cell_sol_flat, *args):
             kernel_partial = lambda cell_sol_flat: kernel(cell_sol_flat, *args)
@@ -461,7 +462,7 @@ def split_and_compute_cell(problem: 'Problem',
         vmap_fn = jax.vmap(kernel_jac)
     else:
         vmap_fn = jax.vmap(kernel)
-    
+
     # Prepare input collection
     # Adaptive batch size based on problem size to manage memory
     # Smaller batches for larger problems to avoid OOM
@@ -471,7 +472,7 @@ def split_and_compute_cell(problem: 'Problem',
         num_cuts = min(50, problem.num_cells)   # Medium number of cuts
     else:
         num_cuts = min(20, problem.num_cells)   # Original behavior for small problems
-    
+
     batch_size = problem.num_cells // num_cuts
 
     # Transform internal vars to per-cell format
@@ -557,9 +558,9 @@ def split_and_compute_cell(problem: 'Problem',
         return values
 
 
-def compute_face(problem: 'Problem', 
-                cells_sol_flat: np.ndarray, 
-                jac_flag: bool, 
+def compute_face(problem: 'Problem',
+                cells_sol_flat: np.ndarray,
+                jac_flag: bool,
                 internal_vars_surfaces: List[Tuple[np.ndarray, ...]]) -> Any:
     """Compute surface integrals for residual or Jacobian assembly.
     
@@ -591,7 +592,7 @@ def compute_face(problem: 'Problem',
     Each boundary surface can have different loading conditions or physics,
     handled through separate surface kernels and internal variables.
     """
-    
+
     def value_and_jacfwd(f: Callable, x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         pushfwd = functools.partial(jax.jvp, f, (x, ))
         basis = np.eye(len(x.reshape(-1)), dtype=x.dtype).reshape(-1, *x.shape)
@@ -607,14 +608,14 @@ def compute_face(problem: 'Problem',
                 kernel_partial = lambda cell_sol_flat: kernel(cell_sol_flat, *args)
                 return value_and_jacfwd(kernel_partial, cell_sol_flat)
             vmap_fn = jax.vmap(kernel_jac)
-            
+
             selected_cell_sols_flat = cells_sol_flat[boundary_inds[:, 0]]
-            
+
             # Handle case where internal_vars_surfaces might be empty or insufficient
             surface_vars_for_boundary = internal_vars_surfaces[i] if i < len(internal_vars_surfaces) else ()
-            
-            input_collection = [selected_cell_sols_flat, problem.physical_surface_quad_points[i], 
-                              problem.selected_face_shape_vals[i], problem.selected_face_shape_grads[i], 
+
+            input_collection = [selected_cell_sols_flat, problem.physical_surface_quad_points[i],
+                              problem.selected_face_shape_vals[i], problem.selected_face_shape_grads[i],
                               problem.nanson_scale[i], *surface_vars_for_boundary]
 
             val, jac = vmap_fn(*input_collection)
@@ -626,22 +627,22 @@ def compute_face(problem: 'Problem',
         for i, boundary_inds in enumerate(problem.boundary_inds_list):
             kernel = create_surface_kernel(problem, i)
             vmap_fn = jax.vmap(kernel)
-            
+
             selected_cell_sols_flat = cells_sol_flat[boundary_inds[:, 0]]
-            
+
             # Handle case where internal_vars_surfaces might be empty or insufficient
             surface_vars_for_boundary = internal_vars_surfaces[i] if i < len(internal_vars_surfaces) else ()
-            
-            input_collection = [selected_cell_sols_flat, problem.physical_surface_quad_points[i], 
-                              problem.selected_face_shape_vals[i], problem.selected_face_shape_grads[i], 
+
+            input_collection = [selected_cell_sols_flat, problem.physical_surface_quad_points[i],
+                              problem.selected_face_shape_vals[i], problem.selected_face_shape_grads[i],
                               problem.nanson_scale[i], *surface_vars_for_boundary]
             val = vmap_fn(*input_collection)
             values.append(val)
         return values
 
 
-def compute_residual_vars_helper(problem: 'Problem', 
-                                 weak_form_flat: np.ndarray, 
+def compute_residual_vars_helper(problem: 'Problem',
+                                 weak_form_flat: np.ndarray,
                                  weak_form_face_flat: List[np.ndarray]) -> List[np.ndarray]:
     """Assemble residual from element and face contributions.
     
@@ -673,11 +674,11 @@ def compute_residual_vars_helper(problem: 'Problem',
     res_list = [np.zeros((fe.num_total_nodes, fe.vec)) for fe in problem.fes]
     weak_form_list = jax.vmap(lambda x: problem.unflatten_fn_dof(x))(weak_form_flat) # [(num_cells, num_nodes, vec), ...]
     res_list = [res_list[i].at[problem.cells_list[i].reshape(-1)].add(weak_form_list[i].reshape(-1, problem.fes[i].vec)) for i in range(len(res_list))]
-    
+
     for j, boundary_inds in enumerate(problem.boundary_inds_list):
         weak_form_face_list = jax.vmap(lambda x: problem.unflatten_fn_dof(x))(weak_form_face_flat[j]) # [(num_selected_faces, num_nodes, vec), ...]
         res_list = [res_list[i].at[problem.cells_list_face_list[j][i].reshape(-1)].add(weak_form_face_list[i].reshape(-1, problem.fes[i].vec)) for i in range(len(res_list))]
-    
+
     return res_list
 
 
@@ -793,8 +794,8 @@ def get_jacobian_info(problem: 'Problem',
     }
 
 
-def get_res(problem: 'Problem', 
-            sol_list: List[np.ndarray], 
+def get_res(problem: 'Problem',
+            sol_list: List[np.ndarray],
             internal_vars: InternalVars) -> List[np.ndarray]:
     """Compute residual vector with separated internal variables.
     
@@ -831,13 +832,13 @@ def get_res(problem: 'Problem',
     """
     cells_sol_list = [sol[cells] for cells, sol in zip(problem.cells_list, sol_list)]
     cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
-    
+
     # Compute weak form values from volume integrals
     weak_form_flat = split_and_compute_cell(problem, cells_sol_flat, False, internal_vars.volume_vars)
-    
+
     # Add weak form values from surface integrals
     weak_form_face_flat = compute_face(problem, cells_sol_flat, False, internal_vars.surface_vars)
-    
+
     return compute_residual_vars_helper(problem, weak_form_flat, weak_form_face_flat)
 
 
@@ -867,12 +868,12 @@ def create_J_bc_function(problem: 'Problem', bc: 'DirichletBC') -> Callable[[np.
     can be differentiated for sensitivity analysis.
     """
     from feax.DCboundary import apply_boundary_to_J
-    
+
     def J_bc_func(sol_flat, internal_vars: InternalVars):
         sol_list = problem.unflatten_fn_sol_list(sol_flat)
         J = _get_J(problem, sol_list, internal_vars)
         return apply_boundary_to_J(bc, J)
-    
+
     return J_bc_func
 
 
@@ -902,7 +903,7 @@ def create_res_bc_function(problem: 'Problem', bc: 'DirichletBC') -> Callable[[n
     that satisfy both the weak form equations and boundary conditions.
     """
     from feax.DCboundary import apply_boundary_to_res
-    
+
     def res_bc_func(sol_flat, internal_vars: InternalVars):
         sol_list = problem.unflatten_fn_sol_list(sol_flat)
         res = get_res(problem, sol_list, internal_vars)

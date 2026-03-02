@@ -1,10 +1,12 @@
-import jax
-import jax.numpy as np
 from abc import ABC, abstractmethod
 from itertools import product
-from typing import Any, Tuple, Iterable, Callable, Optional
+from typing import Any, Callable, Iterable, Tuple
+
+import jax
+import jax.numpy as np
 
 from feax.mesh import Mesh
+
 
 class UnitCell(ABC):
     def __init__(self, atol: float = 1e-6, **kwargs: Any) -> None:
@@ -24,7 +26,7 @@ class UnitCell(ABC):
         self.ele_type = self.mesh.ele_type
         self.points = self.mesh.points
         self.atol = atol
-        
+
         # Compute bounding box
         if self.points.shape[0] > 0:
             self.lb = np.min(self.points, axis=0)  # Lower bound
@@ -67,7 +69,7 @@ class UnitCell(ABC):
             ...     return box_mesh(nx, ny, nz, 1.0, 1.0, 1.0)
         """
         raise NotImplementedError("Mesh needs to be defined.")
-    
+
     @property
     def cell_centers(self) -> np.ndarray:
         """Get the geometric centers of all elements in the unit cell mesh.
@@ -134,7 +136,7 @@ class UnitCell(ABC):
             corner_list.append(corner)
 
         return np.array(corner_list)
-    
+
     def is_corner(self, point: np.ndarray) -> bool:
         """Check if a point lies at a corner of the unit cell bounding box.
         
@@ -321,7 +323,7 @@ class UnitCell(ABC):
         def fn(point: np.ndarray) -> bool:
             # Base condition: point lies on the specified face
             on_face = np.isclose(point[axis], value, atol=self.atol)
-            
+
             # Apply exclusions as needed
             if excluding_corner and excluding_edge:
                 # Exclude both corners and edges
@@ -421,7 +423,7 @@ class UnitCell(ABC):
         """
         values = np.array(values)
         spatial_dim = self.points.shape[1] if self.points.shape[0] > 0 else len(self.lb)
-        
+
         if len(values) != spatial_dim:
             raise ValueError(f"Number of values ({len(values)}) must match spatial dimension ({spatial_dim})")
 

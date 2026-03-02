@@ -10,12 +10,9 @@ This module tests JAX iterative solvers:
 - Physical validity of solutions
 """
 
-import pytest
-import jax
 import jax.numpy as jnp
-import feax as fe
-from feax.problem import MatrixView
 
+import feax as fe
 
 # ============================================================================
 # Solver Tests - JAX Iterative Solvers

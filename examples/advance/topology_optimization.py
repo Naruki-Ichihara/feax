@@ -5,12 +5,14 @@ Minimizes compliance subject to volume constraint for a cantilever beam
 with density-based material interpolation (SIMP).
 """
 
+import os
+
+import jax
+import jax.numpy as np
+
 import feax as fe
 import feax.gene as gene
 from feax.gene.responses import create_compliance_fn, create_volume_fn
-import jax
-import jax.numpy as np
-import os
 from feax.problem import MatrixView
 
 # Material properties
@@ -30,7 +32,7 @@ H = 20   # Height
 box_size = (L, W, H)
 mesh = fe.mesh.box_mesh(box_size, mesh_size=2)
 tol = 1e-3  # Boundary tolerance
-    
+
 # Locations
 left = lambda point: np.isclose(point[0], 0., tol)
 right = lambda point: np.isclose(point[0], L, tol) & (point[2] < H/4)
@@ -57,7 +59,7 @@ class LinearElasticity(fe.problem.Problem):
         def surface_map(u, x, *args):
             return np.array([0., 0., -traction_mag])  # Downward traction
         return [surface_map]
-    
+
 problem = LinearElasticity(mesh, vec=3, dim=3, location_fns=[right], matrix_view=MatrixView.UPPER)
 
 # Boundary
@@ -109,10 +111,11 @@ def evaluate_volume(rho):
 # ============================================================
 # NLopt MMA Optimization
 # ============================================================
+import csv
+
+import matplotlib.pyplot as plt
 import nlopt
 import numpy as onp
-import matplotlib.pyplot as plt
-import csv
 
 # JIT compile forward and gradient functions
 forward_jit = jax.jit(solve_forward)

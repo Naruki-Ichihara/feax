@@ -7,12 +7,12 @@ This module tests that solvers work correctly with JAX JIT compilation:
 - Solution consistency between JIT and non-JIT versions
 """
 
-import pytest
 import jax
 import jax.numpy as jnp
+import pytest
+
 import feax as fe
 from feax.problem import MatrixView
-
 
 # ============================================================================
 # Environment Checks

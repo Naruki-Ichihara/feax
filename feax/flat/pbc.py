@@ -6,15 +6,18 @@ multiscale analysis. It handles the construction of prolongation matrices that m
 between reduced (independent) and full degree-of-freedom spaces.
 """
 
+import itertools
+from dataclasses import dataclass
+from typing import Callable, Iterable, List
+
 import jax
 import jax.numpy as np
 import numpy as onp
 from jax.experimental.sparse import BCOO
-from dataclasses import dataclass
-from typing import Callable, Iterable, List
+
 from feax.mesh import Mesh
+
 from .unitcell import UnitCell
-import itertools
 
 
 @dataclass

@@ -4,10 +4,12 @@ Demonstrates solving nonlinear hyperelasticity problems with Neo-Hookean materia
 A torsional surface traction is applied to the right face (load-controlled twist).
 """
 
-import feax as fe
+import os
+
 import jax
 import jax.numpy as np
-import os
+
+import feax as fe
 
 # Box geometry
 Lx, Ly, Lz = 5., 1., 1.

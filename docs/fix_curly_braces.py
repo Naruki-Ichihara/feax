@@ -5,6 +5,7 @@ import re
 import sys
 from pathlib import Path
 
+
 def fix_curly_braces_in_file(file_path):
     """Escape curly braces in f-strings within code blocks."""
     with open(file_path, 'r', encoding='utf-8') as f:

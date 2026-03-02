@@ -1,7 +1,8 @@
 """Minimal vmap example with density-based SIMP material interpolation in feax."""
-import feax as fe
 import jax
 import jax.numpy as jnp
+
+import feax as fe
 
 # Material parameters
 E0 = 70e3  # Base Young's modulus

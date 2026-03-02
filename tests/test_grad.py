@@ -8,12 +8,12 @@ This module tests that gradients can be computed through solvers:
 - Gradient consistency across solvers
 """
 
-import pytest
 import jax
 import jax.numpy as jnp
+import pytest
+
 import feax as fe
 from feax.problem import MatrixView
-
 
 # ============================================================================
 # Environment Checks

@@ -3,9 +3,8 @@
 Generate FEAX logo with a simple tetrahedron.
 """
 
-import numpy as np
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
+import numpy as np
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 # Configuration variables
@@ -32,7 +31,7 @@ def create_tetrahedron():
         [-1, 1, -1],
         [-1, -1, 1]
     ]) / np.sqrt(3)
-    
+
     # Define faces (triangles)
     faces = [
         [vertices[0], vertices[1], vertices[2]],
@@ -40,76 +39,76 @@ def create_tetrahedron():
         [vertices[0], vertices[2], vertices[3]],
         [vertices[1], vertices[2], vertices[3]]
     ]
-    
+
     return vertices, faces
 
 def explode_faces(faces, separation=0.15):
     """Separate faces outward from center."""
     exploded_faces = []
-    
+
     for face in faces:
         # Calculate face center
         face_center = np.mean(face, axis=0)
-        
+
         # Calculate direction from origin to face center
         direction = face_center / np.linalg.norm(face_center)
-        
+
         # Move face outward
         offset = direction * separation
         exploded_face = face + offset
-        
+
         exploded_faces.append(exploded_face)
-    
+
     return exploded_faces
 
 def generate_logo(output_file='assets/logo.svg'):
     """Generate FEAX logo with realistic tetrahedron."""
-    
+
     fig = plt.figure(figsize=FIGURE_SIZE, facecolor='none')
     ax = fig.add_subplot(111, projection='3d')
-    
+
     # Create tetrahedron
     vertices, faces = create_tetrahedron()
-    
+
     # Explode faces for separated view
     exploded_faces = explode_faces(faces, separation=FACE_SEPARATION)
-    
+
     # Set up face colors with JAX-inspired palette
     face_colors = FACE_COLORS
-    
+
     # Create individual faces with different shading
     for i, face in enumerate(exploded_faces):
         face_collection = Poly3DCollection([face], alpha=FACE_ALPHA, linewidths=0)
         face_collection.set_facecolor(face_colors[i])
         face_collection.set_edgecolor('none')
         ax.add_collection3d(face_collection)
-    
+
     # Clean tetrahedron without vertex markers
-    
+
     # Set axis properties with tight bounds around tetrahedron
     ax.set_xlim([-0.6, 0.6])
     ax.set_ylim([-0.6, 0.6])
     ax.set_zlim([-0.6, 0.6])
-    
+
     # Set equal aspect ratio for true isometric view
     ax.set_box_aspect([1,1,1])
-    
+
     # Remove axes for clean logo
     ax.set_axis_off()
-    
+
     # Set perspective view like classic tetrahedron diagram
     ax.view_init(elev=ELEVATION, azim=AZIMUTH)
-    
+
     # Add transparent background
     ax.set_facecolor('none')
-    
+
     # Clean logo without text
-    
+
     # Save logo
     plt.tight_layout()
-    plt.savefig(output_file, format='svg', bbox_inches='tight', 
+    plt.savefig(output_file, format='svg', bbox_inches='tight',
                 facecolor='none', edgecolor='none', transparent=True)
-    
+
     print(f"Logo saved as: {output_file}")
     return fig
 

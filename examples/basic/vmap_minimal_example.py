@@ -1,7 +1,9 @@
 """Minimal vmap example in feax."""
-import feax as fe
 import jax
 import jax.numpy as jnp
+
+import feax as fe
+
 
 # Problem definition
 class ElasticityProblem(fe.problem.Problem):

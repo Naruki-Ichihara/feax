@@ -8,10 +8,10 @@ This module tests mesh generation including:
 - Mesh size parameters
 """
 
-import pytest
 import jax.numpy as jnp
-import feax as fe
+import pytest
 
+import feax as fe
 
 # ============================================================================
 # Slim Tests - Mesh Generation

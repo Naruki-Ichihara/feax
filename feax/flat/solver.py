@@ -13,13 +13,13 @@ fluctuation problem is solved and the volume-averaged stress response is
 assembled into C_hom.
 """
 
+from typing import Any
+
 import jax
 import jax.numpy as np
-from typing import Any
 
 from feax.solver import create_solver
 from feax.solvers.options import IterativeSolverOptions
-
 
 # ---------------------------------------------------------------------------
 # Unit strain tensors in Voigt order

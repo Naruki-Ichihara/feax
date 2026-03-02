@@ -13,28 +13,29 @@ Key Features:
 - create_linear_solver: high-level differentiable solver for linear problems
 """
 
+import logging
+from typing import Any, Callable, Optional
+
 import jax
 import jax.numpy as jnp
-import logging
-from typing import Optional, Callable, Any
 
+from ..assembler import create_J_bc_function, create_res_bc_function
+from ..DCboundary import DirichletBC
+from ..problem import MatrixView, Problem
+from .common import (
+    _safe_negate,
+    check_convergence,
+    create_linear_solve_fn,
+    create_x0,
+)
 from .options import (
-    SolverOptions,
     DirectSolverOptions,
     IterativeSolverOptions,
     MatrixProperty,
+    SolverOptions,
     resolve_direct_solver,
     resolve_iterative_solver,
 )
-from .common import (
-    _safe_negate,
-    create_x0,
-    check_convergence,
-    create_linear_solve_fn,
-)
-from ..problem import MatrixView, Problem
-from ..DCboundary import DirichletBC
-from ..assembler import create_J_bc_function, create_res_bc_function
 
 logger = logging.getLogger(__name__)
 
@@ -283,8 +284,9 @@ def create_linear_solver(
     if not can_omit_x0:
         return differentiable_solve
 
-    from ..utils import zero_like_initial_guess
     import warnings
+
+    from ..utils import zero_like_initial_guess
 
     default_initial_guess = zero_like_initial_guess(problem, bc)
 

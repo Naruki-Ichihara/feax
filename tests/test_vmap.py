@@ -15,12 +15,11 @@ C-level signal. Running CPU tests first prevents them from being killed
 by CUDA failures.
 """
 
-import pytest
 import jax
 import jax.numpy as jnp
-import feax as fe
-from feax.problem import MatrixView
+import pytest
 
+import feax as fe
 
 # ============================================================================
 # Environment Checks

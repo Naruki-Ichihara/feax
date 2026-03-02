@@ -7,6 +7,7 @@ and microstructure design, with support for periodic boundary conditions.
 
 import jax
 import jax.numpy as np
+
 import feax as fe
 
 

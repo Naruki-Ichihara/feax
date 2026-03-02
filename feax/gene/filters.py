@@ -4,17 +4,19 @@ Provides both PDE-based (Helmholtz) and distance-based (density) filters
 for design variable smoothing in generative design workflows.
 """
 
+from typing import Callable
+
 import jax
-import jax.numpy as np
 import jax.experimental.sparse as jsparse
+import jax.numpy as np
+
 import feax as fe
 from feax.problem import Problem
-from typing import Callable, Tuple
 
 
 class HelmholtzProblem(Problem):
     """Helmholtz equation problem for design variable filtering."""
-    
+
     def __post_init__(self):
         super().__post_init__()
         # Get radius from additional_info
@@ -22,14 +24,14 @@ class HelmholtzProblem(Problem):
             self.radius = self.additional_info[0]
         else:
             self.radius = 0.05
-            
+
     def get_tensor_map(self):
         """Get the diffusion tensor mapping for the Helmholtz equation."""
         def diffusion(u_grad, design_variable):
             """Compute diffusion term r²∇u."""
             return self.radius**2 * u_grad
         return diffusion
-        
+
     def get_mass_map(self):
         """Get the mass term mapping for the Helmholtz equation."""
         def mass_term(u, x, design_variable):

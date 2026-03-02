@@ -1,10 +1,11 @@
 """Regression tests for solver API migration."""
 
-import pytest
 import jax.numpy as jnp
+import pytest
+
 import feax as fe
-import feax.gene as gene
 import feax.flat as flat
+import feax.gene as gene
 
 
 def test_solver_options_constructor_raises():

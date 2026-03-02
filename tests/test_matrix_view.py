@@ -9,12 +9,12 @@ This module tests the MatrixView functionality including:
 - Solution accuracy comparison with FULL matrix
 """
 
-import pytest
 import jax
 import jax.numpy as jnp
+import pytest
+
 import feax as fe
 from feax.problem import MatrixView
-
 
 # ============================================================================
 # Environment Checks

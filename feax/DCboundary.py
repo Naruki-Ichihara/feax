@@ -10,11 +10,12 @@ Key Classes:
 - DirichletBCConfig: Container for multiple BC specifications with convenience methods
 """
 
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Callable, List, Tuple, Union
+
 import jax
 import jax.numpy as np
 from jax.experimental.sparse import BCOO
-from dataclasses import dataclass, field
-from typing import Callable, List, Union, Tuple, TYPE_CHECKING
 from jax.tree_util import register_pytree_node
 
 if TYPE_CHECKING:
@@ -33,7 +34,7 @@ class DirichletBC:
     bc_mask: np.ndarray  # Boolean mask for BC rows (size: total_dofs)
     bc_vals: np.ndarray  # Boundary condition values for each BC row
     total_dofs: int
-    
+
     @staticmethod
     def from_specs(problem: 'Problem', specs: List['DirichletBCSpec']) -> 'DirichletBC':
         """Create DirichletBC directly from a list of DirichletBCSpec objects.
@@ -237,15 +238,15 @@ def apply_boundary_to_res(bc: DirichletBC, res_vec: np.ndarray, sol_vec: np.ndar
     """
     # Create a copy of the residual vector to modify
     res_modified = res_vec.copy()
-    
+
     # For each boundary condition row:
     # res[bc_row] = sol[bc_row] - bc_val * scale
     # This is equivalent to the reference implementation
-    
+
     # Apply BC: set residual at BC nodes to solution minus BC values
     bc_residual_values = sol_vec[bc.bc_rows] - bc.bc_vals * scale
     res_modified = res_modified.at[bc.bc_rows].set(bc_residual_values)
-    
+
     return res_modified
 
 
@@ -290,7 +291,7 @@ class DirichletBCSpec:
     component: Union[int, str]
     value: Union[float, Callable[[np.ndarray], float]]
     variable_index: Union[int, None] = None
-    
+
     def __post_init__(self) -> None:
         """Validate and normalize the component specification.
         
@@ -310,12 +311,12 @@ class DirichletBCSpec:
                 raise ValueError(f"Invalid component string: {self.component}. "
                                "Must be 'x', 'y', 'z', or 'all'")
             self.component = component_map[self.component.lower()]
-        
+
         # Validate integer components
         elif isinstance(self.component, int):
             if self.component < 0:
                 raise ValueError(f"Component index must be non-negative, got {self.component}")
-        
+
         # Convert constant values to functions for uniform interface
         if isinstance(self.value, (int, float)):
             const_val = float(self.value)
@@ -354,10 +355,10 @@ class DirichletBCConfig:
     >>> bc = bc_config.create_bc(problem)
     """
     specs: List[DirichletBCSpec] = field(default_factory=list)
-    
-    def add(self, 
-            location: Callable[[np.ndarray], bool], 
-            component: Union[int, str], 
+
+    def add(self,
+            location: Callable[[np.ndarray], bool],
+            component: Union[int, str],
             value: Union[float, Callable[[np.ndarray], float]]) -> 'DirichletBCConfig':
         """Add a boundary condition specification to the configuration.
         
@@ -388,8 +389,8 @@ class DirichletBCConfig:
         """
         self.specs.append(DirichletBCSpec(location, component, value))
         return self
-    
-    
+
+
     def create_bc(self, problem: 'Problem') -> 'DirichletBC':
         """Create a DirichletBC object from this configuration.
         
@@ -418,7 +419,7 @@ class DirichletBCConfig:
                 bc_vals=np.array([], dtype=np.float64),
                 total_dofs=problem.num_total_dofs_all_vars,
             )
-        
+
         bc_rows_list = []
         bc_vals_list = []
 
@@ -450,33 +451,33 @@ class DirichletBCConfig:
                         location_fn = spec.location
                     else:
                         raise ValueError(f"Wrong number of arguments for location_fn: must be 1 or 2, got {num_args}")
-                    
+
                     # Find nodes that satisfy the boundary condition
                     node_inds = np.argwhere(
                         jax.vmap(location_fn)(fe.mesh.points, np.arange(fe.num_total_nodes))
                     ).reshape(-1)
-                    
+
                     if len(node_inds) > 0:
                         # Create vector component indices
                         vec_inds = np.ones_like(node_inds, dtype=np.int32) * component
-                        
+
                         # Calculate DOF indices
                         bc_indices = node_inds * fe.vec + vec_inds + problem.offset[ind]
                         bc_rows_list.append(bc_indices)
-                        
+
                         # Calculate BC values at the nodes
                         values = jax.vmap(spec.value)(fe.mesh.points[node_inds].reshape(-1, fe.dim)).reshape(-1)
                         bc_vals_list.append(values)
-        
+
         if bc_rows_list:
             bc_rows = np.concatenate(bc_rows_list)
             bc_vals = np.concatenate(bc_vals_list)
-            
+
             # Sort by row indices to maintain consistency
             sort_idx = np.argsort(bc_rows)
             bc_rows = bc_rows[sort_idx]
             bc_vals = bc_vals[sort_idx]
-            
+
             # Handle duplicates by keeping first occurrence
             unique_rows, unique_idx = np.unique(bc_rows, return_index=True)
             bc_rows = unique_rows
@@ -484,7 +485,7 @@ class DirichletBCConfig:
         else:
             bc_rows = np.array([], dtype=np.int32)
             bc_vals = np.array([], dtype=np.float64)
-        
+
         # Create a boolean mask for faster lookup
         total_dofs = problem.num_total_dofs_all_vars
         bc_mask = np.zeros(total_dofs, dtype=bool)

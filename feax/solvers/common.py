@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from jax.experimental.sparse import BCOO
 
 from ..problem import MatrixView
-from .options import SolverOptions, DirectSolverOptions, IterativeSolverOptions
+from .options import DirectSolverOptions, IterativeSolverOptions, SolverOptions
 
 
 def _safe_negate(x):

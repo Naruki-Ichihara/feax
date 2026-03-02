@@ -2,7 +2,6 @@
 """Check test environment without pytest."""
 
 import jax
-import jax.numpy as jnp
 
 
 def has_gpu():

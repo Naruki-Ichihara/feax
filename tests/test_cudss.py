@@ -11,12 +11,12 @@ This module tests cuDSS direct solver:
 These tests require CUDA/GPU and are marked with @pytest.mark.cuda
 """
 
-import pytest
 import jax
 import jax.numpy as jnp
+import pytest
+
 import feax as fe
 from feax.problem import MatrixView
-
 
 # ============================================================================
 # Environment Checks
@@ -186,7 +186,7 @@ def test_cudss_options_configuration(
     bc = bc_config.create_bc(problem)
 
     # Create solver with explicit cuDSS options
-    from feax.solvers.options import CUDSSOptions, CUDSSMatrixType, CUDSSMatrixView
+    from feax.solvers.options import CUDSSMatrixType, CUDSSMatrixView, CUDSSOptions
 
     cudss_opts = CUDSSOptions(
         matrix_type=CUDSSMatrixType.SPD,  # Symmetric Positive Definite

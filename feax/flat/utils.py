@@ -2,8 +2,8 @@
 
 import jax
 import jax.numpy as np
-import numpy as onp
 import meshio
+import numpy as onp
 
 
 def compute_directional_youngs_modulus(C, n):
