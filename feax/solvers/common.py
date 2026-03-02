@@ -89,7 +89,7 @@ def create_direct_solve_fn(options: DirectSolverOptions):
         }
         lx_solver, lx_tags = solver_map[options.solver]
 
-        def solve(A, b, x0):
+        def solve(A, b, x0=None):
             input_structure = jax.ShapeDtypeStruct((A.shape[1],), b.dtype)
 
             def matvec(v):

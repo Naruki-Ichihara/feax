@@ -29,6 +29,7 @@ from .common import (
     create_x0,
 )
 from .options import (
+    AbstractSolverOptions,
     DirectSolverOptions,
     IterativeSolverOptions,
     MatrixProperty,
@@ -40,8 +41,14 @@ from .options import (
 logger = logging.getLogger(__name__)
 
 
-def linear_solve_adjoint(A, b, solver_options, matrix_view: MatrixView, bc=None,
-                         linear_solve_fn=None):
+def linear_solve_adjoint(
+    A,
+    b,
+    solver_options: AbstractSolverOptions,
+    matrix_view: MatrixView,
+    bc=None,
+    linear_solve_fn: Optional[Callable] = None,
+):
     """Solve linear system for adjoint problem.
 
     Parameters
@@ -75,17 +82,18 @@ def linear_solve_adjoint(A, b, solver_options, matrix_view: MatrixView, bc=None,
     if linear_solve_fn is None:
         linear_solve_fn = create_linear_solve_fn(solver_options)
 
-    if bc is not None and hasattr(bc, 'bc_rows') and hasattr(bc, 'bc_vals'):
-        x0 = jnp.zeros_like(b)
-        bc_rows_array = jnp.array(bc.bc_rows) if not isinstance(bc.bc_rows, jnp.ndarray) else bc.bc_rows
-        x0 = x0.at[bc_rows_array].set(b[bc_rows_array])
-    else:
-        x0 = jnp.zeros_like(b)
+    x0 = None
+    if solver_options.uses_x0():
+        if bc is not None and hasattr(bc, 'bc_rows') and hasattr(bc, 'bc_vals'):
+            x0 = jnp.zeros_like(b)
+            bc_rows_array = jnp.array(bc.bc_rows) if not isinstance(bc.bc_rows, jnp.ndarray) else bc.bc_rows
+            x0 = x0.at[bc_rows_array].set(b[bc_rows_array])
+        else:
+            x0 = jnp.zeros_like(b)
 
     sol = linear_solve_fn(A, b, x0)
 
-    check_enabled = getattr(solver_options, 'check_convergence', False)
-    if check_enabled:
+    if solver_options.check_convergence:
         sol = check_convergence(
             A=A,
             x=sol,
@@ -98,17 +106,19 @@ def linear_solve_adjoint(A, b, solver_options, matrix_view: MatrixView, bc=None,
     return sol
 
 
-def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, solver_options,
-                 matrix_view: MatrixView, internal_vars=None, P_mat=None,
-                 linear_solve_fn=None, x0_fn=None):
+def linear_solve(
+    J_bc_applied,
+    res_bc_applied,
+    initial_guess,
+    bc: DirichletBC,
+    solver_options: AbstractSolverOptions,
+    matrix_view: MatrixView,
+    internal_vars=None,
+    P_mat=None,
+    linear_solve_fn: Optional[Callable] = None,
+    x0_fn: Optional[Callable] = None,
+):
     """Single-step linear solve used by create_solver(iter_num=1)."""
-
-    if x0_fn is None:
-        _legacy_x0_fn = getattr(solver_options, "linear_solver_x0_fn", None)
-        if _legacy_x0_fn is not None:
-            x0_fn = _legacy_x0_fn
-        else:
-            x0_fn = create_x0(bc_rows=bc.bc_rows, bc_vals=bc.bc_vals, P_mat=P_mat)
 
     if linear_solve_fn is None:
         linear_solve_fn = create_linear_solve_fn(solver_options)
@@ -120,8 +130,13 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
         res = res_bc_applied(initial_guess)
         J = J_bc_applied(initial_guess)
 
-    x0 = x0_fn(initial_guess)
     b = -res
+    x0 = None
+    if solver_options.uses_x0():
+        if x0_fn is None:
+            x0_fn = create_x0(bc_rows=bc.bc_rows, bc_vals=bc.bc_vals, P_mat=P_mat)
+        x0 = x0_fn(initial_guess)
+
     delta_sol = linear_solve_fn(J, b, x0)
 
     if solver_options.check_convergence:
@@ -141,8 +156,8 @@ def linear_solve(J_bc_applied, res_bc_applied, initial_guess, bc: DirichletBC, s
 def create_linear_solver(
     problem: Problem,
     bc: DirichletBC,
-    solver_options: Optional[object] = None,
-    adjoint_solver_options: Optional[object] = None,
+    solver_options: Optional[AbstractSolverOptions] = None,
+    adjoint_solver_options: Optional[AbstractSolverOptions] = None,
 ) -> Callable[[Any, jnp.ndarray], jnp.ndarray]:
     """Create a differentiable solver for linear FE problems.
 
@@ -199,14 +214,26 @@ def create_linear_solver(
     default_matrix_property = MatrixProperty.SPD
 
     if solver_options is None:
-        solver_options = resolve_iterative_solver(IterativeSolverOptions(), default_matrix_property)
+        solver_options = IterativeSolverOptions()
     if adjoint_solver_options is None:
         adjoint_solver_options = solver_options
+
+    shared_opts = adjoint_solver_options is solver_options
 
     if isinstance(solver_options, SolverOptions) or isinstance(adjoint_solver_options, SolverOptions):
         raise RuntimeError(
             "SolverOptions has been removed. "
             "Use DirectSolverOptions or IterativeSolverOptions."
+        )
+    if not isinstance(solver_options, (DirectSolverOptions, IterativeSolverOptions)):
+        raise TypeError(
+            "Unsupported solver_options type. "
+            f"Expected DirectSolverOptions or IterativeSolverOptions, got {type(solver_options).__name__}."
+        )
+    if not isinstance(adjoint_solver_options, (DirectSolverOptions, IterativeSolverOptions)):
+        raise TypeError(
+            "Unsupported adjoint_solver_options type. "
+            f"Expected DirectSolverOptions or IterativeSolverOptions, got {type(adjoint_solver_options).__name__}."
         )
 
     if isinstance(solver_options, IterativeSolverOptions):
@@ -218,14 +245,17 @@ def create_linear_solver(
             matrix_view=problem.matrix_view,
         )
 
-    if isinstance(adjoint_solver_options, IterativeSolverOptions):
-        adjoint_solver_options = resolve_iterative_solver(adjoint_solver_options, default_matrix_property)
-    elif isinstance(adjoint_solver_options, DirectSolverOptions):
-        adjoint_solver_options = resolve_direct_solver(
-            adjoint_solver_options,
-            default_matrix_property,
-            matrix_view=problem.matrix_view,
-        )
+    if shared_opts:
+        adjoint_solver_options = solver_options
+    else:
+        if isinstance(adjoint_solver_options, IterativeSolverOptions):
+            adjoint_solver_options = resolve_iterative_solver(adjoint_solver_options, default_matrix_property)
+        elif isinstance(adjoint_solver_options, DirectSolverOptions):
+            adjoint_solver_options = resolve_direct_solver(
+                adjoint_solver_options,
+                default_matrix_property,
+                matrix_view=problem.matrix_view,
+            )
 
     J_bc_func = create_J_bc_function(problem, bc)
     res_bc_func = create_res_bc_function(problem, bc)
@@ -280,8 +310,8 @@ def create_linear_solver(
 
     differentiable_solve.defvjp(f_fwd, f_bwd)
 
-    can_omit_x0 = solver_options._solver_can_omit_x0(1)
-    if not can_omit_x0:
+    can_omit_initial_guess = not solver_options.uses_x0()
+    if not can_omit_initial_guess:
         return differentiable_solve
 
     import warnings

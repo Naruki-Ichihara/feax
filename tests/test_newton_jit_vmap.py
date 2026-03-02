@@ -452,8 +452,8 @@ def test_armijo_while_vs_scan_consistency(simple_mesh, material_params):
     initial = fe.zero_like_initial_guess(problem, bc)
 
     from feax.assembler import create_J_bc_function, create_res_bc_function
-    from feax.solver import create_armijo_line_search_jax, create_armijo_line_search_scan
     from feax.solvers.linear import create_linear_solve_fn
+    from feax.solvers.newton import create_armijo_line_search_jax, create_armijo_line_search_scan
 
     J_bc_func = create_J_bc_function(problem, bc)
     res_bc_func = create_res_bc_function(problem, bc)

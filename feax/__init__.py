@@ -23,12 +23,14 @@ from .internal_vars import InternalVars
 from .mesh import Mesh
 from .problem import MatrixView, Problem
 from .solver import (
+    create_solver,
+)
+from .solvers.common import (
     check_convergence,
     create_direct_solve_fn,
     create_iterative_solve_fn,
     create_jacobi_preconditioner,
     create_linear_solve_fn,
-    create_solver,
     create_x0,
 )
 from .solvers.linear import create_linear_solver, linear_solve

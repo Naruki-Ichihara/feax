@@ -329,21 +329,9 @@ class AbstractSolverOptions:
     check_convergence: bool = False
     convergence_threshold: float = 0.1
 
-    def _solver_can_omit_x0(self, iters: Optional[int]) -> bool:
-        """Return True when `initial_guess` may be omitted.
-
-        Only linear solves (``iters == 1``) with direct solvers can omit
-        ``initial_guess``. Newton solves and iterative linear solvers require it.
-        """
-        if iters != 1:
-            return False
-        if isinstance(self, DirectSolverOptions):
-            return True
-        if isinstance(self, IterativeSolverOptions):
-            return False
-        if isinstance(self, SolverOptions):
-            return self.linear_solver not in {"cg", "bicgstab", "gmres"}
-        return False
+    def uses_x0(self) -> bool:
+        """Whether this solver family consumes an initial iterate ``x0``."""
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)
@@ -489,6 +477,10 @@ class DirectSolverOptions(AbstractSolverOptions):
         if self.cudss_options is None:
             object.__setattr__(self, 'cudss_options', CUDSSOptions())
 
+    def uses_x0(self) -> bool:
+        """Direct solvers do not consume an initial iterate."""
+        return False
+
 
 def resolve_direct_solver(
     options: DirectSolverOptions,
@@ -617,6 +609,10 @@ class IterativeSolverOptions(AbstractSolverOptions):
                 f"Invalid iterative solver: {self.solver}. "
                 f"Choose from {valid_solvers}"
             )
+
+    def uses_x0(self) -> bool:
+        """Iterative solvers consume an initial iterate."""
+        return True
 
 def resolve_iterative_solver(
     options: IterativeSolverOptions,

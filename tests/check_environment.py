@@ -17,7 +17,7 @@ def has_cudss():
     """Check if cuDSS backend is available."""
     try:
         import feax
-        from feax.solver import CUDSSOptions
+        from feax.solvers.options import CUDSSOptions
         return has_gpu()
     except ImportError:
         return False

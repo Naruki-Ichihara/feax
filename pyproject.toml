@@ -40,7 +40,8 @@ dependencies = [
     "fenics-basix",
     "gmsh",
     "equinox",
-    "lineax"
+    "lineax",
+    "optax"
 ]
 
 [project.optional-dependencies]

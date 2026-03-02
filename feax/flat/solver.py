@@ -18,8 +18,8 @@ from typing import Any
 import jax
 import jax.numpy as np
 
-from feax.solver import create_solver
-from feax.solvers.options import IterativeSolverOptions
+from ..solver import create_solver
+from ..solvers.options import IterativeSolverOptions
 
 # ---------------------------------------------------------------------------
 # Unit strain tensors in Voigt order
