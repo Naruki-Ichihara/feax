@@ -16,6 +16,36 @@ from feax.problem import MatrixView
 
 
 # ============================================================================
+# Environment Checks (CUDA/cuDSS-specific regression tests)
+# ============================================================================
+
+def has_gpu():
+    """Check if GPU is available."""
+    try:
+        devices = jax.devices("gpu")
+        return len(devices) > 0
+    except Exception:
+        return False
+
+
+def has_cudss():
+    """Check if cuDSS backend is available."""
+    if not has_gpu():
+        return False
+    try:
+        from spineax.cudss.solver import CuDSSSolver  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+requires_cudss = pytest.mark.skipif(
+    not has_cudss(),
+    reason="cuDSS not available (requires GPU + spineax)"
+)
+
+
+# ============================================================================
 # Hyperelasticity Tests - Neo-Hookean Material
 # ============================================================================
 
@@ -83,9 +113,9 @@ def test_neohookean_solver_convergence(
     internal_vars = fe.InternalVars((), [(surf_var,)])
 
     # Create Newton solver with CG for linear solve
-    solver_opts = fe.SolverOptions(
-        linear_solver="cg",
-        max_iter=20,
+    solver_opts = fe.IterativeSolverOptions(
+        solver="cg",
+        maxiter=20,
         tol=1e-6
     )
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=20)
@@ -150,11 +180,10 @@ def test_neohookean_residual_convergence(
     surf_var = fe.InternalVars.create_uniform_surface_var(problem, traction)
     internal_vars = fe.InternalVars((), [(surf_var,)])
 
-    solver_opts = fe.SolverOptions(
-        linear_solver="cg",
-        max_iter=20,
-        tol=1e-6,
-        rel_tol=1e-8
+    solver_opts = fe.IterativeSolverOptions(
+        solver="cg",
+        maxiter=20,
+        tol=1e-6
     )
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=20)
     initial = fe.zero_like_initial_guess(problem, bc)
@@ -221,9 +250,9 @@ def test_neohookean_different_solvers(
     solutions = []
 
     for solver_name in solvers:
-        solver_opts = fe.SolverOptions(
-            linear_solver=solver_name,
-            max_iter=20,
+        solver_opts = fe.IterativeSolverOptions(
+            solver=solver_name,
+            maxiter=20,
             tol=1e-6
         )
         solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=20)
@@ -242,3 +271,65 @@ def test_neohookean_different_solvers(
 
     assert diff_cg_bicgstab < sol_tol, f"CG and BICGSTAB solutions differ by {diff_cg_bicgstab:.2e}"
     assert diff_cg_gmres < sol_tol, f"CG and GMRES solutions differ by {diff_cg_gmres:.2e}"
+
+
+@pytest.mark.cuda
+@requires_cudss
+def test_newton_cudss_grad_prewarm_regression(
+    simple_mesh,
+    material_params
+):
+    """Regression: grad through Newton+cuDSS should not hit tracer-leak issues."""
+    E = material_params["E"]
+    nu = material_params["nu"]
+    tol = material_params["tol"]
+
+    mu = E / (2 * (1 + nu))
+    kappa = E / (3 * (1 - 2 * nu))
+
+    class NeoHookean(fe.Problem):
+        def get_tensor_map(self):
+            def first_PK_stress(u_grad, *args):
+                F = jnp.eye(self.dim) + u_grad
+                J = jnp.linalg.det(F)
+                F_inv_T = jnp.linalg.inv(F).T
+                return mu * (F - F_inv_T) + kappa * (J - 1) * J * F_inv_T
+
+            return first_PK_stress
+
+        def get_surface_maps(self):
+            return [lambda u, x, t: jnp.array([0.0, 0.0, t])]
+
+    left = lambda p: jnp.isclose(p[0], 0.0, tol)
+    right = lambda p: jnp.isclose(p[0], 10.0, tol)
+
+    problem = NeoHookean(
+        simple_mesh, vec=3, dim=3,
+        location_fns=[right],
+        matrix_view=MatrixView.FULL,
+    )
+
+    left_fix = fe.DirichletBCSpec(location=left, component="all", value=0.0)
+    bc = fe.DirichletBCConfig([left_fix]).create_bc(problem)
+
+    traction0 = material_params["traction"]
+    surf0 = fe.InternalVars.create_uniform_surface_var(problem, traction0)
+    sample_internal_vars = fe.InternalVars((), [(surf0,)])
+
+    solver = fe.create_solver(
+        problem,
+        bc,
+        solver_options=fe.DirectSolverOptions(solver="cudss"),
+        newton_options=fe.NewtonOptions(max_iter=5, tol=1e-6),
+        internal_vars=sample_internal_vars,
+    )
+    initial = fe.zero_like_initial_guess(problem, bc)
+
+    def loss(traction):
+        surf = fe.InternalVars.create_uniform_surface_var(problem, traction)
+        iv = fe.InternalVars((), [(surf,)])
+        sol = solver(iv, initial)
+        return jnp.sum(sol ** 2)
+
+    grad_val = jax.grad(loss)(traction0)
+    assert jnp.isfinite(grad_val), "Gradient should be finite for Newton+cuDSS path"

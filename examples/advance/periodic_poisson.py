@@ -103,14 +103,13 @@ bc = bc_config.create_bc(problem)
 print(f"Dirichlet BCs: {len(bc.bc_rows)} constrained DOFs")
 
 # 4. Use integrated reduced solver
-from feax import create_solver, SolverOptions
 
 theta = 1.0
 theta_array = fe.internal_vars.InternalVars.create_uniform_volume_var(problem, theta)
 internal_vars = fe.internal_vars.InternalVars(volume_vars=(theta_array,))
 
 # Create reduced solver with P matrix for periodic constraints
-solver_options = fe.solver.SolverOptions(tol=1e-8, linear_solver="cg")
+solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-8)
 solver = fe.solver.create_solver(problem, bc, solver_options=solver_options, iter_num=1, P=P)
 
 print(f"Solving with θ = {theta}...")

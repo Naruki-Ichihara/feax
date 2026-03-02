@@ -105,7 +105,7 @@ def test_newton_solve_jit(simple_mesh, material_params):
     """Test that newton_solve (iter_num=None, while_loop) works with JIT."""
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
-    solver_opts = fe.SolverOptions(linear_solver="cg", max_iter=10, tol=1e-6)
+    solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
     solver = fe.create_solver(problem, bc, solver_options=solver_opts)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -126,7 +126,7 @@ def test_newton_solve_jit_multiple_calls(simple_mesh, material_params):
     """Test that JIT-compiled newton_solve gives consistent results on repeated calls."""
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
-    solver_opts = fe.SolverOptions(linear_solver="cg", max_iter=10, tol=1e-6)
+    solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
     solver = fe.create_solver(problem, bc, solver_options=solver_opts)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -147,7 +147,7 @@ def test_newton_solve_fori_jit(simple_mesh, material_params):
     """Test that newton_solve_fori (iter_num>1, fori_loop) works with JIT."""
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
-    solver_opts = fe.SolverOptions(linear_solver="cg", max_iter=10, tol=1e-6)
+    solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=10)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -172,7 +172,7 @@ def test_linear_solve_jit(simple_mesh, material_params):
     """Test that linear_solve (iter_num=1) works with JIT."""
     problem, bc, iv = create_linear_problem_and_bc(simple_mesh, material_params)
 
-    solver_opts = fe.SolverOptions(linear_solver="cg")
+    solver_opts = fe.IterativeSolverOptions(solver="cg")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -194,7 +194,7 @@ def test_newton_solve_fori_vmap(simple_mesh, material_params):
     """Test that newton_solve_fori with scan-based Armijo is vmappable."""
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
-    solver_opts = fe.SolverOptions(linear_solver="cg", max_iter=10, tol=1e-6)
+    solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=10)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -222,7 +222,7 @@ def test_newton_solve_fori_vmap_jit(simple_mesh, material_params):
     """Test that vmap + JIT composition works for newton_solve_fori."""
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
-    solver_opts = fe.SolverOptions(linear_solver="cg", max_iter=10, tol=1e-6)
+    solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=10)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -253,7 +253,7 @@ def test_linear_solve_vmap(simple_mesh, material_params):
     """Test that linear_solve (iter_num=1) is vmappable."""
     problem, bc, iv = create_linear_problem_and_bc(simple_mesh, material_params)
 
-    solver_opts = fe.SolverOptions(linear_solver="cg")
+    solver_opts = fe.IterativeSolverOptions(solver="cg")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -283,7 +283,7 @@ def test_newton_solve_grad(simple_mesh, material_params):
     """Test that newton_solve (while_loop) supports grad via custom VJP."""
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
-    solver_opts = fe.SolverOptions(linear_solver="cg", max_iter=10, tol=1e-6)
+    solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
     solver = fe.create_solver(problem, bc, solver_options=solver_opts)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -306,7 +306,7 @@ def test_newton_solve_fori_grad(simple_mesh, material_params):
     """Test that newton_solve_fori supports grad via custom VJP."""
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
-    solver_opts = fe.SolverOptions(linear_solver="cg", max_iter=10, tol=1e-6)
+    solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=10)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -333,7 +333,7 @@ def test_newton_solve_fori_vmap_grad(simple_mesh, material_params):
     """Test that vmap(grad(...)) works for newton_solve_fori."""
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
-    solver_opts = fe.SolverOptions(linear_solver="cg", max_iter=10, tol=1e-6)
+    solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=10)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -362,7 +362,7 @@ def test_newton_solve_fori_jit_vmap_grad(simple_mesh, material_params):
     """Test that jit(vmap(grad(...))) works for newton_solve_fori."""
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
-    solver_opts = fe.SolverOptions(linear_solver="cg", max_iter=10, tol=1e-6)
+    solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=10)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -395,7 +395,7 @@ def test_newton_while_vs_fori_consistency(simple_mesh, material_params):
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
     initial = fe.zero_like_initial_guess(problem, bc)
 
-    solver_opts = fe.SolverOptions(linear_solver="cg", max_iter=20, tol=1e-8)
+    solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=20, tol=1e-8)
 
     # while_loop version
     solver_while = fe.create_solver(problem, bc, solver_options=solver_opts)
@@ -415,7 +415,7 @@ def test_newton_py_vs_jax_consistency(simple_mesh, material_params):
     """Test that newton_solve_py and newton_solve give similar solutions."""
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
-    solver_opts = fe.SolverOptions(linear_solver="cg", max_iter=20, tol=1e-8)
+    solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=20, tol=1e-8)
 
     # JAX while_loop version via create_solver
     solver_jax = fe.create_solver(problem, bc, solver_options=solver_opts)
@@ -426,8 +426,15 @@ def test_newton_py_vs_jax_consistency(simple_mesh, material_params):
     from feax.assembler import create_J_bc_function, create_res_bc_function
     J_bc_func = create_J_bc_function(problem, bc)
     res_bc_func = create_res_bc_function(problem, bc)
+    newton_opts = fe.NewtonOptions()
     sol_py, _, _, _ = fe.newton_solve_py(
-        J_bc_func, res_bc_func, initial, bc, solver_opts, internal_vars=iv
+        J_bc_func,
+        res_bc_func,
+        initial,
+        bc,
+        newton_opts,
+        solver_opts,
+        internal_vars=iv,
     )
 
     diff = jnp.linalg.norm(sol_jax - sol_py) / (jnp.linalg.norm(sol_jax) + 1e-30)
@@ -446,12 +453,12 @@ def test_armijo_while_vs_scan_consistency(simple_mesh, material_params):
 
     from feax.assembler import create_J_bc_function, create_res_bc_function
     from feax.solver import create_armijo_line_search_jax, create_armijo_line_search_scan
-    from feax.linear_solver import create_linear_solve_fn
+    from feax.solvers.linear import create_linear_solve_fn
 
     J_bc_func = create_J_bc_function(problem, bc)
     res_bc_func = create_res_bc_function(problem, bc)
 
-    solver_opts = fe.SolverOptions(linear_solver="cg")
+    solver_opts = fe.IterativeSolverOptions(solver="cg")
     linear_fn = create_linear_solve_fn(solver_opts)
 
     # Get initial residual and Jacobian
@@ -549,7 +556,7 @@ def test_create_linear_solver_vs_create_solver_iter1(simple_mesh, material_param
     """Test that create_linear_solver and create_solver(iter_num=1) give identical results."""
     problem, bc, iv = create_linear_problem_and_bc(simple_mesh, material_params)
 
-    solver_opts = fe.SolverOptions(linear_solver="cg")
+    solver_opts = fe.IterativeSolverOptions(solver="cg")
     solver1 = fe.create_linear_solver(problem, bc, solver_options=solver_opts)
     solver2 = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)

@@ -68,7 +68,7 @@ Examples
 --------
 ```python
 >>> from feax.flat.pbc import periodic_bc_3D, prolongation_matrix
->>> from feax.solver_option import IterativeSolverOptions
+>>> from feax.solvers.options import IterativeSolverOptions
 >>> pbc = periodic_bc_3D(unitcell, vec=3, dim=3)
 >>> P = prolongation_matrix(pbc, mesh, vec=3)
 >>> opts = IterativeSolverOptions(solver=&quot;cg&quot;, tol=1e-10, maxiter=5000)
@@ -77,4 +77,3 @@ Examples
 ... )
 >>> C_hom = compute_C_hom(internal_vars)  # ndarray, shape (6, 6)
 ```
-

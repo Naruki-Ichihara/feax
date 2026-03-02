@@ -77,7 +77,7 @@ def test_cg_solver_vmap_compatibility(
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG
-    solver_opts = fe.SolverOptions(linear_solver="cg")
+    solver_opts = fe.IterativeSolverOptions(solver="cg")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -123,7 +123,7 @@ def test_bicgstab_solver_vmap_compatibility(
     bc = bc_config.create_bc(problem)
 
     # Create solver with BICGSTAB
-    solver_opts = fe.SolverOptions(linear_solver="bicgstab")
+    solver_opts = fe.IterativeSolverOptions(solver="bicgstab")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -165,7 +165,7 @@ def test_gmres_solver_vmap_compatibility(
     bc = bc_config.create_bc(problem)
 
     # Create solver with GMRES
-    solver_opts = fe.SolverOptions(linear_solver="gmres")
+    solver_opts = fe.IterativeSolverOptions(solver="gmres")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -211,7 +211,7 @@ def test_vmap_jit_composition_cg(
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG
-    solver_opts = fe.SolverOptions(linear_solver="cg")
+    solver_opts = fe.IterativeSolverOptions(solver="cg")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -259,7 +259,7 @@ def test_vmap_grad_composition_cg(
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG
-    solver_opts = fe.SolverOptions(linear_solver="cg")
+    solver_opts = fe.IterativeSolverOptions(solver="cg")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -309,7 +309,7 @@ def test_vmap_jit_grad_composition_cg(
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG
-    solver_opts = fe.SolverOptions(linear_solver="cg")
+    solver_opts = fe.IterativeSolverOptions(solver="cg")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 

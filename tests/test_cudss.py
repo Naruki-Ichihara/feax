@@ -34,7 +34,7 @@ def has_gpu():
 def has_cudss():
     """Check if cuDSS backend is available."""
     try:
-        from feax.solver_option import CUDSSOptions
+        from feax.solvers.options import CUDSSOptions
         return has_gpu()  # cuDSS requires GPU
     except ImportError:
         return False
@@ -186,15 +186,15 @@ def test_cudss_options_configuration(
     bc = bc_config.create_bc(problem)
 
     # Create solver with explicit cuDSS options
-    from feax.solver_option import CUDSSOptions, CUDSSMatrixType, CUDSSMatrixView
+    from feax.solvers.options import CUDSSOptions, CUDSSMatrixType, CUDSSMatrixView
 
     cudss_opts = CUDSSOptions(
         matrix_type=CUDSSMatrixType.SPD,  # Symmetric Positive Definite
         matrix_view=CUDSSMatrixView.UPPER
     )
 
-    solver_opts = fe.SolverOptions(
-        linear_solver="cudss",
+    solver_opts = fe.DirectSolverOptions(
+        solver="cudss",
         cudss_options=cudss_opts
     )
 
@@ -260,7 +260,7 @@ def test_cudss_vs_cg_consistency(
     sol_cudss = solver_cudss(internal_vars, initial_cudss)
 
     # Solve with JAX CG
-    solver_opts_cg = fe.SolverOptions(linear_solver="cg")
+    solver_opts_cg = fe.IterativeSolverOptions(solver="cg")
     solver_cg = fe.create_solver(problem, bc, solver_options=solver_opts_cg, iter_num=1)
     initial_cg = fe.zero_like_initial_guess(problem, bc)
     sol_cg = solver_cg(internal_vars, initial_cg)
@@ -270,5 +270,4 @@ def test_cudss_vs_cg_consistency(
 
     diff = jnp.linalg.norm(sol_cudss - sol_cg) / jnp.linalg.norm(sol_cudss)
     assert diff < solution_tol, f"cuDSS and CG solutions differ by {diff:.2e}"
-
 

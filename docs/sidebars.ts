@@ -67,8 +67,6 @@ const sidebars: SidebarsConfig = {
     'api/reference/feax/mesh',
     'api/reference/feax/problem',
     'api/reference/feax/solver',
-    'api/reference/feax/solver_option',
-    'api/reference/feax/linear_solver',
     'api/reference/feax/utils',
     {
       type: 'category',

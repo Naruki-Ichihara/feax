@@ -18,7 +18,7 @@ import jax.numpy as np
 from typing import Any
 
 from feax.solver import create_solver
-from feax.solver_option import IterativeSolverOptions
+from feax.solvers.options import IterativeSolverOptions
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +207,7 @@ def create_homogenization_solver(
     Examples
     --------
     >>> from feax.flat.pbc import periodic_bc_3D, prolongation_matrix
-    >>> from feax.solver_option import IterativeSolverOptions
+    >>> from feax.solvers.options import IterativeSolverOptions
     >>> pbc = periodic_bc_3D(unitcell, vec=3, dim=3)
     >>> P = prolongation_matrix(pbc, mesh, vec=3)
     >>> opts = IterativeSolverOptions(solver="cg", tol=1e-10, maxiter=5000)

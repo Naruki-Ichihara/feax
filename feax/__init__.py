@@ -14,16 +14,25 @@ from .internal_vars import InternalVars
 from .assembler import get_jacobian_info, get_res, create_J_bc_function, create_res_bc_function
 from .mesh import Mesh
 from .DCboundary import DirichletBC, apply_boundary_to_J, apply_boundary_to_res, DirichletBCSpec, DirichletBCConfig, dirichlet_bc_config
-from .solver_option import (
+from .solvers.options import (
     AbstractSolverOptions,
     SolverOptions, CUDSSOptions, CUDSSMatrixType, CUDSSMatrixView,
     Backend, detect_backend, is_cuda, is_cpu, has_cudss, has_spsolve,
     MatrixProperty, detect_matrix_property,
-    DirectSolverOptions, IterativeSolverOptions,
+    DirectSolverOptions, IterativeSolverOptions, NewtonOptions,
     resolve_direct_solver, resolve_iterative_solver,
 )
-from .linear_solver import create_linear_solver, create_direct_solve_fn, create_iterative_solve_fn
-from .solver import newton_solve, create_solver, linear_solve, newton_solve_fori, newton_solve_py
+from .solvers.linear import create_linear_solver, linear_solve
+from .solvers.newton import newton_solve, newton_solve_fori, newton_solve_py
+from .solver import (
+    create_solver,
+    create_x0,
+    create_jacobi_preconditioner,
+    create_direct_solve_fn,
+    create_iterative_solve_fn,
+    create_linear_solve_fn,
+    check_convergence,
+)
 from .utils import zero_like_initial_guess
 
 # Note: Experimental features available in feax.experimental

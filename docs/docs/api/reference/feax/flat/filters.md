@@ -36,7 +36,7 @@ Solves: ρ̃ - r² ∇²ρ̃ = ρ_source
 - `mesh` - Mesh object
 - `radius` - Filter radius (controls smoothness - larger = smoother)
 - `P` - Optional prolongation matrix for periodic boundary conditions (default None)
-- `solver_options` - Optional SolverOptions (default: tol=1e-8, cg solver)
+- `solver_options` - Optional IterativeSolverOptions (default: solver="cg", tol=1e-8)
 
 
 **Returns**:
@@ -87,7 +87,7 @@ Solves: ρ̃ - r² ∇²ρ̃ = ρ_source
 - `mesh` - Mesh object
 - `radius` - Filter radius (controls smoothness - larger = smoother)
 - `P` - Optional prolongation matrix for periodic boundary conditions (default None)
-- `solver_options` - Optional SolverOptions (default: tol=1e-8, cg solver)
+- `solver_options` - Optional IterativeSolverOptions (default: solver="cg", tol=1e-8)
 
 
 **Returns**:
@@ -178,4 +178,3 @@ Uses percentile-based approach to ensure exact volume fraction after Heaviside p
 >>> # Apply Heaviside projection
 >>> rho_projected = heaviside_projection(rho_normalized, beta=10.0, threshold=threshold)
 ```
-

@@ -156,7 +156,7 @@ internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), s
 Use `flat.solver.create_homogenization_solver()` to compute $\mathbf{C}_{\text{hom}}$:
 
 ```python
-solver_options = fe.solver.SolverOptions(tol=1e-8, linear_solver="cg", verbose=False)
+solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-8, verbose=False)
 
 compute_C_hom = flat.solver.create_homogenization_solver(
     problem, bc, P, solver_options, mesh, dim=3
@@ -289,7 +289,7 @@ nu_field = fe.internal_vars.InternalVars.create_cell_var(problem, nu)
 internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
 
 # Homogenization
-solver_options = fe.solver.SolverOptions(tol=1e-8, linear_solver="cg")
+solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-8)
 compute_C_hom = flat.solver.create_homogenization_solver(problem, bc, P, solver_options, mesh, dim=3)
 C_hom = compute_C_hom(internal_vars)
 

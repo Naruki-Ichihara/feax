@@ -42,7 +42,7 @@ problem = DensityElasticityProblem(
 bc = bc_config.create_bc(problem)
 solver = fe.solver.create_solver(
     problem, bc,
-    fe.solver.SolverOptions(tol=1e-8, linear_solver="cudss"),
+    fe.DirectSolverOptions(solver="cudss"),
     iter_num=1
 )
 

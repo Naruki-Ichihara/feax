@@ -12,12 +12,10 @@ solvers for performance and Python-based solvers for debugging.
 Key Features:
 - Newton-Raphson solvers with line search and convergence control
 - Multiple solver variants: while loop, fixed iterations, and Python debugging
-- Solver configuration via AbstractSolverOptions hierarchy
-  (DirectSolverOptions, IterativeSolverOptions, or legacy SolverOptions)
+- Solver configuration via `DirectSolverOptions` and `IterativeSolverOptions`
 - Support for multipoint constraints via prolongation matrices
 
-Linear solver implementations and preconditioners are provided in
-``linear_solver.py``. Solver configuration options are in ``solver_option.py``.
+Linear/backward/newton/reduced implementations are provided in ``feax.solvers``.
 
 #### create\_x0
 
@@ -147,12 +145,14 @@ def newton_solve(J_bc_applied,
                  res_bc_applied,
                  initial_guess,
                  bc: DirichletBC,
-                 solver_options: SolverOptions,
+                 newton_options: NewtonOptions,
+                 linear_solver_options: AbstractSolverOptions,
                  internal_vars=None,
                  P_mat=None,
                  linear_solve_fn=None,
                  armijo_search_fn=None,
-                 x0_fn=None)
+                 x0_fn=None,
+                 matrix_view: MatrixView = MatrixView.FULL)
 ```
 
 Newton solver using JAX while_loop for JIT compatibility.
@@ -163,7 +163,8 @@ Parameters
 - **res_bc_applied** (*callable*): Residual function with BC applied
 - **initial_guess** (*array*): Initial solution guess
 - **bc** (*DirichletBC*): Boundary conditions
-- **solver_options** (*SolverOptions*): Solver configuration
+- **newton_options** (*NewtonOptions*): Newton convergence and line-search configuration
+- **linear_solver_options** (*AbstractSolverOptions*): Linear solver configuration used inside Newton steps
 - **internal_vars** (*InternalVars, optional*): Material properties and parameters
 - **P_mat** (*BCOO matrix, optional*): Prolongation matrix for MPC/periodic BC
 - **linear_solve_fn** (*callable, optional*): Pre-created linear solve function. If None, created internally.
@@ -183,13 +184,15 @@ def newton_solve_fori(J_bc_applied,
                       res_bc_applied,
                       initial_guess,
                       bc: DirichletBC,
-                      solver_options: SolverOptions,
+                      newton_options: NewtonOptions,
                       num_iters: int,
+                      linear_solver_options: AbstractSolverOptions,
                       internal_vars=None,
                       P_mat=None,
                       linear_solve_fn=None,
                       armijo_search_fn=None,
-                      x0_fn=None)
+                      x0_fn=None,
+                      matrix_view: MatrixView = MatrixView.FULL)
 ```
 
 Newton solver using JAX fori_loop for fixed iterations - optimized for vmap.
@@ -203,8 +206,9 @@ Parameters
 - **res_bc_applied** (*callable*): Residual function with BC applied
 - **initial_guess** (*array*): Initial solution guess
 - **bc** (*DirichletBC*): Boundary conditions
-- **solver_options** (*SolverOptions*): Solver configuration
+- **newton_options** (*NewtonOptions*): Newton convergence and line-search configuration
 - **num_iters** (*int*): Fixed number of iterations
+- **linear_solver_options** (*AbstractSolverOptions*): Linear solver configuration used inside Newton steps
 - **internal_vars** (*InternalVars, optional*): Material properties and parameters
 - **P_mat** (*BCOO matrix, optional*): Prolongation matrix for MPC/periodic BC
 - **linear_solve_fn** (*callable, optional*): Pre-created linear solve function. If None, created internally.
@@ -224,7 +228,8 @@ def newton_solve_py(J_bc_applied,
                     res_bc_applied,
                     initial_guess,
                     bc: DirichletBC,
-                    solver_options: SolverOptions,
+                    newton_options: NewtonOptions,
+                    linear_solver_options: AbstractSolverOptions,
                     internal_vars=None,
                     P_mat=None)
 ```
@@ -239,7 +244,8 @@ Parameters
 - **res_bc_applied** (*callable*): Residual function with BC applied
 - **initial_guess** (*array*): Initial solution guess
 - **bc** (*DirichletBC*): Boundary conditions
-- **solver_options** (*SolverOptions*): Solver configuration
+- **newton_options** (*NewtonOptions*): Newton convergence and line-search configuration
+- **linear_solver_options** (*AbstractSolverOptions*): Linear solver configuration used inside Newton steps
 - **internal_vars** (*InternalVars, optional*): Material properties and parameters
 - **P_mat** (*BCOO matrix, optional*): Prolongation matrix for MPC/periodic BC
 
@@ -256,7 +262,7 @@ def linear_solve(J_bc_applied,
                  res_bc_applied,
                  initial_guess,
                  bc: DirichletBC,
-                 solver_options: SolverOptions,
+                 solver_options: AbstractSolverOptions,
                  matrix_view: MatrixView,
                  internal_vars=None,
                  P_mat=None,
@@ -274,7 +280,7 @@ Parameters
 - **res_bc_applied** (*callable*): Residual function with BC applied
 - **initial_guess** (*array*): Initial solution guess
 - **bc** (*DirichletBC*): Boundary conditions
-- **solver_options** (*SolverOptions*): Solver configuration
+- **solver_options** (*AbstractSolverOptions*): Linear solver configuration (`DirectSolverOptions` or `IterativeSolverOptions`)
 - **matrix_view** (*MatrixView*): Matrix storage format from the problem.
 - **internal_vars** (*InternalVars, optional*): Material properties and parameters
 - **P_mat** (*BCOO matrix, optional*): Prolongation matrix for MPC/periodic BC
@@ -297,10 +303,10 @@ def create_solver(
         bc: DirichletBC,
         solver_options: Optional[AbstractSolverOptions] = None,
         adjoint_solver_options: Optional[AbstractSolverOptions] = None,
+        newton_options: Optional[NewtonOptions] = None,
         iter_num: Optional[int] = None,
         P: Optional[BCOO] = None,
-        internal_vars=None,
-        internal_jit: bool = False) -> Callable
+        internal_vars=None) -> Callable
 ```
 
 Create a differentiable solver with custom VJP for gradient computation.
@@ -311,10 +317,10 @@ Parameters
 - **bc** (*DirichletBC*): Boundary conditions.
 - **solver_options** (*AbstractSolverOptions, optional*): Options for the forward linear solve. Accepts any subclass of ``AbstractSolverOptions``:
 - **adjoint_solver_options** (*AbstractSolverOptions, optional*): Options for the adjoint solve in the backward pass. Defaults to same as ``solver_options``.
+- **newton_options** (*NewtonOptions, optional*): Newton convergence and line-search configuration. Only used when ``iter_num != 1``.
 - **iter_num** (*int, optional*): Number of Newton iterations:
 - **P** (*BCOO matrix, optional*): Prolongation matrix for periodic boundary conditions.
 - **internal_vars** (*InternalVars, optional*): Sample internal variables for auto solver selection and cuDSS pre-warming. Required when ``solver=&quot;auto&quot;`` or cuDSS is used.
-- **internal_jit** (*bool, optional*): When ``True`` and ``iter_num != 1``, wraps the internal linear solver with ``jax.jit`` so that each Newton iteration&#x27;s linear solve is compiled separately from the outer computation graph.  This is most effective for iterative solvers (CG, BiCGSTAB, GMRES) called only once; for repeated outer calls prefer ``jax.jit(solver)`` instead. Ignored (with a warning) when ``iter_num == 1`` because the linear solver is invoked only once per solve and internal JIT provides no benefit.  Default: ``False``.
 
 
 Returns
@@ -323,7 +329,7 @@ callable
     When ``DirectSolverOptions`` is used:
         ``solver(internal_vars) -&gt; solution``
         (``initial_guess`` is optional and ignored if provided.)
-    When ``IterativeSolverOptions`` or ``SolverOptions`` is used:
+    When ``IterativeSolverOptions`` is used:
         ``solver(internal_vars, initial_guess) -&gt; solution``
 
 Examples
@@ -344,4 +350,3 @@ Examples
 ...                        iter_num=1)
 >>> solution = solver(internal_vars, initial_guess)
 ```
-

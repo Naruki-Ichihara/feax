@@ -31,7 +31,7 @@ def has_gpu():
 def has_cudss():
     """Check if cuDSS backend is available."""
     try:
-        from feax.solver_option import CUDSSOptions
+        from feax.solvers.options import CUDSSOptions
         return has_gpu()  # cuDSS requires GPU
     except ImportError:
         return False
@@ -70,7 +70,7 @@ def test_cg_solver_grad(
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG
-    solver_opts = fe.SolverOptions(linear_solver="cg")
+    solver_opts = fe.IterativeSolverOptions(solver="cg")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -110,7 +110,7 @@ def test_bicgstab_solver_grad(
     bc = bc_config.create_bc(problem)
 
     # Create solver with BICGSTAB
-    solver_opts = fe.SolverOptions(linear_solver="bicgstab")
+    solver_opts = fe.IterativeSolverOptions(solver="bicgstab")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -149,7 +149,7 @@ def test_gmres_solver_grad(
     bc = bc_config.create_bc(problem)
 
     # Create solver with GMRES
-    solver_opts = fe.SolverOptions(linear_solver="gmres")
+    solver_opts = fe.IterativeSolverOptions(solver="gmres")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -283,7 +283,7 @@ def test_gradient_consistency_cg_bicgstab(
     # Create CG solver and compute gradient
     solver_cg = fe.create_solver(
         problem, bc,
-        solver_options=fe.SolverOptions(linear_solver="cg"),
+        solver_options=fe.IterativeSolverOptions(solver="cg"),
         iter_num=1
     )
 
@@ -296,7 +296,7 @@ def test_gradient_consistency_cg_bicgstab(
     # Create BICGSTAB solver and compute gradient
     solver_bicgstab = fe.create_solver(
         problem, bc,
-        solver_options=fe.SolverOptions(linear_solver="bicgstab"),
+        solver_options=fe.IterativeSolverOptions(solver="bicgstab"),
         iter_num=1
     )
 
@@ -339,7 +339,7 @@ def test_grad_jit_compatibility_cg(
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG
-    solver_opts = fe.SolverOptions(linear_solver="cg")
+    solver_opts = fe.IterativeSolverOptions(solver="cg")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -378,7 +378,7 @@ def test_grad_jit_compatibility_bicgstab(
     bc = bc_config.create_bc(problem)
 
     # Create solver with BICGSTAB
-    solver_opts = fe.SolverOptions(linear_solver="bicgstab")
+    solver_opts = fe.IterativeSolverOptions(solver="bicgstab")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -417,7 +417,7 @@ def test_grad_jit_compatibility_gmres(
     bc = bc_config.create_bc(problem)
 
     # Create solver with GMRES
-    solver_opts = fe.SolverOptions(linear_solver="gmres")
+    solver_opts = fe.IterativeSolverOptions(solver="gmres")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -502,7 +502,7 @@ def test_jit_grad_composition_order_cg(
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG
-    solver_opts = fe.SolverOptions(linear_solver="cg")
+    solver_opts = fe.IterativeSolverOptions(solver="cg")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
     initial = fe.zero_like_initial_guess(problem, bc)
 

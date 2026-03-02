@@ -103,7 +103,7 @@ internal_vars = fe.internal_vars.InternalVars(volume_vars=(theta_array,), surfac
 ### Step 6: Solver
 
 ```python
-solver_options = fe.solver.SolverOptions(tol=1e-8, linear_solver="cg")
+solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-8)
 solver = fe.solver.create_solver(problem, bc, solver_options, iter_num=1, P=P)
 ```
 
@@ -194,7 +194,7 @@ theta_array = fe.internal_vars.InternalVars.create_uniform_volume_var(problem, t
 internal_vars = fe.internal_vars.InternalVars(volume_vars=(theta_array,), surface_vars=())
 
 # Solver
-solver_options = fe.solver.SolverOptions(tol=1e-8, linear_solver="cg")
+solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-8)
 solver = fe.solver.create_solver(problem, bc, solver_options=solver_options, iter_num=1, P=P)
 
 # Solve

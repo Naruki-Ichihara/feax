@@ -1,9 +1,11 @@
 ---
 sidebar_label: linear_solver
-title: feax.linear_solver
+title: feax.solvers.linear
 ---
 
 Linear solver implementations for FEAX finite element framework.
+
+`feax.linear_solver` is deprecated. Use `feax.solvers.linear` (or top-level re-exports like `feax.create_linear_solver`).
 
 This module provides low-level linear algebra utilities and solver
 selection logic for solving systems of the form A x = b arising
@@ -229,4 +231,3 @@ Examples
 ...     return jnp.sum(sol ** 2)
 >>> grad = jax.grad(loss)(internal_vars)
 ```
-

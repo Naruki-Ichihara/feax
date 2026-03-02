@@ -318,7 +318,7 @@ n_vectors = flat.spinodoid.generate_direction_vectors(theta1, theta2, theta3, 10
 gamma = jax.random.uniform(key_g, shape=(100,), minval=0.0, maxval=2*np.pi)
 
 rho = flat.spinodoid.evaluate_grf_field(cell_centers, n_vectors, gamma, 15.0)
-solver_opts = fe.solver.SolverOptions(tol=1e-8, linear_solver="cg")
+solver_opts = fe.IterativeSolverOptions(solver="cg", tol=1e-8)
 rho = flat.filters.helmholtz_filter(rho, mesh, 0.1, P, solver_opts)
 rho = (rho - rho.min()) / (rho.max() - rho.min())
 
