@@ -72,7 +72,7 @@ def create_solver(
         Options for the forward linear solve. Accepts any subclass of
         ``AbstractSolverOptions``:
 
-        - ``DirectSolverOptions``: Direct solvers (cudss, spsolve, cholesky, lu, qr).
+        - ``DirectSolverOptions``: Direct solvers (cudss, cholmod, umfpack, spsolve).
         - ``IterativeSolverOptions``: Iterative solvers (cg, bicgstab, gmres).
         When ``solver="auto"`` (or when ``solver_options`` is ``None``), the
         algorithm is selected automatically by assembling the initial Jacobian

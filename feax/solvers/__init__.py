@@ -28,6 +28,7 @@ from .options import (
     IterativeSolverOptions,
     MatrixProperty,
     NewtonOptions,
+    SKSPARSEOptions,
     SolverOptions,
     detect_matrix_property,
     resolve_direct_solver,
@@ -42,6 +43,11 @@ from .matrix_free import (
     newton_solve as matrix_free_newton_solve,
 )
 from .reduced import create_reduced_solver
+from .direct import (
+    cholmod_solve,
+    spsolve,
+    umfpack_solve,
+)
 
 __all__ = [
     "AbstractSolverOptions",
@@ -52,6 +58,7 @@ __all__ = [
     "IterativeSolverOptions",
     "MatrixProperty",
     "NewtonOptions",
+    "SKSPARSEOptions",
     "SolverOptions",
     "detect_matrix_property",
     "resolve_direct_solver",
@@ -75,4 +82,7 @@ __all__ = [
     "create_energy_fn",
     "create_matrix_free_solver",
     "matrix_free_newton_solve",
+    "cholmod_solve",
+    "spsolve",
+    "umfpack_solve",
 ]
