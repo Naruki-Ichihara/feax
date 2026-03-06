@@ -112,7 +112,7 @@ class AdaptiveConfig:
         # Box mesh with Gmsh
         AdaptiveConfig(
             remesh=lambda m, rho: adaptive.adaptive_box_mesh(
-                size=(L, W, H), density_field=rho, old_mesh=m,
+                size=(L, W, H), refinement_field=rho, old_mesh=m,
                 h_min=1.0, h_max=4.0,
             ),
             adapt_every=40,
@@ -351,7 +351,7 @@ def run(
                     x, onp.array(cur_mesh.points), onp.array(new_mesh.points))
             else:
                 x = adaptive_mod.interpolate_field(
-                    x, onp.array(cur_mesh.points), onp.array(new_mesh.points),
+                    x, cur_mesh, onp.array(new_mesh.points),
                     clip=rho_bounds)
             new_n = new_mesh.points.shape[0]
             print(f"  >>> Remesh: {old_n} -> {new_n} nodes")

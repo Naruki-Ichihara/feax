@@ -101,7 +101,7 @@ def build_pipeline(mesh):
 # ── Initial mesh ─────────────────────────────────────────────────────────────
 
 print("Generating initial TET4 mesh ...")
-mesh = fe.mesh.box_mesh((L, W, H), mesh_size=1)
+mesh = gene.adaptive.adaptive_mesh(cantilever_geometry, h_max=1.0)
 print(f"  {mesh.points.shape[0]} nodes, {mesh.cells.shape[0]} elements")
 
 # ── Run ──────────────────────────────────────────────────────────────────────
@@ -119,8 +119,10 @@ result = run(
     },
     adaptive=AdaptiveConfig(
         remesh=lambda m, rho: gene.adaptive.adaptive_mesh(
-            cantilever_geometry, density_field=rho, old_mesh=m,
-            h_min=0.2, h_max=2.0,
+            cantilever_geometry,
+            refinement_field=gene.adaptive.gradient_refinement(rho, m),
+            old_mesh=m,
+            h_min=0.25, h_max=1.0,
         ),
         adapt_every=epoch,
         n_adapts_max=2,

@@ -1,7 +1,9 @@
 """Adaptive remeshing for topology optimization using Gmsh size callback.
 
-Regenerates TET4 meshes with element sizes controlled by density field:
-small elements near solid regions, large elements in void regions.
+Regenerates TET4 meshes with element sizes controlled by a refinement
+field: high-value regions receive fine elements, low-value regions
+receive coarse elements.  The field can be any node-based scalar in
+[0, 1] — filtered density, density-gradient magnitude, etc.
 
 Two entry points:
 
@@ -21,21 +23,23 @@ from feax.mesh import Mesh
 
 
 # ---------------------------------------------------------------------------
-# Cross-mesh density interpolation
+# Cross-mesh field interpolation (TET4)
 # ---------------------------------------------------------------------------
 
-def interpolate_field(values_old, points_old, points_new, clip=None):
-    """Transfer a node-based scalar field from one mesh to another.
+def interpolate_field(values_old, mesh, points_new, clip=None):
+    """Transfer a node-based scalar field to a new point set via TET4
+    shape functions (barycentric coordinates).
 
-    Uses Delaunay-based linear interpolation for accuracy, with
-    nearest-neighbor fallback for points outside the old convex hull.
+    For each query point, finds the containing tetrahedron and
+    interpolates using barycentric weights.  Points outside the mesh
+    fall back to nearest-node value.
 
     Parameters
     ----------
     values_old : ndarray, shape (num_old_nodes,)
         Field values on the old mesh (density, temperature, etc.).
-    points_old : ndarray, shape (num_old_nodes, 3)
-        Node coordinates of the old mesh.
+    mesh : Mesh
+        Old TET4 mesh (``cells`` must have 4 columns).
     points_new : ndarray, shape (num_new_nodes, 3)
         Node coordinates of the new mesh.
     clip : (float, float), optional
@@ -44,20 +48,80 @@ def interpolate_field(values_old, points_old, points_new, clip=None):
     Returns
     -------
     values_new : ndarray, shape (num_new_nodes,)
+
+    Raises
+    ------
+    ValueError
+        If the mesh is not TET4 (cells must have exactly 4 nodes).
     """
-    from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
-
     values_old = onp.array(values_old)
-    points_old = onp.array(points_old)
+    points_old = onp.array(mesh.points)
     points_new = onp.array(points_new)
+    cells = onp.array(mesh.cells)
 
-    interp_lin = LinearNDInterpolator(points_old, values_old)
-    values_new = interp_lin(points_new)
+    if cells.shape[1] != 4:
+        raise ValueError(
+            f"interpolate_field requires TET4 mesh (4 nodes per element), "
+            f"got {cells.shape[1]}")
 
-    nan_mask = onp.isnan(values_new)
-    if nan_mask.any():
-        interp_nn = NearestNDInterpolator(points_old, values_old)
-        values_new[nan_mask] = interp_nn(points_new[nan_mask])
+    n_elem = len(cells)
+    n_query = len(points_new)
+
+    # Precompute inverse transforms for all elements
+    # For TET4: p = v0 + T @ lambda_{1,2,3}
+    v0 = points_old[cells[:, 0]]                 # (E, 3)
+    T = onp.stack([
+        points_old[cells[:, 1]] - v0,
+        points_old[cells[:, 2]] - v0,
+        points_old[cells[:, 3]] - v0,
+    ], axis=-1)                                  # (E, 3, 3)
+    inv_T = onp.linalg.inv(T)                   # (E, 3, 3)
+
+    # Element centroids for candidate lookup
+    centroids = points_old[cells].mean(axis=1)   # (E, 3)
+    tree = cKDTree(centroids)
+
+    n_candidates = min(8, n_elem)
+    _, cand_all = tree.query(points_new, k=n_candidates)  # (Q, K)
+    if n_candidates == 1:
+        cand_all = cand_all[:, None]
+
+    # Try all candidates in vectorised batches
+    values_new = onp.full(n_query, onp.nan)
+
+    for k in range(n_candidates):
+        mask = onp.isnan(values_new)
+        if not mask.any():
+            break
+
+        idx = onp.where(mask)[0]
+        ei = cand_all[idx, k]                    # element indices
+
+        # Barycentric coords: lam = inv_T[ei] @ (pt - v0[ei])
+        diff = points_new[idx] - v0[ei]          # (N, 3)
+        lam = onp.einsum('nij,nj->ni', inv_T[ei], diff)  # (N, 3)
+        lam0 = 1.0 - lam.sum(axis=1)            # (N,)
+
+        # Containment check
+        inside = (lam0 >= -1e-8) & onp.all(lam >= -1e-8, axis=1)
+        hit = idx[inside]
+        hit_ei = ei[inside]
+        hit_lam = lam[inside]
+        hit_lam0 = lam0[inside]
+
+        # Interpolate: N0*v0 + N1*v1 + N2*v2 + N3*v3
+        node_vals = values_old[cells[hit_ei]]    # (H, 4)
+        values_new[hit] = (hit_lam0 * node_vals[:, 0]
+                           + hit_lam[:, 0] * node_vals[:, 1]
+                           + hit_lam[:, 1] * node_vals[:, 2]
+                           + hit_lam[:, 2] * node_vals[:, 3])
+
+    # Nearest-node fallback for remaining points
+    remaining = onp.isnan(values_new)
+    if remaining.any():
+        node_tree = cKDTree(points_old)
+        _, ni = node_tree.query(points_new[remaining])
+        values_new[remaining] = values_old[ni]
 
     if clip is not None:
         values_new = onp.clip(values_new, clip[0], clip[1])
@@ -66,22 +130,94 @@ def interpolate_field(values_old, points_old, points_new, clip=None):
 
 
 # ---------------------------------------------------------------------------
+# Refinement field helpers
+# ---------------------------------------------------------------------------
+
+def gradient_refinement(rho, mesh):
+    """Compute normalised gradient magnitude as a refinement field.
+
+    Uses TET4 shape functions (constant gradient per element), then
+    averages to nodes and normalises to [0, 1].
+
+    Parameters
+    ----------
+    rho : ndarray, shape (num_nodes,)
+        Node-based scalar field (e.g. filtered density).
+    mesh : Mesh
+        TET4 mesh (``cells`` must have 4 columns).
+
+    Returns
+    -------
+    ndarray, shape (num_nodes,)
+        Normalised gradient magnitude in [0, 1], suitable for use as
+        ``refinement_field`` in :func:`adaptive_mesh`.
+
+    Raises
+    ------
+    ValueError
+        If the mesh is not TET4 (cells must have exactly 4 nodes).
+    """
+    pts = onp.array(mesh.points)
+    cells = onp.array(mesh.cells)
+    rho = onp.array(rho)
+
+    if cells.shape[1] != 4:
+        raise ValueError(
+            f"gradient_refinement requires TET4 mesh (4 nodes per element), "
+            f"got {cells.shape[1]}")
+
+    # Element vertex coords: (E, 4, 3)
+    v = pts[cells]
+    # Jacobian: edges from node 0 -> (E, 3, 3)
+    J = v[:, 1:, :] - v[:, 0:1, :]
+    inv_J = onp.linalg.inv(J)
+
+    # TET4 shape function gradients in reference coords:
+    #   N0 = 1-xi-eta-zeta,  N1 = xi,  N2 = eta,  N3 = zeta
+    rho_e = rho[cells]  # (E, 4)
+    drho_ref = rho_e[:, 1:] - rho_e[:, 0:1]  # (E, 3)
+
+    # Physical gradient: grad(rho) = inv(J)^T @ drho_ref
+    grad_rho = onp.einsum('eij,ej->ei', inv_J.transpose(0, 2, 1), drho_ref)
+    grad_mag_elem = onp.linalg.norm(grad_rho, axis=1)  # (E,)
+
+    # Scatter to nodes (average of surrounding elements)
+    grad_mag_node = onp.zeros(len(pts))
+    count = onp.zeros(len(pts))
+    for i in range(cells.shape[1]):
+        onp.add.at(grad_mag_node, cells[:, i], grad_mag_elem)
+        onp.add.at(count, cells[:, i], 1.0)
+    count = onp.maximum(count, 1.0)
+    grad_mag_node /= count
+
+    # Normalise to [0, 1]
+    gmax = grad_mag_node.max()
+    if gmax > 1e-12:
+        grad_mag_node /= gmax
+
+    return grad_mag_node
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _make_size_callback(density_field, old_mesh, h_min, h_max):
-    """Build a Gmsh size callback driven by a density field.
+def _make_size_callback(refinement_field, old_mesh, h_min, h_max):
+    """Build a Gmsh size callback driven by a refinement field.
+
+    The field should be a node-based scalar in [0, 1].  Values near 1
+    produce elements of size ``h_min``; values near 0 produce ``h_max``.
 
     Returns ``(callback, is_uniform)``.  If the field is None or
     constant, ``is_uniform`` is True and the callback returns ``h_max``
     everywhere.
     """
-    if density_field is not None and old_mesh is not None:
-        _density = onp.array(density_field).clip(0, 1)
+    if refinement_field is not None and old_mesh is not None:
+        _field = onp.array(refinement_field).clip(0, 1)
         _tree = cKDTree(onp.array(old_mesh.points))
-        _uniform = float(_density.max()) - float(_density.min()) < 1e-8
+        _uniform = float(_field.max()) - float(_field.min()) < 1e-8
     else:
-        _density = None
+        _field = None
         _tree = None
         _uniform = True
 
@@ -89,7 +225,7 @@ def _make_size_callback(density_field, old_mesh, h_min, h_max):
         if _uniform:
             return h_max
         _, idx = _tree.query([x, y, z])
-        return h_max - _density[idx] * (h_max - h_min)
+        return h_max - _field[idx] * (h_max - h_min)
 
     return size_cb, _uniform
 
@@ -178,16 +314,18 @@ def _identify_periodic_face_pairs(x0, y0, z0, lx, ly, lz):
 
 def adaptive_mesh(
     geometry: Union[str, Callable[[], None]],
-    density_field: Optional[onp.ndarray] = None,
+    refinement_field: Optional[onp.ndarray] = None,
     old_mesh: Optional[Mesh] = None,
     h_min: float = 0.02,
     h_max: float = 0.15,
 ) -> Mesh:
     """Generate adaptive TET4 mesh for an arbitrary geometry.
 
-    Element sizes are driven by a density field: high-density regions
-    receive fine elements (``h_min``), low-density regions receive
-    coarse elements (``h_max``).
+    Element sizes are driven by a refinement field (any node-based
+    scalar in [0, 1]): high values produce fine elements (``h_min``),
+    low values produce coarse elements (``h_max``).  Typical choices
+    include filtered density, density-gradient magnitude, or an
+    indicator function.
 
     Parameters
     ----------
@@ -199,15 +337,16 @@ def adaptive_mesh(
         - **callable** — ``() -> None`` that builds the Gmsh model
           programmatically.  Called after ``gmsh.initialize()``; must
           leave the model synchronised (``occ.synchronize()``).
-    density_field : ndarray, shape (num_old_nodes,), optional
-        Filtered density on the old mesh (pre-Heaviside).
+    refinement_field : ndarray, shape (num_old_nodes,), optional
+        Node-based scalar in [0, 1] on the old mesh.  Values are
+        clamped to [0, 1] internally.
         If None, a uniform mesh at ``h_max`` is generated.
     old_mesh : Mesh, optional
-        Previous mesh (needed to map density_field to new mesh points).
+        Previous mesh (needed to map the field to new mesh points).
     h_min : float
-        Minimum element size (solid regions).
+        Minimum element size (where field ≈ 1).
     h_max : float
-        Maximum element size (void regions / uniform).
+        Maximum element size (where field ≈ 0, or uniform).
 
     Returns
     -------
@@ -216,18 +355,17 @@ def adaptive_mesh(
 
     Examples::
 
-        # From a STEP file
-        mesh = adaptive_mesh("bracket.step", rho, old_mesh,
+        # From a STEP file — refine by density
+        mesh = adaptive_mesh("bracket.step", rho_filtered, old_mesh,
                              h_min=0.5, h_max=3.0)
 
-        # From a Gmsh model builder
-        def my_geometry():
-            gmsh.model.occ.addCylinder(0, 0, 0, 0, 0, 10, 2.0)
-            gmsh.model.occ.synchronize()
-
-        mesh = adaptive_mesh(my_geometry, h_max=1.0)
+        # Refine by density-gradient magnitude
+        grad_mag = compute_gradient_magnitude(rho_filtered, old_mesh)
+        grad_norm = grad_mag / grad_mag.max()  # normalise to [0, 1]
+        mesh = adaptive_mesh(geometry, grad_norm, old_mesh,
+                             h_min=0.5, h_max=3.0)
     """
-    size_cb, _ = _make_size_callback(density_field, old_mesh, h_min, h_max)
+    size_cb, _ = _make_size_callback(refinement_field, old_mesh, h_min, h_max)
 
     gmsh.initialize()
     gmsh.option.setNumber("General.Terminal", 0)
@@ -255,7 +393,7 @@ def adaptive_mesh(
 
 def adaptive_box_mesh(
     size: Union[float, Tuple[float, float, float]],
-    density_field: Optional[onp.ndarray] = None,
+    refinement_field: Optional[onp.ndarray] = None,
     old_mesh: Optional[Mesh] = None,
     h_min: float = 0.02,
     h_max: float = 0.15,
@@ -274,8 +412,9 @@ def adaptive_box_mesh(
     ----------
     size : float or (float, float, float)
         Domain dimensions (cube side length, or ``(lx, ly, lz)``).
-    density_field : ndarray, shape (num_old_nodes,), optional
-        Filtered density on the old mesh (pre-Heaviside).
+    refinement_field : ndarray, shape (num_old_nodes,), optional
+        Node-based scalar in [0, 1] on the old mesh (see
+        :func:`adaptive_mesh` for details).
     old_mesh : Mesh, optional
         Previous mesh.
     h_min : float
@@ -304,7 +443,7 @@ def adaptive_box_mesh(
     x0, y0, z0 = origin
 
     def _generate(h_lo, h_hi):
-        size_cb, _ = _make_size_callback(density_field, old_mesh, h_lo, h_hi)
+        size_cb, _ = _make_size_callback(refinement_field, old_mesh, h_lo, h_hi)
 
         gmsh.initialize()
         gmsh.option.setNumber("General.Terminal", 0)
