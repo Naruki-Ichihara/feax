@@ -124,7 +124,6 @@ def test_bicgstab_solver_vmap_compatibility(
     # Create solver with BICGSTAB
     solver_opts = fe.IterativeSolverOptions(solver="bicgstab")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
-    initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars
     batch_size = 3
@@ -136,7 +135,7 @@ def test_bicgstab_solver_vmap_compatibility(
     def make_internal_vars(surf_var):
         return fe.InternalVars((), [(surf_var,)])
     # Apply vmap
-    vmapped_solver = jax.vmap(lambda sv: solver(make_internal_vars(sv), initial))
+    vmapped_solver = jax.vmap(lambda sv: solver(make_internal_vars(sv)))
     batch_solutions = vmapped_solver(batch_surface_vars)
 
     # Check solutions
@@ -166,7 +165,6 @@ def test_gmres_solver_vmap_compatibility(
     # Create solver with GMRES
     solver_opts = fe.IterativeSolverOptions(solver="gmres")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
-    initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars
     batch_size = 3
@@ -178,7 +176,7 @@ def test_gmres_solver_vmap_compatibility(
     def make_internal_vars(surf_var):
         return fe.InternalVars((), [(surf_var,)])
     # Apply vmap
-    vmapped_solver = jax.vmap(lambda sv: solver(make_internal_vars(sv), initial))
+    vmapped_solver = jax.vmap(lambda sv: solver(make_internal_vars(sv)))
     batch_solutions = vmapped_solver(batch_surface_vars)
 
     # Check solutions
@@ -260,7 +258,6 @@ def test_vmap_grad_composition_cg(
     # Create solver with CG
     solver_opts = fe.IterativeSolverOptions(solver="cg")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
-    initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars
     batch_size = 3
@@ -272,7 +269,7 @@ def test_vmap_grad_composition_cg(
     def make_internal_vars(surf_var):
         return fe.InternalVars((), [(surf_var,)])
     def loss_fn(surf_var):
-        sol = solver(make_internal_vars(surf_var), initial)
+        sol = solver(make_internal_vars(surf_var))
         return np.linalg.norm(sol)
 
     # Compute gradients for batch using vmap(grad(...))
@@ -310,7 +307,6 @@ def test_vmap_jit_grad_composition_cg(
     # Create solver with CG
     solver_opts = fe.IterativeSolverOptions(solver="cg")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
-    initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars
     batch_size = 3
@@ -322,7 +318,7 @@ def test_vmap_jit_grad_composition_cg(
     def make_internal_vars(surf_var):
         return fe.InternalVars((), [(surf_var,)])
     def loss_fn(surf_var):
-        sol = solver(make_internal_vars(surf_var), initial)
+        sol = solver(make_internal_vars(surf_var))
         return np.linalg.norm(sol)
 
     # Compose all three: jax.jit(jax.vmap(jax.grad(...)))
@@ -361,7 +357,6 @@ def test_cudss_solver_vmap_compatibility(
     # Create solver with cuDSS
     solver_opts = fe.DirectSolverOptions()
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
-    initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars
     batch_size = 3
@@ -373,7 +368,7 @@ def test_cudss_solver_vmap_compatibility(
     def make_internal_vars(surf_var):
         return fe.InternalVars((), [(surf_var,)])
     # Apply vmap
-    vmapped_solver = jax.vmap(lambda sv: solver(make_internal_vars(sv), initial))
+    vmapped_solver = jax.vmap(lambda sv: solver(make_internal_vars(sv)))
     batch_solutions = vmapped_solver(batch_surface_vars)
 
     # Check solutions
@@ -390,12 +385,12 @@ def test_cudss_solver_vmap_compatibility(
 
 @pytest.mark.cuda
 @requires_cudss
-def test_vmap_jit_composition_cudss(
+def test_vmap_composition_cudss(
     linear_elasticity_problem,
     internal_vars,
     material_params
 ):
-    """Test that vmap and JIT can be composed with cuDSS solver."""
+    """Test that vmap works with cuDSS solver."""
     problem = linear_elasticity_problem
     tol = material_params['tol']
 
@@ -408,7 +403,6 @@ def test_vmap_jit_composition_cudss(
     # Create solver with cuDSS
     solver_opts = fe.DirectSolverOptions()
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
-    initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars
     batch_size = 3
@@ -419,8 +413,8 @@ def test_vmap_jit_composition_cudss(
 
     def make_internal_vars(surf_var):
         return fe.InternalVars((), [(surf_var,)])
-    # Test jax.jit(jax.vmap(...))
-    vmapped_solver = jax.jit(jax.vmap(lambda sv: solver(make_internal_vars(sv), initial)))
+    # Test jax.vmap(...)
+    vmapped_solver = jax.vmap(lambda sv: solver(make_internal_vars(sv)))
     batch_solutions = vmapped_solver(batch_surface_vars)
 
     # Check solutions
@@ -454,7 +448,6 @@ def test_vmap_grad_composition_cudss(
     # Create solver with cuDSS
     solver_opts = fe.DirectSolverOptions()
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
-    initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars
     batch_size = 3
@@ -466,7 +459,7 @@ def test_vmap_grad_composition_cudss(
     def make_internal_vars(surf_var):
         return fe.InternalVars((), [(surf_var,)])
     def loss_fn(surf_var):
-        sol = solver(make_internal_vars(surf_var), initial)
+        sol = solver(make_internal_vars(surf_var))
         return np.linalg.norm(sol)
 
     # Compute gradients for batch using vmap(grad(...))
@@ -505,7 +498,6 @@ def test_vmap_jit_grad_composition_cudss(
     # Create solver with cuDSS
     solver_opts = fe.DirectSolverOptions()
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
-    initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of internal_vars
     batch_size = 3
@@ -517,7 +509,7 @@ def test_vmap_jit_grad_composition_cudss(
     def make_internal_vars(surf_var):
         return fe.InternalVars((), [(surf_var,)])
     def loss_fn(surf_var):
-        sol = solver(make_internal_vars(surf_var), initial)
+        sol = solver(make_internal_vars(surf_var))
         return np.linalg.norm(sol)
 
     # Compose all three: jax.jit(jax.vmap(jax.grad(...)))

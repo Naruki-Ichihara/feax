@@ -11,33 +11,6 @@ import jax.experimental.sparse as jsparse
 import jax.numpy as np
 
 import feax as fe
-from feax.problem import Problem
-
-
-class HelmholtzProblem(Problem):
-    """Helmholtz equation problem for design variable filtering."""
-
-    def __post_init__(self):
-        super().__post_init__()
-        # Get radius from additional_info
-        if self.additional_info:
-            self.radius = self.additional_info[0]
-        else:
-            self.radius = 0.05
-
-    def get_tensor_map(self):
-        """Get the diffusion tensor mapping for the Helmholtz equation."""
-        def diffusion(u_grad, design_variable):
-            """Compute diffusion term r²∇u."""
-            return self.radius**2 * u_grad
-        return diffusion
-
-    def get_mass_map(self):
-        """Get the mass term mapping for the Helmholtz equation."""
-        def mass_term(u, x, design_variable):
-            """Compute mass term u - design_variable."""
-            return u - design_variable
-        return mass_term
 
 
 class HelmholtzFilterProblem(fe.problem.Problem):
@@ -278,8 +251,7 @@ def _compute_density_filter_weights_sparse(points, radius: float,
     return sparse_matrix, row_sums
 
 
-def create_density_filter(mesh, radius: float, weight_type: str = "cone",
-                         filter_gradients: bool = False) -> Callable:
+def create_density_filter(mesh, radius: float, weight_type: str = "cone") -> Callable:
     """Create a standard density filter using distance-based weighted averaging.
 
     This is the classic topology optimization filter that computes weighted
@@ -296,7 +268,6 @@ def create_density_filter(mesh, radius: float, weight_type: str = "cone",
             - "cone": w = max(0, r - d) (default, most common)
             - "gaussian": w = exp(-(d/r)^2)
             - "constant": w = 1 if d <= r, else 0
-        filter_gradients: If True, also returns a gradient filter for sensitivity filtering
 
     Returns:
         filter_fn: A JIT-compiled function (rho) -> rho_filtered
@@ -347,86 +318,6 @@ def create_density_filter(mesh, radius: float, weight_type: str = "cone",
     return filter_fn
 
 
-def create_sensitivity_filter(mesh, radius: float, weight_type: str = "cone",
-                              element_volumes: np.ndarray = None) -> Callable:
-    """Create a sensitivity filter for gradient smoothing (mesh-independent filtering).
-
-    The sensitivity filter applies weighted averaging to gradients rather than
-    design variables. This provides mesh-independent results by incorporating
-    element volumes in the weighting.
-
-    Implements: dJ/dρ̃_i = (Σ_j w_ij V_j dJ/dρ_j) / (V_i Σ_j w_ij)
-
-    where V_j are element volumes and w_ij are distance-based weights.
-
-    Args:
-        mesh: Mesh object
-        radius: Filter radius
-        weight_type: Type of weight function ("cone", "gaussian", "constant")
-        element_volumes: Optional pre-computed element volumes (num_cells,)
-                        If None, will compute from mesh
-
-    Returns:
-        filter_fn: A JIT-compiled function (sensitivities) -> filtered_sensitivities
-
-    Example:
-        >>> # Create sensitivity filter
-        >>> sens_filter = create_sensitivity_filter(mesh, radius=3.0)
-        >>>
-        >>> # Filter gradients before optimization update
-        >>> raw_gradient = jax.grad(objective)(rho)
-        >>> filtered_gradient = sens_filter(raw_gradient)
-
-    Notes:
-        - This filter is particularly useful for mesh-independent optimization
-        - Often combined with density filtering: filter both design vars and sensitivities
-        - Provides smoother convergence in topology optimization
-    """
-    points = mesh.points  # (num_nodes, dim)
-    num_nodes = points.shape[0]
-
-    # Pre-compute filter weight matrix
-    weight_matrix = _compute_density_filter_weights(points, radius, weight_type)
-
-    # Compute element volumes if not provided
-    if element_volumes is None:
-        # Use nodal volumes (sum of connected element volumes)
-        # For simplicity, approximate as uniform (can be improved)
-        nodal_volumes = np.ones(num_nodes)
-    else:
-        # Map element volumes to nodes (average of connected elements)
-        cells = mesh.cells
-        nodal_volumes = np.zeros(num_nodes)
-        for cell in cells:
-            for node in cell:
-                nodal_volumes = nodal_volumes.at[node].add(1.0)
-        nodal_volumes = nodal_volumes / np.maximum(nodal_volumes, 1.0)
-
-    @jax.jit
-    def filter_fn(sensitivities: np.ndarray) -> np.ndarray:
-        """Apply sensitivity filter to gradients.
-
-        Args:
-            sensitivities: Gradient/sensitivity values (num_nodes,)
-
-        Returns:
-            Filtered sensitivities (num_nodes,)
-        """
-        # Weight sensitivities by nodal volumes
-        weighted_sens = sensitivities * nodal_volumes
-
-        # Apply distance-based filter
-        filtered_weighted = np.dot(weight_matrix, weighted_sens)
-
-        # Normalize by volume-weighted sum
-        volume_weighted_sum = np.dot(weight_matrix, nodal_volumes)
-        filtered_sens = filtered_weighted / (volume_weighted_sum + 1e-12)
-
-        return filtered_sens
-
-    return filter_fn
-
-
 def density_filter(rho_source, mesh, radius: float, weight_type: str = "cone") -> np.ndarray:
     """Apply standard density filter to node-based density field.
 
@@ -455,3 +346,62 @@ def density_filter(rho_source, mesh, radius: float, weight_type: str = "cone") -
     """
     filter_fn = create_density_filter(mesh, radius, weight_type)
     return filter_fn(rho_source)
+
+
+# ============================================================================
+# Projection and Threshold Functions
+# ============================================================================
+
+
+@jax.jit
+def heaviside_projection(rho, beta=10.0, threshold=0.5):
+    """
+    Apply Heaviside projection to density field for sharp void/solid boundaries.
+
+    H(ρ) = (tanh(β*(ρ-threshold)) + 1) / 2
+
+    This function is pure and JIT-compiled for efficient batched processing.
+
+    Args:
+        rho: Density field (normalized to [0, 1])
+        beta: Sharpness parameter (higher = sharper transition, default 10.0)
+        threshold: Transition threshold (default 0.5)
+
+    Returns:
+        Projected density field with sharp boundaries
+
+    Example:
+        >>> # Single field
+        >>> rho_sharp = heaviside_projection(rho_smooth, beta=10.0, threshold=0.5)
+
+        >>> # Vectorized batch processing
+        >>> rho_batch_sharp = jax.vmap(lambda r: heaviside_projection(r, beta=10.0))(rho_batch)
+    """
+    return (np.tanh(beta * (rho - threshold)) + 1.0) / 2.0
+
+
+def compute_volume_fraction_threshold(rho, target_volume_fraction):
+    """
+    Compute density threshold to achieve target volume fraction.
+
+    Uses percentile-based approach to ensure exact volume fraction after Heaviside projection.
+
+    Args:
+        rho: Density field
+        target_volume_fraction: Target solid volume fraction (0.0 to 1.0)
+
+    Returns:
+        Threshold value for Heaviside projection
+
+    Example:
+        >>> # Normalize density to [0, 1]
+        >>> rho_normalized = (rho - rho.min()) / (rho.max() - rho.min())
+        >>>
+        >>> # Compute threshold for 50% volume fraction
+        >>> threshold = compute_volume_fraction_threshold(rho_normalized, 0.5)
+        >>>
+        >>> # Apply Heaviside projection
+        >>> rho_projected = heaviside_projection(rho_normalized, beta=10.0, threshold=threshold)
+    """
+    percentile = (1.0 - target_volume_fraction) * 100.0
+    return np.percentile(rho, percentile)

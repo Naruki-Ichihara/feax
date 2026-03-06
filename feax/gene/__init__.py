@@ -13,13 +13,13 @@ Components:
     Filtering & Projections:
         - create_helmholtz_filter: PDE-based Helmholtz filtering
         - create_density_filter: Distance-based weighted averaging filter
-        - create_sensitivity_filter: Mesh-independent gradient smoothing
         - helmholtz_filter: One-shot Helmholtz filtering (for non-gradient use)
         - density_filter: One-shot density filtering (for non-gradient use)
+        - heaviside_projection: Sharp void/solid boundary projection
+        - compute_volume_fraction_threshold: Threshold for target volume fraction
 
-    Constrained Optimization:
-        - mdmm: Modified Differential Multiplier Method for constraint handling
-                (equality and inequality constraints with automatic differentiation)
+    Adaptive Remeshing:
+        - adaptive: Gmsh-based adaptive remeshing for topology optimization
 
 Example:
     >>> import feax
@@ -46,13 +46,15 @@ Example:
     ... )
 """
 
-from . import mdmm
+from . import adaptive
+from . import optimizer
 from .filters import (
     create_density_filter,
     create_helmholtz_filter,
-    create_sensitivity_filter,
     density_filter,
     helmholtz_filter,
+    heaviside_projection,
+    compute_volume_fraction_threshold,
 )
 from .responses import create_compliance_fn, create_volume_fn
 
@@ -66,10 +68,16 @@ __all__ = [
     'helmholtz_filter',
     'create_density_filter',
     'density_filter',
-    'create_sensitivity_filter',
 
-    # Constrained optimization
-    'mdmm',
+    # Projection and threshold
+    'heaviside_projection',
+    'compute_volume_fraction_threshold',
+
+    # Adaptive remeshing
+    'adaptive',
+
+    # Optimization driver
+    'optimizer',
 ]
 
 __version__ = "1.0.0"

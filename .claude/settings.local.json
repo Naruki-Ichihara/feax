@@ -34,9 +34,17 @@
       "Bash(nvcc:*)",
       "Bash(grep:*)",
       "WebFetch(domain:docs.jax.dev)",
-      "Bash(wc -l /workspace/docs/docs/**/*.md)"
+      "Bash(wc -l /workspace/docs/docs/**/*.md)",
+      "Bash(kill -9 83392)",
+      "Bash(kill -9 16749)",
+      "Bash(pkill -9 -f \"isotropic_microstructure_opt.py\")",
+      "Bash(pkill -9 -f \"python.*examples\")",
+      "Read(//tmp/**)"
     ],
     "deny": [],
-    "ask": []
+    "ask": [],
+    "additionalDirectories": [
+      "/tmp"
+    ]
   }
 }

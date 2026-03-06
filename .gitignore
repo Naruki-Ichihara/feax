@@ -6,6 +6,7 @@ CLAUDE.md
 *.h5
 *.xdmf
 examples/private/
+output_adaptive/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
