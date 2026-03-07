@@ -1,11 +1,9 @@
 ---
-sidebar_label: solver_option
+sidebar_label: options
 title: feax.solvers.options
 ---
 
 Solver configuration options for FEAX finite element framework.
-
-`feax.solver_option` is deprecated. Use `feax.solvers.options` (or top-level re-exports like `feax.DirectSolverOptions` and `feax.IterativeSolverOptions`).
 
 This module provides configuration dataclasses and enums for controlling
 solver behavior, including linear solver selection, tolerances, and
@@ -280,6 +278,34 @@ Parameters
 - **convergence_threshold** (*float, default 0.1*): Maximum allowable relative residual for convergence check. Only used when check_convergence=True.
 
 
+#### uses\_x0
+
+```python
+def uses_x0() -> bool
+```
+
+Whether this solver family consumes an initial iterate ``x0``.
+
+## NewtonOptions Objects
+
+```python
+@dataclass(frozen=True)
+class NewtonOptions()
+```
+
+Configuration for Newton nonlinear iteration and line search.
+
+Parameters
+----------
+- **tol** (*float, default 1e-6*): Absolute tolerance for residual norm.
+- **rel_tol** (*float, default 1e-8*): Relative tolerance for residual norm.
+- **max_iter** (*int, default 100*): Maximum Newton iterations.
+- **line_search_max_backtracks** (*int, default 30*): Maximum Armijo backtracking steps.
+- **line_search_c1** (*float, default 1e-4*): Armijo sufficient decrease constant.
+- **line_search_rho** (*float, default 0.5*): Backtracking shrink factor (alpha *= rho).
+- **internal_jit** (*bool, default False*): JIT-compile the internal linear solve used inside Newton iterations. Ignored for ``iter_num == 1`` (linear-only path).
+
+
 ## SolverOptions Objects
 
 ```python
@@ -287,7 +313,18 @@ Parameters
 class SolverOptions(AbstractSolverOptions)
 ```
 
-Configuration options for the Newton solver.
+Deprecated legacy solver options.
+
+This class is intentionally disabled.  It previously mixed linear solver
+configuration and Newton controls in one object, which made solver-path
+behavior difficult to reason about and maintain.
+
+Use the new option classes instead:
+
+- ``DirectSolverOptions`` for direct linear solvers
+- ``IterativeSolverOptions`` for iterative linear solvers
+
+Newton/mode-specific options are being migrated separately.
 
 Parameters
 ----------
@@ -320,14 +357,6 @@ Function to compute initial guess: f(current_sol) -&gt; x0
 
 Will be set to default in __post_init__
 
-#### \_\_post\_init\_\_
-
-```python
-def __post_init__()
-```
-
-Auto-detect backend and set appropriate defaults.
-
 ## DirectSolverOptions Objects
 
 ```python
@@ -342,6 +371,14 @@ Parameters
 - **solver** (*str, default &quot;auto&quot;*): Direct solver algorithm: - &quot;auto&quot;: Automatically selected based on backend and matrix property   (CUDA -&gt; cudss, CPU -&gt; spsolve). Resolved at create_solver time. - &quot;cudss&quot;: NVIDIA cuDSS direct solver (GPU only) - &quot;spsolve&quot;: JAX experimental sparse solve (CPU only) - &quot;cholesky&quot;: Cholesky decomposition via lineax (SPD matrices) - &quot;lu&quot;: LU decomposition via lineax (general matrices) - &quot;qr&quot;: QR decomposition via lineax (general/rectangular matrices)
 - **cudss_options** (*CUDSSOptions, optional*): cuDSS-specific configuration. Only used when solver=&quot;cudss&quot;. Auto-configured when solver=&quot;auto&quot; and backend is CUDA.
 
+
+#### uses\_x0
+
+```python
+def uses_x0() -> bool
+```
+
+Direct solvers do not consume an initial iterate.
 
 #### resolve\_direct\_solver
 
@@ -387,6 +424,14 @@ Parameters
 - **x0_fn** (*callable, optional*): Custom function to compute initial guess: f(current_sol) -&gt; x0.
 
 
+#### uses\_x0
+
+```python
+def uses_x0() -> bool
+```
+
+Iterative solvers consume an initial iterate.
+
 #### resolve\_iterative\_solver
 
 ```python
@@ -408,3 +453,4 @@ Returns
 IterativeSolverOptions
     Options with solver resolved to a concrete algorithm.
     If solver != &quot;auto&quot;, returns the input unchanged.
+

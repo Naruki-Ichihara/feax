@@ -77,3 +77,4 @@ Examples
 ... )
 >>> C_hom = compute_C_hom(internal_vars)  # ndarray, shape (6, 6)
 ```
+

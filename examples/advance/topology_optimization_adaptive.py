@@ -101,7 +101,7 @@ def build_pipeline(mesh):
 # ── Initial mesh ─────────────────────────────────────────────────────────────
 
 print("Generating initial TET4 mesh ...")
-mesh = gene.adaptive.adaptive_mesh(cantilever_geometry, h_max=1.0)
+mesh = gene.adaptive.adaptive_mesh(cantilever_geometry, h_max=1.)
 print(f"  {mesh.points.shape[0]} nodes, {mesh.cells.shape[0]} elements")
 
 # ── Run ──────────────────────────────────────────────────────────────────────
@@ -112,7 +112,7 @@ result = run(
     build_pipeline=build_pipeline,
     mesh=mesh,
     target_volume=0.4,
-    max_iter=300,
+    max_iter=500,
     continuations={
         "beta": Continuation(initial=1.0, final=16.0, update_every=20,
                              multiply_by=2.0),
@@ -122,13 +122,13 @@ result = run(
             cantilever_geometry,
             refinement_field=gene.adaptive.gradient_refinement(rho, m),
             old_mesh=m,
-            h_min=0.25, h_max=1.0,
+            h_min=0.2, h_max=1.0,
         ),
         adapt_every=epoch,
-        n_adapts_max=2,
+        n_adapts_max=4,
     ),
     output_dir="output_adaptive",
-    save_every=10,
+    save_every=2,
 )
 
 # ── Plot ─────────────────────────────────────────────────────────────────────

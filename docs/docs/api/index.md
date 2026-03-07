@@ -19,8 +19,8 @@ Complete API documentation for FEAX (Finite Element Analysis with JAX).
 
 ### Assembly & Solving
 - **[feax.assembler](./reference/feax/assembler.md)** - System matrix and residual assembly
-- **[feax.solver](./reference/feax/solver.md)** - Newton and linear solvers (`create_solver`)
-- Solver option/backends are implemented under `feax.solvers.*` and re-exported at top-level (`feax.DirectSolverOptions`, `feax.IterativeSolverOptions`, `feax.NewtonOptions`)
+- **[feax.solver](./reference/feax/solver.md)** - High-level solver creation (`create_solver`)
+- **[feax.solvers](./reference/feax/solvers/index.md)** - Solver infrastructure (options, linear, Newton, reduced)
 
 ### Boundary Conditions
 - **[feax.DCboundary](./reference/feax/DCboundary.md)** - Dirichlet boundary conditions
@@ -31,21 +31,25 @@ Complete API documentation for FEAX (Finite Element Analysis with JAX).
 ### Utilities
 - **[feax.utils](./reference/feax/utils.md)** - Utility functions (save_sol, etc.)
 
+## Topology Optimization (gene)
+
+Density-based topology optimization with adaptive remeshing:
+
+- **[feax.gene.optimizer](./reference/feax/gene/optimizer.md)** - Optimization driver (`run`, `Continuation`, `AdaptiveConfig`)
+- **[feax.gene.adaptive](./reference/feax/gene/adaptive.md)** - Adaptive remeshing and field transfer
+- **[feax.gene.filters](./reference/feax/gene/filters.md)** - Density filters and Heaviside projection
+- **[feax.gene.responses](./reference/feax/gene/responses.md)** - Compliance and volume functions
+- **[feax.gene.mdmm](./reference/feax/gene/mdmm.md)** - Constrained optimization (MDMM)
+
 ## Flat Toolkit
 
-Flat (Feax Lattice) is toolkit to analyze of lattice materials:
+Lattice material analysis and homogenization:
 
-- **[feax.flat.graph](./reference/feax/flat/graph)** - Graph-based density field generation
-- **[feax.flat.pbc](./reference/feax/flat/pbc)** - Periodic boundary conditions
-- **[feax.flat.solver](./reference/feax/flat/solver)** - Homogenization solvers
-- **[feax.flat.unitcell](./reference/feax/flat/unitcell)** - Unit cell definitions
-- **[feax.flat.utils](./reference/feax/flat/utils)** - Visualization utilities
-
-## Experimental Features
-
-Experimental symbolic DSL for defining physics:
-
-- **[feax.experimental.symbolic](./reference/feax/experimental/symbolic)** - Symbolic interface for defining physics
+- **[feax.flat.graph](./reference/feax/flat/graph.md)** - Graph-based density field generation
+- **[feax.flat.pbc](./reference/feax/flat/pbc.md)** - Periodic boundary conditions
+- **[feax.flat.solver](./reference/feax/flat/solver.md)** - Homogenization solvers
+- **[feax.flat.unitcell](./reference/feax/flat/unitcell.md)** - Unit cell definitions
+- **[feax.flat.utils](./reference/feax/flat/utils.md)** - Visualization utilities
 
 ## Browse All
 

@@ -7,7 +7,7 @@ try:
     from importlib.metadata import PackageNotFoundError, version
     __version__ = version("feax")
 except (ImportError, PackageNotFoundError):
-    __version__ = "0.2.0"
+    __version__ = "0.3.0"
 
 # Main API
 from .assembler import create_J_bc_function, create_res_bc_function, get_jacobian_info, get_res

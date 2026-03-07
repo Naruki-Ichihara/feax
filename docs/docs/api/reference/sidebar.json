@@ -4,7 +4,6 @@
       "items": [
         {
           "items": [
-            "reference/feax/flat/filters",
             "reference/feax/flat/graph",
             "reference/feax/flat/pbc",
             "reference/feax/flat/solver",
@@ -16,12 +15,24 @@
         },
         {
           "items": [
+            "reference/feax/gene/adaptive",
             "reference/feax/gene/filters",
             "reference/feax/gene/mdmm",
-            "reference/feax/gene/mma",
+            "reference/feax/gene/optimizer",
             "reference/feax/gene/responses"
           ],
           "label": "feax.gene",
+          "type": "category"
+        },
+        {
+          "items": [
+            "reference/feax/solvers/common",
+            "reference/feax/solvers/linear",
+            "reference/feax/solvers/newton",
+            "reference/feax/solvers/options",
+            "reference/feax/solvers/reduced"
+          ],
+          "label": "feax.solvers",
           "type": "category"
         },
         "reference/feax/DCboundary",

@@ -51,7 +51,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'advanced/periodic_boundary_conditions',
         'advanced/lattice_homogenization',
-        'advanced/spinodoid_metamaterials',
+        'advanced/adaptive_topology_optimization',
       ],
     },
   ],
@@ -70,6 +70,36 @@ const sidebars: SidebarsConfig = {
     'api/reference/feax/utils',
     {
       type: 'category',
+      label: 'Solvers',
+      link: {
+        type: 'doc',
+        id: 'api/reference/feax/solvers/index',
+      },
+      items: [
+        'api/reference/feax/solvers/options',
+        'api/reference/feax/solvers/linear',
+        'api/reference/feax/solvers/newton',
+        'api/reference/feax/solvers/common',
+        'api/reference/feax/solvers/reduced',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Topology Optimization (gene)',
+      link: {
+        type: 'doc',
+        id: 'api/reference/feax/gene/index',
+      },
+      items: [
+        'api/reference/feax/gene/optimizer',
+        'api/reference/feax/gene/adaptive',
+        'api/reference/feax/gene/filters',
+        'api/reference/feax/gene/responses',
+        'api/reference/feax/gene/mdmm',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Flat Toolkit',
       link: {
         type: 'doc',
@@ -79,19 +109,9 @@ const sidebars: SidebarsConfig = {
         'api/reference/feax/flat/graph',
         'api/reference/feax/flat/pbc',
         'api/reference/feax/flat/solver',
-        'api/reference/feax/flat/spinodoid',
         'api/reference/feax/flat/unitcell',
         'api/reference/feax/flat/utils',
       ],
-    },
-    {
-      type: 'category',
-      label: 'Experimental',
-      link: {
-        type: 'doc',
-        id: 'api/reference/feax/experimental/index',
-      },
-      items: ['api/reference/feax/experimental/symbolic'],
     },
   ],
 };
