@@ -53,6 +53,7 @@ def create_solver(
     iter_num: Optional[int] = None,
     P: Optional[BCOO] = None,
     internal_vars=None,
+    extra_residual_fn: Optional[Callable] = None,
 ) -> Callable:
     """Create a differentiable solver with custom VJP for gradient computation.
 
@@ -89,6 +90,12 @@ def create_solver(
     internal_vars : InternalVars, optional
         Sample internal variables for auto solver selection and cuDSS
         pre-warming. Required when ``solver="auto"`` or cuDSS is used.
+    extra_residual_fn : callable, optional
+        Additional residual contribution: ``extra_residual_fn(sol_flat) -> residual_flat``.
+        Combined with feax's bulk residual via hybrid matrix-free Newton-Krylov:
+        the bulk Jacobian is assembled (sparse), while the extra contribution's
+        Jacobian-vector product is computed via ``jax.jvp`` (forward-mode AD).
+        Requires ``IterativeSolverOptions`` and ``iter_num != 1`` (Newton path).
 
     Returns
     -------
@@ -125,6 +132,24 @@ def create_solver(
             "SolverOptions has been removed. "
             "Use DirectSolverOptions or IterativeSolverOptions."
         )
+
+    # Validate extra_residual_fn constraints
+    if extra_residual_fn is not None:
+        if iter_num == 1:
+            raise ValueError(
+                "extra_residual_fn requires Newton solver (iter_num != 1). "
+                "The hybrid matrix-free approach needs iterative Newton updates."
+            )
+        if isinstance(linear_options, DirectSolverOptions):
+            raise ValueError(
+                "extra_residual_fn requires IterativeSolverOptions. "
+                "The hybrid Jacobian is a callable matvec, not a sparse matrix."
+            )
+        if P is not None:
+            raise ValueError(
+                "extra_residual_fn cannot be combined with P (prolongation matrix). "
+                "Use one or the other."
+            )
 
     # 1) Reduced path (matrix-free, requires iterative options)
     if P is not None:
@@ -220,6 +245,7 @@ def create_solver(
             iter_num=iter_num,
             newton_options=newton_options,
             internal_vars=internal_vars,
+            extra_residual_fn=extra_residual_fn,
         )
 
     # 3) Linear path (iter_num == 1)

@@ -33,6 +33,13 @@ from .options import (
     resolve_direct_solver,
     resolve_iterative_solver,
 )
+from .matrix_free import (
+    LinearSolverOptions,
+    MatrixFreeOptions,
+    NewtonInfo,
+    create_energy_fn,
+    newton_solve as matrix_free_newton_solve,
+)
 from .reduced import create_reduced_solver
 
 __all__ = [
@@ -61,4 +68,9 @@ __all__ = [
     "newton_solve_fori",
     "newton_solve_py",
     "create_reduced_solver",
+    "LinearSolverOptions",
+    "MatrixFreeOptions",
+    "NewtonInfo",
+    "create_energy_fn",
+    "matrix_free_newton_solve",
 ]

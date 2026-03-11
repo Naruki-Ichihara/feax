@@ -24,13 +24,13 @@ right = lambda point: np.isclose(point[0], L, tol)
 E = elastic_moduli
 nu = poisson_ratio
 class LinearElasticity(fe.problem.Problem):
-    def get_tensor_map(self):
-        def stress(u_grad, *args):
+    def get_energy_density(self):
+        def psi(u_grad, *args):
             mu = E / (2. * (1. + nu))
             lmbda = E * nu / ((1 + nu) * (1 - 2 * nu))
             epsilon = 0.5 * (u_grad + u_grad.T)
-            return lmbda * np.trace(epsilon) * np.eye(self.dim) + 2 * mu * epsilon
-        return stress
+            return 0.5 * lmbda * np.trace(epsilon)**2 + mu * np.sum(epsilon * epsilon)
+        return psi
     def get_surface_maps(self):
         def surface_map(u, x, traction_mag):
             return np.array([0., 0., traction_mag])

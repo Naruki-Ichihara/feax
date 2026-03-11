@@ -175,6 +175,9 @@ def create_iterative_solve_fn(options: IterativeSolverOptions):
 
     def choose_preconditioner(A):
         if options.use_jacobi_preconditioner and options.preconditioner is None:
+            if callable(A) and not isinstance(A, BCOO):
+                # Cannot extract diagonal from a callable matvec
+                return None
             return create_jacobi_preconditioner(A, options.jacobi_shift)
         return options.preconditioner
 
@@ -203,13 +206,15 @@ def create_iterative_solve_fn(options: IterativeSolverOptions):
         return solve
 
     if options.solver == "gmres":
+        _restart = getattr(options, 'restart', None) or 20
         def solve(A, b, x0):
             M = choose_preconditioner(A)
             x, _ = jax.scipy.sparse.linalg.gmres(
                 A, b, x0=x0, M=M,
                 tol=options.tol,
                 atol=options.atol,
-                maxiter=options.maxiter
+                maxiter=options.maxiter,
+                restart=_restart,
             )
             return x
         return solve

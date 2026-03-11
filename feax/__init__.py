@@ -34,6 +34,13 @@ from .solvers.common import (
     create_x0,
 )
 from .solvers.linear import create_linear_solver, linear_solve
+from .solvers.matrix_free import (
+    LinearSolverOptions,
+    MatrixFreeOptions,
+    NewtonInfo,
+    create_energy_fn,
+    newton_solve as matrix_free_newton_solve,
+)
 from .solvers.newton import newton_solve, newton_solve_fori, newton_solve_py
 from .solvers.options import (
     AbstractSolverOptions,

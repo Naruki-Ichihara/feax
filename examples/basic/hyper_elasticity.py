@@ -1,12 +1,11 @@
 """
-Hyperelastic solver example using automatic differentiation.
+Hyperelastic solver example using energy density formulation.
 Demonstrates solving nonlinear hyperelasticity problems with Neo-Hookean material model.
 A torsional surface traction is applied to the right face (load-controlled twist).
 """
 
 import os
 
-import jax
 import jax.numpy as np
 
 import feax as fe
@@ -24,26 +23,20 @@ T = 20.
 
 
 class HyperElasticityFeax(fe.problem.Problem):
-    def get_tensor_map(self):
-        def psi(F):
+    def get_energy_density(self):
+        def psi(u_grad, *_):
             E = 100.
             nu = 0.3
             mu = E / (2. * (1. + nu))
             kappa = E / (3. * (1. - 2. * nu))
+            I = np.eye(self.dim)
+            F = u_grad + I
             J = np.linalg.det(F)
             Jinv = J**(-2. / 3.)
             I1 = np.trace(F.T @ F)
-            energy = (mu / 2.) * (Jinv * I1 - 3.) + (kappa / 2.) * (J - 1.)**2.
-            return energy
+            return (mu / 2.) * (Jinv * I1 - 3.) + (kappa / 2.) * (J - 1.)**2.
 
-        P_fn = jax.grad(psi)
-        def first_PK_stress(u_grad):
-            I = np.eye(self.dim)
-            F = u_grad + I
-            P = P_fn(F)
-            return P
-
-        return first_PK_stress
+        return psi
 
     def get_surface_maps(self):
         def traction_map(u_grad, surface_quad_point, traction_magnitude):

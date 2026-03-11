@@ -364,6 +364,7 @@ class NewtonOptions:
     line_search_c1: float = 1e-4
     line_search_rho: float = 0.5
     internal_jit: bool = False
+    make_jittable: bool = False
 
 
 @dataclass(frozen=True)
@@ -590,6 +591,9 @@ class IterativeSolverOptions(AbstractSolverOptions):
         Whether to auto-create Jacobi (diagonal) preconditioner.
     jacobi_shift : float, default 1e-12
         Regularization parameter for Jacobi preconditioner.
+    restart : int, optional
+        Restart parameter for GMRES. Only used when solver='gmres'.
+        If None, defaults to min(200, n) where n is the system size.
     x0_fn : callable, optional
         Custom function to compute initial guess: f(current_sol) -> x0.
     """
@@ -600,6 +604,7 @@ class IterativeSolverOptions(AbstractSolverOptions):
     preconditioner: Optional[Callable] = None
     use_jacobi_preconditioner: bool = False
     jacobi_shift: float = 1e-12
+    restart: Optional[int] = None
     x0_fn: Optional[Callable] = None
 
     def __post_init__(self):

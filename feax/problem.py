@@ -13,6 +13,7 @@ from typing import Any, Callable, List, Optional, Tuple, Union
 import jax
 import jax.flatten_util
 import jax.numpy as np
+import numpy as onp
 
 from feax.fe import FiniteElement
 from feax.mesh import Mesh
@@ -124,12 +125,27 @@ class Problem:
 
         self.num_vars = len(self.mesh)
 
-        self.fes = [FiniteElement(mesh=self.mesh[i],
-                                  vec=self.vec[i],
-                                  dim=self.dim,
-                                  ele_type=self.ele_type[i],
-                                  gauss_order=self.gauss_order[i] if type(self.gauss_order) == type([]) else self.gauss_order) \
-                    for i in range(self.num_vars)]
+        # Build FiniteElement objects with deduplication.
+        # When two variables share the same mesh object, vec, ele_type, and
+        # gauss_order the expensive JAX operations (shape_grads, linalg.inv)
+        # are identical.  Reuse the first FE instead of recomputing.
+        _fe_cache: dict = {}
+        fes = []
+        for i in range(self.num_vars):
+            go_i = (self.gauss_order[i]
+                    if type(self.gauss_order) == type([])
+                    else self.gauss_order)
+            cache_key = (id(self.mesh[i]), self.vec[i], self.ele_type[i], go_i)
+            if cache_key not in _fe_cache:
+                _fe_cache[cache_key] = FiniteElement(
+                    mesh=self.mesh[i],
+                    vec=self.vec[i],
+                    dim=self.dim,
+                    ele_type=self.ele_type[i],
+                    gauss_order=go_i,
+                )
+            fes.append(_fe_cache[cache_key])
+        self.fes = fes
 
         self.cells_list = [fe.cells for fe in self.fes]
         # Assume all fes have the same number of cells, same dimension
@@ -140,19 +156,30 @@ class Problem:
         for i in range(len(self.fes) - 1):
             self.offset.append(self.offset[i] + self.fes[i].num_total_dofs)
 
-        def find_ind(*x):
-            inds = []
-            for i in range(len(x)):
-                x[i].reshape(-1)
-                crt_ind = self.fes[i].vec * x[i][:, None] + np.arange(self.fes[i].vec)[None, :] + self.offset[i]
-                inds.append(crt_ind.reshape(-1))
+        def _build_inds(cells_list_local):
+            """Build per-element global DOF index array using pure numpy.
 
-            return np.hstack(inds)
+            Avoids JAX JIT compilation overhead for index arithmetic, which
+            has no gradient and does not need to be traced.
 
-        # (num_cells, num_nodes*vec + ...)
-        inds = np.array(jax.vmap(find_ind)(*self.cells_list))
-        self.I = np.repeat(inds[:, :, None], inds.shape[1], axis=2).reshape(-1)
-        self.J = np.repeat(inds[:, None, :], inds.shape[1], axis=1).reshape(-1)
+            Returns ndarray of shape (num_elems, total_dofs_per_elem).
+            """
+            parts = []
+            for i, cells_i in enumerate(cells_list_local):
+                c = onp.asarray(cells_i)             # (E, nn)
+                vec_i = self.fes[i].vec
+                # c * vec_i expands node index to DOF base; arange adds component offset
+                dof = (vec_i * c[:, :, None]         # (E, nn, 1)
+                       + onp.arange(vec_i)[None, None, :]  # (1, 1, vec)
+                       + self.offset[i])              # scalar
+                parts.append(dof.reshape(len(c), -1))  # (E, nn*vec)
+            return np.array(onp.concatenate(parts, axis=1))  # (E, total_dofs)
+
+        # (num_cells, total_dofs_per_elem)
+        inds = _build_inds(self.cells_list)
+        ndof = inds.shape[1]
+        self.I = np.array(onp.repeat(onp.asarray(inds)[:, :, None], ndof, axis=2).reshape(-1))
+        self.J = np.array(onp.repeat(onp.asarray(inds)[:, None, :], ndof, axis=1).reshape(-1))
 
         # Note: I and J are kept as FULL for assembly
         # Filtering to UPPER/LOWER happens in get_J() after computing values
@@ -160,10 +187,11 @@ class Problem:
         self.cells_list_face_list = []
 
         for i, boundary_inds in enumerate(self.boundary_inds_list):
-            cells_list_face = [cells[boundary_inds[:, 0]] for cells in self.cells_list] # [(num_selected_faces, num_nodes), ...]
-            inds_face = np.array(jax.vmap(find_ind)(*cells_list_face)) # (num_selected_faces, num_nodes*vec + ...)
-            I_face = np.repeat(inds_face[:, :, None], inds_face.shape[1], axis=2).reshape(-1)
-            J_face = np.repeat(inds_face[:, None, :], inds_face.shape[1], axis=1).reshape(-1)
+            cells_list_face = [cells[boundary_inds[:, 0]] for cells in self.cells_list]
+            inds_face = _build_inds(cells_list_face)
+            nf = inds_face.shape[1]
+            I_face = np.array(onp.repeat(onp.asarray(inds_face)[:, :, None], nf, axis=2).reshape(-1))
+            J_face = np.array(onp.repeat(onp.asarray(inds_face)[:, None, :], nf, axis=1).reshape(-1))
 
             self.I = np.hstack((self.I, I_face))
             self.J = np.hstack((self.J, J_face))
@@ -186,7 +214,11 @@ class Problem:
             self.I_filtered = self.I
             self.J_filtered = self.J
 
-        self.cells_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*self.cells_list) # (num_cells, num_nodes + ...)
+        # Concatenate cell connectivity for all variables along the node axis.
+        # Pure numpy avoids a JAX vmap JIT compilation for a trivial concat.
+        self.cells_flat = np.array(
+            onp.concatenate([onp.asarray(c) for c in self.cells_list], axis=1)
+        )  # (num_cells, total_nodes_per_elem)
 
         dumb_array_dof = [np.zeros((fe.num_nodes, fe.vec)) for fe in self.fes]
         _, self.unflatten_fn_dof = jax.flatten_util.ravel_pytree(dumb_array_dof)
@@ -271,64 +303,104 @@ class Problem:
         if self.num_vars <= 1:
             return  # Single-variable - all kernels allowed
 
-        # Check for problematic kernel definitions
-        has_tensor_map = hasattr(self, 'get_tensor_map') and callable(self.get_tensor_map)
-        has_mass_map = hasattr(self, 'get_mass_map') and callable(self.get_mass_map)
-        has_surface_maps = hasattr(self, 'get_surface_maps') and callable(self.get_surface_maps)
+        # Check for problematic kernel definitions (call methods to check return values)
+        has_tensor_map = self.get_tensor_map() is not None
+        has_energy_density = self.get_energy_density() is not None
+        has_mass_map = self.get_mass_map() is not None
+        has_surface_maps = len(self.get_surface_maps()) > 0
         has_universal = hasattr(self, 'get_universal_kernel') and callable(self.get_universal_kernel)
+        has_weak_form = self.get_weak_form() is not None
 
-        # For multi-var, must have universal kernel
-        if not has_universal:
+        # For multi-var, must have universal kernel or weak_form
+        if not has_universal and not has_weak_form:
             raise ValueError(
-                f"Multi-variable problem (num_vars={self.num_vars}) requires get_universal_kernel() implementation. "
-                f"The standard laplace/mass/surface kernels only support single-variable problems. "
-                f"See examples/basic/kernel_stokes_2d.py for multi-variable example."
+                f"Multi-variable problem (num_vars={self.num_vars}) requires get_universal_kernel() "
+                f"or get_weak_form() implementation. "
+                f"The standard laplace/mass/surface kernels only support single-variable problems."
             )
 
         # Warn if single-variable kernels are defined (they will be ignored)
-        if has_tensor_map or has_mass_map or has_surface_maps:
-            import warnings as warn_module
-            warnings = []
-            if has_tensor_map:
-                warnings.append("get_tensor_map()")
-            if has_mass_map:
-                warnings.append("get_mass_map()")
-            if has_surface_maps:
-                warnings.append("get_surface_maps()")
+        single_var_methods = []
+        if has_tensor_map:
+            single_var_methods.append("get_tensor_map()")
+        if has_energy_density:
+            single_var_methods.append("get_energy_density()")
+        if has_mass_map:
+            single_var_methods.append("get_mass_map()")
+        if has_surface_maps:
+            single_var_methods.append("get_surface_maps()")
 
+        if single_var_methods:
+            import warnings as warn_module
             warn_module.warn(
-                f"Multi-variable problem (num_vars={self.num_vars}) defines {', '.join(warnings)} "
+                f"Multi-variable problem (num_vars={self.num_vars}) defines {', '.join(single_var_methods)} "
                 f"which will be IGNORED. Only get_universal_kernel() is used for multi-variable problems. "
                 f"Remove these methods or move their logic into get_universal_kernel().",
                 UserWarning,
                 stacklevel=3
             )
 
-    def get_tensor_map(self) -> Callable:
+    def get_tensor_map(self) -> Optional[Callable]:
         """Get tensor map function for gradient-based physics.
-        
-        This method must be implemented by subclasses to define the constitutive
-        relationship between gradients and stress/flux tensors.
-        
+
+        Override this method to define the constitutive relationship between
+        gradients and stress/flux tensors directly.
+
+        Alternatively, override :meth:`get_energy_density` to define a scalar
+        energy density — the stress tensor will be derived automatically via
+        ``jax.grad``.
+
         Returns
         -------
-        TensorMap
-            Function that maps gradients to stress/flux tensors
-            Signature: (u_grad: Array, *internal_vars) -> stress_tensor: Array
-            
-        Raises
-        ------
-        NotImplementedError
-            If not implemented by subclass
-            
+        Optional[Callable]
+            Function that maps gradients to stress/flux tensors.
+            Signature: ``(u_grad, *internal_vars) -> stress_tensor``
+            Returns ``None`` if not defined (default).
+
         Examples
         --------
-        For linear elasticity:
-        >>> def tensor_map(u_grad, E, nu):
-        ...     # Compute stress from displacement gradient
-        ...     return stress_tensor
+        For linear elasticity::
+
+            def get_tensor_map(self):
+                def stress(u_grad):
+                    eps = 0.5 * (u_grad + u_grad.T)
+                    return lmbda * jnp.trace(eps) * jnp.eye(3) + 2 * mu * eps
+                return stress
         """
-        raise NotImplementedError("Subclass must implement get_tensor_map")
+        return None
+
+    def get_energy_density(self) -> Optional[Callable]:
+        """Get energy density function for gradient-based physics.
+
+        Override this method to define the strain energy density as a scalar
+        function of the displacement gradient. The stress tensor is derived
+        automatically via ``jax.grad``::
+
+            σ = ∂ψ/∂(∇u)
+
+        This is an alternative to :meth:`get_tensor_map`. If both are defined,
+        ``get_tensor_map`` takes precedence.
+
+        Returns
+        -------
+        Optional[Callable]
+            Scalar energy density function.
+            Signature: ``(u_grad, *internal_vars) -> scalar``
+            Returns ``None`` if not defined (default).
+
+        Examples
+        --------
+        For Neo-Hookean hyperelasticity::
+
+            def get_energy_density(self):
+                def psi(F):
+                    C = F.T @ F
+                    I1 = jnp.trace(C)
+                    J = jnp.linalg.det(F)
+                    return mu/2 * (I1 - 3) - mu * jnp.log(J) + lmbda/2 * jnp.log(J)**2
+                return psi
+        """
+        return None
 
     def get_surface_maps(self) -> List[Callable]:
         """Get surface map functions for boundary loads.
@@ -351,10 +423,10 @@ class Problem:
 
     def get_mass_map(self) -> Optional[Callable]:
         """Get mass map function for inertia/reaction terms.
-        
+
         Override this method to define mass matrix contributions or reaction terms
         that don't involve gradients (e.g., inertia, damping, reactions).
-        
+
         Returns
         -------
         Optional[MassMap]
@@ -363,6 +435,84 @@ class Problem:
             Returns None if no mass terms are present
         """
         return None
+
+    def get_weak_form(self) -> Optional[Callable]:
+        """Get weak form function for multi-variable problems.
+
+        Override this method to define coupled physics at a single quadrature
+        point. The framework automatically handles solution interpolation,
+        gradient computation, and integration. This is the recommended
+        interface for multi-variable problems.
+
+        The function is automatically ``jax.vmap``-ed over quadrature points.
+
+        Returns
+        -------
+        Optional[Callable]
+            Weak form function with signature::
+
+                (vals, grads, x, *internal_vars) -> (mass_terms, grad_terms)
+
+            where:
+
+            - ``vals[i]``: solution of variable *i*, shape ``(vec_i,)``
+            - ``grads[i]``: gradient of variable *i*, shape ``(vec_i, dim)``
+            - ``x``: physical coordinate, shape ``(dim,)``
+            - ``mass_terms[i]``: residual integrated as ``∫ · v dΩ``, shape ``(vec_i,)``
+            - ``grad_terms[i]``: residual integrated as ``∫ · ∇v dΩ``, shape ``(vec_i, dim)``
+
+            Returns ``None`` if not defined (default).
+
+        Examples
+        --------
+        Cahn-Hilliard with mixed (c, μ) formulation::
+
+            def get_weak_form(self):
+                def weak_form(vals, grads, x, c_old):
+                    c, mu = vals[0], vals[1]
+                    grad_c, grad_mu = grads[0], grads[1]
+                    return ([(c - c_old) / dt, mu - (c**3 - c)],
+                            [M * grad_mu, -kappa * grad_c])
+                return weak_form
+        """
+        return None
+
+    def get_surface_weak_forms(self) -> List[Callable]:
+        """Get surface weak form functions for multi-variable boundary loads.
+
+        Override this method to define surface tractions/fluxes at a single
+        surface quadrature point. The framework handles solution interpolation
+        and integration automatically. This is the recommended interface for
+        multi-variable problems with boundary conditions.
+
+        The function is automatically ``jax.vmap``-ed over surface quadrature
+        points.
+
+        Returns
+        -------
+        List[Callable]
+            List of surface weak form functions, one per boundary (matching
+            ``location_fns``). Each function has signature::
+
+                (vals, x, *internal_vars) -> tractions
+
+            where:
+
+            - ``vals[i]``: solution of variable *i*, shape ``(vec_i,)``
+            - ``x``: physical coordinate, shape ``(dim,)``
+            - ``tractions[i]``: surface load integrated as ``∫ t_i · v_i dΓ``,
+              shape ``(vec_i,)``
+
+        Examples
+        --------
+        Pressure BC on a Stokes problem (u: vec=2, p: vec=1)::
+
+            def get_surface_weak_forms(self):
+                def inlet_pressure(vals, x):
+                    return [np.array([p_in, 0.]), np.zeros(1)]
+                return [inlet_pressure]
+        """
+        return []
 
     def tree_flatten(self) -> Tuple[Tuple, dict]:
         """Flatten Problem object for JAX pytree registration.

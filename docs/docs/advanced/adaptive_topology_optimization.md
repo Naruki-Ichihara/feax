@@ -34,7 +34,9 @@ $$
 import jax.numpy as np
 import feax as fe
 import feax.gene as gene
-from feax.gene.optimizer import Continuation, AdaptiveConfig, run
+from feax.gene.optimizer import (
+    Pipeline, constraint, Continuation, AdaptiveConfig, run,
+)
 
 E0 = 70e3          # Young's modulus
 nu = 0.3            # Poisson's ratio
@@ -82,53 +84,62 @@ def cantilever_geometry():
 
 This callable is passed to `gene.adaptive.adaptive_mesh()`, which handles Gmsh initialization, meshing with a size callback, and TET4 extraction.
 
-## Pipeline Builder
+## Pipeline Class
 
-`build_pipeline(mesh)` is a factory that creates all mesh-dependent objects. It is called once per mesh — after each remesh, JAX recompiles the JIT-traced functions for the new mesh topology.
+Subclass `Pipeline` to define the optimization problem. The `build(mesh)` method creates all mesh-dependent objects — it is called once per mesh and re-called after each remesh, triggering JAX recompilation.
+
+The `objective` method is required (abstract). Constraints are added by decorating methods with `@constraint`.
 
 ```python
-def build_pipeline(mesh):
-    """Create all mesh-dependent objects. Called once per mesh."""
-    problem = LinearElasticity(
-        mesh, vec=3, dim=3, ele_type=mesh.ele_type, location_fns=[right])
+class CantileverPipeline(Pipeline):
+    def build(self, mesh):
+        """Create all mesh-dependent objects. Called once per mesh."""
+        problem = LinearElasticity(
+            mesh, vec=3, dim=3, ele_type=mesh.ele_type, location_fns=[right])
 
-    bc = fe.DCboundary.DirichletBCConfig([
-        fe.DCboundary.DirichletBCSpec(location=left, component="all", value=0.),
-    ]).create_bc(problem)
+        bc = fe.DCboundary.DirichletBCConfig([
+            fe.DCboundary.DirichletBCSpec(
+                location=left, component="all", value=0.),
+        ]).create_bc(problem)
 
-    initial = fe.zero_like_initial_guess(problem, bc)
-    compliance_fn = gene.create_compliance_fn(problem)
-    volume_fn = gene.create_volume_fn(problem)
-    filter_fn = gene.create_density_filter(mesh, 3.0)
+        self._initial = fe.zero_like_initial_guess(problem, bc)
+        self._compliance_fn = gene.create_compliance_fn(problem)
+        self._volume_fn = gene.create_volume_fn(problem)
+        self._filter_fn = gene.create_density_filter(mesh, 3.0)
 
-    sample_iv = fe.InternalVars(
-        volume_vars=(fe.InternalVars.create_node_var(problem, 0.4),),
-        surface_vars=())
-    solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(
-        problem, bc, solver_options=solver_opts,
-        adjoint_solver_options=solver_opts,
-        iter_num=1, internal_vars=sample_iv)
+        sample_iv = fe.InternalVars(
+            volume_vars=(fe.InternalVars.create_node_var(problem, 0.4),),
+            surface_vars=())
+        solver_opts = fe.DirectSolverOptions()
+        self._solver = fe.create_solver(
+            problem, bc, solver_options=solver_opts,
+            adjoint_solver_options=solver_opts,
+            iter_num=1, internal_vars=sample_iv)
 
-    def objective(rho, beta=1.0):
-        rho_f = filter_fn(rho)
+    def objective(self, rho, beta=1.0):
+        rho_f = self._filter_fn(rho)
         rho_p = gene.heaviside_projection(rho_f, beta=beta)
         iv = fe.InternalVars(volume_vars=(rho_p,), surface_vars=())
-        sol = solver(iv, initial)
-        return compliance_fn(sol)
+        sol = self._solver(iv, self._initial)
+        return self._compliance_fn(sol)
 
-    def volume(rho, beta=1.0):
-        rho_f = filter_fn(rho)
+    @constraint(target=0.4)
+    def volume(self, rho, beta=1.0):
+        rho_f = self._filter_fn(rho)
         rho_p = gene.heaviside_projection(rho_f, beta=beta)
-        return volume_fn(rho_p)
+        return self._volume_fn(rho_p)
 
-    return {'objective': objective, 'volume': volume, 'filter': filter_fn}
+    def filter(self, rho):
+        return self._filter_fn(rho)
 ```
 
 **Key points:**
-- Returns a dict with `'objective'`, `'volume'`, and `'filter'` keys
-- `objective` and `volume` accept continuation parameters (here `beta`) as keyword arguments
-- After remesh, `run()` calls `build_pipeline` again with the new mesh, triggering JIT recompilation
+- `build(mesh)` stores mesh-dependent objects as instance attributes
+- `objective` and `@constraint` methods accept continuation parameters (here `beta`) as keyword arguments
+- `@constraint(target=0.4)` declares a volume fraction inequality constraint ($\text{vol} \leq 0.4$). Use `@constraint(target=x, type='eq')` for equality constraints
+- Constraints are optional — pipelines without any `@constraint` methods run unconstrained
+- `filter` is optional — the default is the identity function
+- After remesh, `run()` calls `build()` again, then recompiles objective and constraints
 
 ## Initial Mesh
 
@@ -148,7 +159,7 @@ mesh = gene.adaptive.adaptive_mesh(cantilever_geometry, h_max=1.0)
 Continuation(initial=1.0, final=16.0, update_every=20, multiply_by=2.0)
 ```
 
-Updates happen at epoch boundaries (synchronized with remeshing). Each update triggers JIT recompilation since $\beta$ is a static argument.
+Updates happen at epoch boundaries (synchronized with remeshing). Continuation values are passed as traced JAX arguments, so updates do **not** trigger recompilation.
 
 ### Remeshing
 
@@ -195,9 +206,8 @@ After remeshing, the density field is transferred from the old mesh to the new m
 
 ```python
 result = run(
-    build_pipeline=build_pipeline,
+    pipeline=CantileverPipeline(),
     mesh=mesh,
-    target_volume=0.4,
     max_iter=500,
     continuations={
         "beta": Continuation(initial=1.0, final=16.0, update_every=20,
@@ -219,11 +229,13 @@ result = run(
 ```
 
 `run()` handles the full loop:
-1. Build pipeline for current mesh
+1. Call `pipeline.build(mesh)` and JIT-compile objective + constraints
 2. At each epoch boundary, update continuation parameters
 3. Run MMA (NLopt) optimizer for one epoch
 4. If `iter_count % adapt_every == 0`, remesh and transfer density
 5. Rebuild pipeline for new mesh and continue
+
+Set `jit=False` to disable JIT compilation (useful for debugging).
 
 ## Visualization
 
@@ -257,7 +269,9 @@ import numpy as onp
 import gmsh
 import feax as fe
 import feax.gene as gene
-from feax.gene.optimizer import Continuation, AdaptiveConfig, run
+from feax.gene.optimizer import (
+    Pipeline, constraint, Continuation, AdaptiveConfig, run,
+)
 
 # Material
 E0 = 70e3
@@ -289,49 +303,51 @@ class LinearElasticity(fe.problem.Problem):
     def get_surface_maps(self):
         return [lambda u, x, *a: np.array([0., 0., -traction_mag])]
 
-def build_pipeline(mesh):
-    problem = LinearElasticity(
-        mesh, vec=3, dim=3, ele_type=mesh.ele_type, location_fns=[right])
-    bc = fe.DCboundary.DirichletBCConfig([
-        fe.DCboundary.DirichletBCSpec(location=left, component="all", value=0.),
-    ]).create_bc(problem)
-    initial = fe.zero_like_initial_guess(problem, bc)
-    compliance_fn = gene.create_compliance_fn(problem)
-    volume_fn = gene.create_volume_fn(problem)
-    filter_fn = gene.create_density_filter(mesh, 3.0)
+class CantileverPipeline(Pipeline):
+    def build(self, mesh):
+        problem = LinearElasticity(
+            mesh, vec=3, dim=3, ele_type=mesh.ele_type, location_fns=[right])
+        bc = fe.DCboundary.DirichletBCConfig([
+            fe.DCboundary.DirichletBCSpec(
+                location=left, component="all", value=0.),
+        ]).create_bc(problem)
+        self._initial = fe.zero_like_initial_guess(problem, bc)
+        self._compliance_fn = gene.create_compliance_fn(problem)
+        self._volume_fn = gene.create_volume_fn(problem)
+        self._filter_fn = gene.create_density_filter(mesh, 3.0)
 
-    sample_iv = fe.InternalVars(
-        volume_vars=(fe.InternalVars.create_node_var(problem, 0.4),),
-        surface_vars=())
-    solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(
-        problem, bc, solver_options=solver_opts,
-        adjoint_solver_options=solver_opts,
-        iter_num=1, internal_vars=sample_iv)
+        sample_iv = fe.InternalVars(
+            volume_vars=(fe.InternalVars.create_node_var(problem, 0.4),),
+            surface_vars=())
+        solver_opts = fe.DirectSolverOptions()
+        self._solver = fe.create_solver(
+            problem, bc, solver_options=solver_opts,
+            adjoint_solver_options=solver_opts,
+            iter_num=1, internal_vars=sample_iv)
 
-    def objective(rho, beta=1.0):
-        rho_f = filter_fn(rho)
+    def objective(self, rho, beta=1.0):
+        rho_f = self._filter_fn(rho)
         rho_p = gene.heaviside_projection(rho_f, beta=beta)
         iv = fe.InternalVars(volume_vars=(rho_p,), surface_vars=())
-        sol = solver(iv, initial)
-        return compliance_fn(sol)
+        sol = self._solver(iv, self._initial)
+        return self._compliance_fn(sol)
 
-    def volume(rho, beta=1.0):
-        rho_f = filter_fn(rho)
+    @constraint(target=0.4)
+    def volume(self, rho, beta=1.0):
+        rho_f = self._filter_fn(rho)
         rho_p = gene.heaviside_projection(rho_f, beta=beta)
-        return volume_fn(rho_p)
+        return self._volume_fn(rho_p)
 
-    return {'objective': objective, 'volume': volume, 'filter': filter_fn}
+    def filter(self, rho):
+        return self._filter_fn(rho)
 
 # Initial mesh
 mesh = gene.adaptive.adaptive_mesh(cantilever_geometry, h_max=1.0)
 
 # Run
-epoch = 100
 result = run(
-    build_pipeline=build_pipeline,
+    pipeline=CantileverPipeline(),
     mesh=mesh,
-    target_volume=0.4,
     max_iter=500,
     continuations={
         "beta": Continuation(initial=1.0, final=16.0, update_every=20,
@@ -344,7 +360,7 @@ result = run(
             old_mesh=m,
             h_min=0.2, h_max=1.0,
         ),
-        adapt_every=epoch,
+        adapt_every=100,
         n_adapts_max=4,
     ),
     output_dir="output_adaptive",
@@ -355,8 +371,9 @@ result = run(
 ## Summary
 
 **Key concepts:**
-- **`gene.optimizer.run()`** — drives the optimization loop with continuation and adaptive remeshing
-- **`build_pipeline(mesh)`** — factory that creates mesh-dependent objective/volume/filter (rebuilt after each remesh)
+- **`Pipeline`** — abstract base class for optimization pipelines (`build`, `objective`, `filter`)
+- **`@constraint`** — decorator to mark methods as inequality (`type='le'`) or equality (`type='eq'`) constraints
+- **`run()`** — drives the optimization loop with JIT compilation, continuation, and adaptive remeshing
 - **`Continuation`** — schedules parameter updates ($\beta$, filter radius, etc.)
 - **`AdaptiveConfig`** — configures remeshing interval, max remeshes, and remesh callable
 - **`gene.adaptive.gradient_refinement()`** — density-gradient-based refinement field for TET4 meshes
@@ -364,11 +381,10 @@ result = run(
 
 **Workflow:**
 1. Define geometry as Gmsh callable
-2. Define `build_pipeline(mesh)` factory
+2. Subclass `Pipeline` with `build()`, `objective()`, and `@constraint` methods
 3. Configure `Continuation` and `AdaptiveConfig`
-4. Call `run()` — handles compilation, optimization, remeshing, and field transfer
+4. Call `run(pipeline, mesh, ...)` — handles compilation, optimization, remeshing, and field transfer
 
 ## Further Reading
 
 - `examples/advance/topology_optimization_adaptive.py` - Complete working example
-- `examples/advance/topology_optimization.py` - Non-adaptive version for comparison

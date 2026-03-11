@@ -4,7 +4,7 @@
 Same cantilever problem as topology_optimization.py, but uses:
   - Gmsh TET4 adaptive mesh (refines near solid, coarsens in void)
   - Heaviside projection with beta continuation
-  - gene.optimizer.run() for the full pipeline
+  - Pipeline abstract class with @constraint decorator
 
 Pipeline per epoch:
     rho (node) -> density filter -> heaviside(beta) -> SIMP FE -> compliance
@@ -17,7 +17,9 @@ import gmsh
 
 import feax as fe
 import feax.gene as gene
-from feax.gene.optimizer import Continuation, AdaptiveConfig, run
+from feax.gene.optimizer import (
+    Pipeline, constraint, Continuation, AdaptiveConfig, run,
+)
 
 # ── Material ─────────────────────────────────────────────────────────────────
 
@@ -58,44 +60,47 @@ class LinearElasticity(fe.problem.Problem):
         return [lambda u, x, *a: np.array([0., 0., -traction_mag])]
 
 
-# ── Pipeline builder ─────────────────────────────────────────────────────────
+# ── Pipeline ─────────────────────────────────────────────────────────────────
 
-def build_pipeline(mesh):
-    """Create all mesh-dependent objects. Called once per mesh."""
-    problem = LinearElasticity(
-        mesh, vec=3, dim=3, ele_type=mesh.ele_type, location_fns=[right])
+class CantileverPipeline(Pipeline):
+    def build(self, mesh):
+        problem = LinearElasticity(
+            mesh, vec=3, dim=3, ele_type=mesh.ele_type, location_fns=[right])
 
-    bc = fe.DCboundary.DirichletBCConfig([
-        fe.DCboundary.DirichletBCSpec(location=left, component="all", value=0.),
-    ]).create_bc(problem)
+        bc = fe.DCboundary.DirichletBCConfig([
+            fe.DCboundary.DirichletBCSpec(
+                location=left, component="all", value=0.),
+        ]).create_bc(problem)
 
-    initial = fe.zero_like_initial_guess(problem, bc)
-    compliance_fn = gene.create_compliance_fn(problem)
-    volume_fn = gene.create_volume_fn(problem)
-    filter_fn = gene.create_density_filter(mesh, 3.0)
+        self._initial = fe.zero_like_initial_guess(problem, bc)
+        self._compliance_fn = gene.create_compliance_fn(problem)
+        self._volume_fn = gene.create_volume_fn(problem)
+        self._filter_fn = gene.create_density_filter(mesh, 3.0)
 
-    sample_iv = fe.InternalVars(
-        volume_vars=(fe.InternalVars.create_node_var(problem, 0.4),),
-        surface_vars=())
-    solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(
-        problem, bc, solver_options=solver_opts,
-        adjoint_solver_options=solver_opts,
-        iter_num=1, internal_vars=sample_iv)
+        sample_iv = fe.InternalVars(
+            volume_vars=(fe.InternalVars.create_node_var(problem, 0.4),),
+            surface_vars=())
+        solver_opts = fe.DirectSolverOptions()
+        self._solver = fe.create_solver(
+            problem, bc, solver_options=solver_opts,
+            adjoint_solver_options=solver_opts,
+            iter_num=1, internal_vars=sample_iv)
 
-    def objective(rho, beta=1.0):
-        rho_f = filter_fn(rho)
+    def objective(self, rho, beta=1.0):
+        rho_f = self._filter_fn(rho)
         rho_p = gene.heaviside_projection(rho_f, beta=beta)
         iv = fe.InternalVars(volume_vars=(rho_p,), surface_vars=())
-        sol = solver(iv, initial)
-        return compliance_fn(sol)
+        sol = self._solver(iv, self._initial)
+        return self._compliance_fn(sol)
 
-    def volume(rho, beta=1.0):
-        rho_f = filter_fn(rho)
+    @constraint(target=0.4)
+    def volume(self, rho, beta=1.0):
+        rho_f = self._filter_fn(rho)
         rho_p = gene.heaviside_projection(rho_f, beta=beta)
-        return volume_fn(rho_p)
+        return self._volume_fn(rho_p)
 
-    return {'objective': objective, 'volume': volume, 'filter': filter_fn}
+    def filter(self, rho):
+        return self._filter_fn(rho)
 
 
 # ── Initial mesh ─────────────────────────────────────────────────────────────
@@ -109,9 +114,8 @@ print(f"  {mesh.points.shape[0]} nodes, {mesh.cells.shape[0]} elements")
 epoch = 100  # continuation update & remesh interval
 
 result = run(
-    build_pipeline=build_pipeline,
+    pipeline=CantileverPipeline(),
     mesh=mesh,
-    target_volume=0.4,
     max_iter=500,
     continuations={
         "beta": Continuation(initial=1.0, final=16.0, update_every=20,

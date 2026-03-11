@@ -15,6 +15,7 @@ from ..problem import MatrixView
 from .common import (
     _safe_negate,
     check_convergence,
+    create_jacobi_preconditioner,
     create_linear_solve_fn,
     prewarm_cudss_solvers,
     create_x0,
@@ -23,6 +24,14 @@ from .linear import linear_solve_adjoint
 from .options import NewtonOptions
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_verbose_logging():
+    """Ensure the logger can emit INFO messages when verbose=True."""
+    if logger.getEffectiveLevel() > logging.INFO:
+        logger.setLevel(logging.INFO)
+        if not logger.handlers and not logging.root.handlers:
+            logger.addHandler(logging.StreamHandler())
 
 
 def create_newton_solve_fn(
@@ -94,8 +103,20 @@ def _create_differentiable_newton_solver(
     solve_fn,
     adjoint_solver_options,
     adjoint_linear_solve_fn,
+    extra_res_bc_fn=None,
+    bulk_J_bc_func=None,
 ):
-    """Create custom-VJP Newton solver wrapper around a prepared solve_fn."""
+    """Create custom-VJP Newton solver wrapper around a prepared solve_fn.
+
+    Parameters
+    ----------
+    extra_res_bc_fn : callable, optional
+        BC-zeroed extra residual function (for hybrid adjoint solve).
+    bulk_J_bc_func : callable, optional
+        Original (unwrapped) bulk Jacobian function.  Required when
+        ``extra_res_bc_fn`` is provided so the adjoint can construct
+        ``J_adjoint_matvec(v) = J_bulk^T @ v + VJP(extra_res_bc, v)``.
+    """
     @jax.custom_vjp
     def differentiable_solve(internal_vars, initial_guess):
         return solve_fn(internal_vars, initial_guess)[0]
@@ -131,26 +152,47 @@ def _create_differentiable_newton_solver(
 
             return vjp_linear_fn
 
-        J = J_bc_func(sol, internal_vars)
         v_vec = jax.flatten_util.ravel_pytree(v)[0]
 
-        use_transpose = True
-        if problem.matrix_view in (MatrixView.UPPER, MatrixView.LOWER):
-            use_transpose = False
-            logger.debug(
-                "Using J directly (no transpose) for adjoint solve with problem.matrix_view=%s",
-                problem.matrix_view.name,
+        if extra_res_bc_fn is not None and bulk_J_bc_func is not None:
+            # Hybrid adjoint: J_adjoint_matvec(v) = J_bulk^T @ v + VJP(extra_res_bc, v)
+            J_bulk = bulk_J_bc_func(sol, internal_vars)
+            _, vjp_extra = jax.vjp(extra_res_bc_fn, sol)
+
+            def adjoint_matvec(w):
+                Jtw_bulk = J_bulk.T @ w
+                Jtw_extra, = vjp_extra(w)
+                return Jtw_bulk + Jtw_extra
+
+            adjoint_vec = linear_solve_adjoint(
+                adjoint_matvec,
+                v_vec,
+                adjoint_solver_options,
+                problem.matrix_view,
+                bc,
+                linear_solve_fn=adjoint_linear_solve_fn,
+            )
+        else:
+            J = J_bc_func(sol, internal_vars)
+
+            use_transpose = True
+            if problem.matrix_view in (MatrixView.UPPER, MatrixView.LOWER):
+                use_transpose = False
+                logger.debug(
+                    "Using J directly (no transpose) for adjoint solve with problem.matrix_view=%s",
+                    problem.matrix_view.name,
+                )
+
+            J_adjoint = J.transpose() if use_transpose else J
+            adjoint_vec = linear_solve_adjoint(
+                J_adjoint,
+                v_vec,
+                adjoint_solver_options,
+                problem.matrix_view,
+                bc,
+                linear_solve_fn=adjoint_linear_solve_fn,
             )
 
-        J_adjoint = J.transpose() if use_transpose else J
-        adjoint_vec = linear_solve_adjoint(
-            J_adjoint,
-            v_vec,
-            adjoint_solver_options,
-            problem.matrix_view,
-            bc,
-            linear_solve_fn=adjoint_linear_solve_fn,
-        )
         sol_list = problem.unflatten_fn_sol_list(sol)
         vjp_linear_fn = get_vjp_contraint_fn_params(internal_vars, sol_list)
         vjp_result = vjp_linear_fn(problem.unflatten_fn_sol_list(adjoint_vec))
@@ -170,8 +212,20 @@ def create_newton_solver(
     iter_num: Optional[int],
     newton_options: Optional[NewtonOptions] = None,
     internal_vars=None,
+    extra_residual_fn=None,
 ):
-    """Create a differentiable Newton solver (iter_num is None or >1)."""
+    """Create a differentiable Newton solver (iter_num is None or >1).
+
+    Parameters
+    ----------
+    extra_residual_fn : callable, optional
+        Additional residual: ``extra_residual_fn(sol_flat) -> residual_flat``.
+        When provided, uses hybrid matrix-free Newton-Krylov: feax assembles
+        the bulk Jacobian (sparse), and the extra contribution's JVP is
+        computed via ``jax.jvp``.  The combined matvec is:
+        ``J_total @ v = J_bulk @ v + jvp(extra_res_bc, sol, v)``.
+        Dirichlet BC rows of the extra residual are zeroed automatically.
+    """
     if iter_num == 1:
         raise ValueError(
             "create_newton_solver does not support iter_num==1. "
@@ -181,12 +235,252 @@ def create_newton_solver(
     J_bc_func = create_J_bc_function(problem, bc)
     res_bc_func = create_res_bc_function(problem, bc)
 
+    # --- Hybrid matrix-free path ---
+    # When extra_residual_fn is provided, JAX loop primitives (while_loop,
+    # fori_loop) cannot be used because the hybrid Jacobian is a Python
+    # callable (matvec), not a JAX array.  Use a Python Newton loop instead.
+    if extra_residual_fn is not None:
+        bc_rows = bc.bc_rows
+
+        def extra_res_bc(sol):
+            """Extra residual with Dirichlet BC rows zeroed."""
+            return extra_residual_fn(sol).at[bc_rows].set(0.0)
+
+        if newton_options is None:
+            newton_options = NewtonOptions()
+
+        from .options import IterativeSolverOptions
+        if not isinstance(linear_options, IterativeSolverOptions):
+            raise TypeError(
+                "extra_residual_fn requires IterativeSolverOptions "
+                f"(got {type(linear_options).__name__})."
+            )
+
+        iterative_solve_fn = create_linear_solve_fn(linear_options)
+        adjoint_fn_shared = adjoint_linear_options is linear_options
+        adjoint_linear_solve_fn = (
+            iterative_solve_fn if adjoint_fn_shared
+            else create_linear_solve_fn(adjoint_linear_options)
+        )
+
+        if newton_options.internal_jit:
+            logger.info(
+                "extra_residual_fn: JIT-compiling res_bc_func and J_bc_func. "
+                "The hybrid Newton loop itself runs as a Python loop (not JAX-traced)."
+            )
+            J_bc_func = jax.jit(J_bc_func)
+            res_bc_func = jax.jit(res_bc_func)
+
+        _verbose = linear_options.verbose
+
+        def _hybrid_total_res(sol, internal_vars):
+            """Total residual = bulk + extra (with BCs zeroed)."""
+            return res_bc_func(sol, internal_vars) + extra_res_bc(sol)
+
+        _iterative_solver = getattr(
+            jax.scipy.sparse.linalg, linear_options.solver
+        )
+
+        def hybrid_solve_fn(internal_vars, initial_sol):
+            """Python-loop Newton solver with hybrid matrix-free Jacobian."""
+            sol = initial_sol
+            res_total = _hybrid_total_res(sol, internal_vars)
+            res_norm = float(np.linalg.norm(res_total))
+            initial_res_norm = res_norm
+
+            if _verbose:
+                _ensure_verbose_logging()
+                logger.info(f"[hybrid Newton] initial res_norm = {initial_res_norm:.6e}")
+
+            for it in range(newton_options.max_iter):
+                if res_norm < newton_options.tol:
+                    break
+                if it > 0 and res_norm / (initial_res_norm + 1e-30) < newton_options.rel_tol:
+                    break
+
+                # Bulk Jacobian (sparse) + hybrid matvec
+                J_bulk = J_bc_func(sol, internal_vars)
+
+                def matvec(v, _sol=sol):
+                    _, Jv_extra = jax.jvp(extra_res_bc, (_sol,), (v,))
+                    return J_bulk @ v + Jv_extra
+
+                # Jacobi preconditioner from bulk Jacobian diagonal
+                M = None
+                if linear_options.use_jacobi_preconditioner and linear_options.preconditioner is None:
+                    M = create_jacobi_preconditioner(J_bulk, linear_options.jacobi_shift)
+                else:
+                    M = linear_options.preconditioner
+
+                x0 = np.zeros_like(sol)
+                _kw = dict(
+                    x0=x0, M=M,
+                    tol=linear_options.tol,
+                    atol=linear_options.atol,
+                    maxiter=linear_options.maxiter,
+                )
+                if linear_options.solver == 'gmres':
+                    _kw['restart'] = linear_options.restart or min(200, sol.shape[0])
+                du, _ = _iterative_solver(matvec, -res_total, **_kw)
+                du_norm = float(np.linalg.norm(du))
+
+                # Early termination if linear solver stagnated
+                if du_norm < 1e-30:
+                    if _verbose:
+                        logger.info(
+                            f"[hybrid Newton] iter {it:3d}: "
+                            f"linear solver returned du=0, stopping"
+                        )
+                    break
+
+                # Simple backtracking line search (accept any decrease)
+                alpha = 1.0
+                _ls_success = False
+                for _bt in range(newton_options.line_search_max_backtracks):
+                    trial_sol = sol + alpha * du
+                    trial_res = _hybrid_total_res(trial_sol, internal_vars)
+                    trial_norm = float(np.linalg.norm(trial_res))
+                    if trial_norm < res_norm:
+                        _ls_success = True
+                        break
+                    alpha *= newton_options.line_search_rho
+
+                if not _ls_success:
+                    if _verbose:
+                        logger.info(
+                            f"[hybrid Newton] iter {it:3d}: "
+                            f"line search failed, stopping"
+                        )
+                    break
+
+                sol = trial_sol
+                res_total = trial_res
+                res_norm = trial_norm
+
+                if _verbose:
+                    logger.info(
+                        f"[hybrid Newton] iter {it:3d}: "
+                        f"res_norm = {res_norm:.6e}, "
+                        f"rel = {res_norm / (initial_res_norm + 1e-30):.6e}, "
+                        f"du_norm = {du_norm:.6e}, alpha = {alpha:.4f}"
+                    )
+
+            rel = res_norm / (initial_res_norm + 1e-30)
+            converged = (res_norm < newton_options.tol) or (rel < newton_options.rel_tol)
+            if _verbose:
+                status = "converged" if converged else "NOT converged"
+                logger.info(
+                    f"[hybrid Newton] {status} in {it + 1} iterations, "
+                    f"res_norm = {res_norm:.6e}, rel = {rel:.6e}"
+                )
+            if not converged:
+                logger.warning(
+                    f"[hybrid Newton] did NOT converge after {it + 1} iterations "
+                    f"(res_norm = {res_norm:.6e}, tol = {newton_options.tol:.1e}, "
+                    f"rel = {rel:.6e}, rel_tol = {newton_options.rel_tol:.1e})"
+                )
+
+            return sol, res_norm, converged
+
+        return _create_differentiable_newton_solver(
+            problem=problem,
+            bc=bc,
+            J_bc_func=J_bc_func,
+            res_bc_func=res_bc_func,
+            solve_fn=hybrid_solve_fn,
+            adjoint_solver_options=adjoint_linear_options,
+            adjoint_linear_solve_fn=adjoint_linear_solve_fn,
+            extra_res_bc_fn=extra_res_bc,
+            bulk_J_bc_func=J_bc_func,
+        )
+
+    # --- Standard path (no extra residual) ---
     linear_solve_fn = create_linear_solve_fn(linear_options)
     adjoint_fn_shared = adjoint_linear_options is linear_options
     if adjoint_fn_shared:
         adjoint_linear_solve_fn = linear_solve_fn
     else:
         adjoint_linear_solve_fn = create_linear_solve_fn(adjoint_linear_options)
+
+    if newton_options is None:
+        newton_options = NewtonOptions()
+
+    # ------------------------------------------------------------------ #
+    # Python-loop path  (make_jittable=False, the default)                #
+    #                                                                      #
+    # Each component (residual, Jacobian, linear solve) is compiled        #
+    # separately on first call instead of being fused into one giant XLA   #
+    # program.  This avoids the multi-minute JIT compilation that          #
+    # jax.lax.fori_loop / while_loop incurs for large 3-D problems.        #
+    #                                                                      #
+    # When internal_jit=True the three functions are explicitly wrapped     #
+    # with jax.jit so they are always dispatched as compiled kernels.       #
+    # When internal_jit=False JAX still compiles them on first call (eager  #
+    # tracing), but the Python-level loop keeps the overall graph small.    #
+    # ------------------------------------------------------------------ #
+    if not newton_options.make_jittable:
+        _res_fn = J_bc_func_for_adjoint = J_bc_func
+        _J_fn = res_bc_func
+
+        if newton_options.internal_jit:
+            logger.info(
+                "Python-loop Newton: JIT-compiling res_bc_func, J_bc_func, "
+                "and linear_solve_fn individually."
+            )
+            J_bc_func = jax.jit(J_bc_func)
+            res_bc_func = jax.jit(res_bc_func)
+            linear_solve_fn = jax.jit(linear_solve_fn)
+            if adjoint_fn_shared:
+                adjoint_linear_solve_fn = linear_solve_fn
+            else:
+                adjoint_linear_solve_fn = jax.jit(adjoint_linear_solve_fn)
+        else:
+            logger.info(
+                "Python-loop Newton: running with eager JAX execution "
+                "(set internal_jit=True for explicit JIT on each component)."
+            )
+
+        from .options import IterativeSolverOptions
+        x0_fn_from_opts = None
+        if isinstance(linear_options, IterativeSolverOptions):
+            x0_fn_from_opts = linear_options.x0_fn
+        x0_fn = x0_fn_from_opts or create_x0(bc_rows=bc.bc_rows, bc_vals=bc.bc_vals)
+
+        def python_loop_solve_fn(internal_vars, initial_sol):
+            return newton_solve_py(
+                J_bc_applied=J_bc_func,
+                res_bc_applied=res_bc_func,
+                initial_guess=initial_sol,
+                bc=bc,
+                newton_options=newton_options,
+                linear_solver_options=linear_options,
+                internal_vars=internal_vars,
+                linear_solve_fn=linear_solve_fn,
+                x0_fn=x0_fn,
+                matrix_view=problem.matrix_view,
+            )
+
+        return _create_differentiable_newton_solver(
+            problem=problem,
+            bc=bc,
+            J_bc_func=J_bc_func,
+            res_bc_func=res_bc_func,
+            solve_fn=python_loop_solve_fn,
+            adjoint_solver_options=adjoint_linear_options,
+            adjoint_linear_solve_fn=adjoint_linear_solve_fn,
+        )
+
+    # ------------------------------------------------------------------ #
+    # JAX-traceable path  (make_jittable=True)                            #
+    # Uses fori_loop / while_loop – the entire Newton loop is compiled     #
+    # into one XLA program.  iter_num must be provided.                   #
+    # ------------------------------------------------------------------ #
+    if iter_num is None:
+        raise ValueError(
+            "make_jittable=True requires iter_num to be specified. "
+            "Pass an integer iter_num (e.g. iter_num=4) or set "
+            "make_jittable=False (default) to use the Python-loop path."
+        )
 
     prewarm_cudss_solvers(
         problem=problem,
@@ -199,26 +493,20 @@ def create_newton_solver(
         adjoint_solve_fn=adjoint_linear_solve_fn,
     )
 
-    if newton_options is None:
-        newton_options = NewtonOptions()
-
     if newton_options.internal_jit:
-        print("[feax] internal_jit=True: JIT-compiling internal linear solver (forward).")
+        logger.info("make_jittable + internal_jit=True: JIT-compiling linear solver (forward).")
         linear_solve_fn = jax.jit(linear_solve_fn)
         if adjoint_fn_shared:
             adjoint_linear_solve_fn = linear_solve_fn
         else:
-            print("[feax] internal_jit=True: JIT-compiling internal linear solver (adjoint).")
+            logger.info("make_jittable + internal_jit=True: JIT-compiling linear solver (adjoint).")
             adjoint_linear_solve_fn = jax.jit(adjoint_linear_solve_fn)
 
-    x0_fn_from_opts = None
     from .options import IterativeSolverOptions
+    x0_fn_from_opts = None
     if isinstance(linear_options, IterativeSolverOptions):
         x0_fn_from_opts = linear_options.x0_fn
-    x0_fn = x0_fn_from_opts or create_x0(
-        bc_rows=bc.bc_rows,
-        bc_vals=bc.bc_vals,
-    )
+    x0_fn = x0_fn_from_opts or create_x0(bc_rows=bc.bc_rows, bc_vals=bc.bc_vals)
 
     solve_fn = create_newton_solve_fn(
         iter_num=iter_num,
@@ -547,8 +835,14 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc, newton_op
 
 def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc, newton_options, linear_solver_options,
                     internal_vars=None, P_mat=None,
+                    linear_solve_fn=None, x0_fn=None,
                     matrix_view: MatrixView = MatrixView.FULL):
-    """Newton solver using Python while loop (non-JIT debug path)."""
+    """Newton solver using Python while loop.
+
+    ``linear_solve_fn`` and ``x0_fn`` can be passed in pre-built (and
+    optionally pre-JIT-compiled) by the caller, avoiding redundant
+    reconstruction on every time step.
+    """
     tol = newton_options.tol
     rel_tol = newton_options.rel_tol
     max_iter = newton_options.max_iter
@@ -556,13 +850,15 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc, newton_opti
     line_search_rho = newton_options.line_search_rho
     line_search_max_backtracks = newton_options.line_search_max_backtracks
 
-    _legacy_x0_fn = getattr(linear_solver_options, "linear_solver_x0_fn", None)
-    if _legacy_x0_fn is not None:
-        x0_fn = _legacy_x0_fn
-    else:
-        x0_fn = create_x0(bc_rows=bc.bc_rows, bc_vals=bc.bc_vals, P_mat=P_mat)
+    if x0_fn is None:
+        _legacy_x0_fn = getattr(linear_solver_options, "linear_solver_x0_fn", None)
+        if _legacy_x0_fn is not None:
+            x0_fn = _legacy_x0_fn
+        else:
+            x0_fn = create_x0(bc_rows=bc.bc_rows, bc_vals=bc.bc_vals, P_mat=P_mat)
 
-    linear_solve_fn = create_linear_solve_fn(linear_solver_options)
+    if linear_solve_fn is None:
+        linear_solve_fn = create_linear_solve_fn(linear_solver_options)
 
     armijo_line_search = create_armijo_line_search_python(
         res_bc_applied,
@@ -581,6 +877,7 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc, newton_opti
     iter_count = 0
 
     if linear_solver_options.verbose:
+        _ensure_verbose_logging()
         logger.info(f"Newton solver (py) starting: initial res_norm = {initial_res_norm:.6e}")
 
     while (res_norm > tol and
@@ -605,6 +902,15 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc, newton_opti
                 matrix_view=matrix_view,
                 solver_label="Newton linear solve",
             )
+
+        # Guard: if the linear solver returned NaN/Inf (e.g. bicgstab
+        # exceeded maxiter and diverged), do not corrupt the solution.
+        if bool(np.any(np.isnan(delta_sol) | np.isinf(delta_sol))):
+            logger.warning(
+                f"Newton iter {iter_count}: linear solver returned NaN/Inf. "
+                "Stopping Newton iterations to prevent solution corruption."
+            )
+            break
 
         new_sol, new_res_norm, alpha, success = armijo_line_search(
             sol, delta_sol, res, res_norm, internal_vars
