@@ -4,13 +4,18 @@
 
 # [FEAX](https://naruki-ichihara.github.io/feax/) 
 
-[![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
-[![JAX](https://img.shields.io/badge/JAX-0.7%2B-green.svg)](https://github.com/google/jax) 
+
+
+
+### *A simulation node in your JAX workflow*
 
 [**Documentation**](https://naruki-ichihara.github.io/feax/)
 | [**Install guide**](https://naruki-ichihara.github.io/feax/getting-started/installation)
 | [**API**](https://naruki-ichihara.github.io/feax/api/)
+
+[![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+[![JAX](https://img.shields.io/badge/JAX-0.7%2B-green.svg)](https://github.com/google/jax) 
 
 **FEAX** (Finite Element Analysis with JAX) is a fully differentiable finite element engine. Every stage — from assembly to solve — runs on XLA and is compatible with `jax.jit`, `jax.grad`, and `jax.vmap`, enabling gradient-based optimization and machine learning directly on PDE simulations.
 
@@ -83,13 +88,14 @@ grads = grad_fn(internal_vars)
 
 See [examples/](examples/) for more, including topology optimization.
 
-## Limitations
+## Features
 
-- **First-order differentiation only**: Solvers use `custom_vjp` internally, so `jax.grad` (first-order) is supported but `jax.hessian` (second-order) is not.
-- **Static problems only**: No time-dependent or transient solvers. Only steady-state and quasi-static analyses are available.
-- **Element order up to quadratic**: Linear (degree 1) and quadratic (degree 2) elements are supported. Cubic or higher-order elements are not.
-- **Fixed mesh**: The mesh topology must remain constant throughout JAX transformations. No adaptive remeshing or h-refinement during differentiation.
-- **Single machine**: No MPI or distributed computing support. Parallelism is limited to JAX's device-level parallelism (`vmap`, multi-GPU via `pmap`).
+- **Assembly-based solvers**: Sparse direct (cuDSS on GPU, spsolve on CPU) and iterative (CG, BiCGSTAB, GMRES) solvers with automatic matrix property detection.
+- **Matrix-free Newton solver**: JVP-based tangent operator for problems with custom energy contributions (cohesive zones, phase-field fracture) — no sparse matrix assembly.
+- **Multi-variable problems**: Coupled multi-physics via a high-level weak form interface (`get_weak_form()`), with automatic interpolation and integration.
+- **Multipoint constraints**: Prolongation matrix support for periodic boundary conditions and other constraint types.
+- **Topology optimization**: Built-in `gene` toolkit with MMA optimizer, density filters, Heaviside continuation, and adaptive remeshing.
+- **Computational homogenization**: `flat` toolkit for periodic unit cell analysis with graph-based lattice structure definition.
 
 ## Installation
 
