@@ -12,32 +12,36 @@ This module separates two concerns:
    ``(u_flat, delta_max) -> scalar`` for use with ``newton_solve``.
 
 Supports mixed-mode fracture by decomposing the displacement jump
-into normal and tangential components::
+into normal and tangential components:
 
-    δ_n = jump · n          (normal opening, scalar)
-    δ_t = |jump - δ_n · n|  (tangential sliding, scalar)
-    δ   = sqrt(⟨δ_n⟩₊² + β² δ_t²)  (effective opening)
+```python
+δ_n = jump · n          (normal opening, scalar)
+δ_t = |jump - δ_n · n|  (tangential sliding, scalar)
+δ   = sqrt(⟨δ_n⟩₊² + β² δ_t²)  (effective opening)
+```
 
 where β is the mode-mixity ratio (default 1.0).
 
-Usage::
+Usage:
 
-    from feax.mechanics.cohesive import CohesiveInterface, exponential_potential
+```python
+from feax.mechanics.cohesive import CohesiveInterface, exponential_potential
 
-    # Axis-aligned interface (simple)
-    interface = CohesiveInterface.from_axis(
-        top_nodes, bottom_nodes, weights, normal_axis=1, vec=2)
+# Axis-aligned interface (simple)
+interface = CohesiveInterface.from_axis(
+    top_nodes, bottom_nodes, weights, normal_axis=1, vec=2)
 
-    # Arbitrary interface with per-node normals
-    interface = CohesiveInterface(
-        top_nodes, bottom_nodes, weights, normals=normals, vec=2)
+# Arbitrary interface with per-node normals
+interface = CohesiveInterface(
+    top_nodes, bottom_nodes, weights, normals=normals, vec=2)
 
-    cohesive_energy = interface.create_energy_fn(
-        exponential_potential, Gamma=15.0, sigma_c=20000.0,
-    )
+cohesive_energy = interface.create_energy_fn(
+    exponential_potential, Gamma=15.0, sigma_c=20000.0,
+)
 
-    def total_energy(u, delta_max):
-        return elastic_energy(u) + cohesive_energy(u, delta_max)
+def total_energy(u, delta_max):
+    return elastic_energy(u) + cohesive_energy(u, delta_max)
+```
 """
 
 import numpy as onp
@@ -52,15 +56,19 @@ import jax.numpy as np
 def exponential_potential(delta, delta_max, *, Gamma, sigma_c):
     """Xu-Needleman exponential cohesive potential with irreversibility.
 
-    Loading::
+    Loading:
 
-        φ(δ) = Γ [1 - (1 + δ/δc) exp(-δ/δc)]
+    ```python
+    φ(δ) = Γ [1 - (1 + δ/δc) exp(-δ/δc)]
+    ```
 
     where ``δc = Γ / (e · σc)``.
 
-    Unloading follows a secant path back to the origin::
+    Unloading follows a secant path back to the origin:
 
-        φ_unload(δ) = φ(δ_max) / δ_max² · δ²
+    ```python
+    φ_unload(δ) = φ(δ_max) / δ_max² · δ²
+    ```
 
     Parameters
     ----------
@@ -93,11 +101,13 @@ def exponential_potential(delta, delta_max, *, Gamma, sigma_c):
 def bilinear_potential(delta, delta_max, *, Gamma, sigma_c):
     """Bilinear cohesive potential with irreversibility.
 
-    Loading::
+    Loading:
 
-        φ(δ) = 0.5 k₀ δ²                                  for δ < δ₀
-        φ(δ) = Γ - 0.5 σc (δ_f - δ)² / (δ_f - δ₀)        for δ₀ ≤ δ < δ_f
-        φ(δ) = Γ                                            for δ ≥ δ_f
+    ```python
+    φ(δ) = 0.5 k₀ δ²                                  for δ < δ₀
+    φ(δ) = Γ - 0.5 σc (δ_f - δ)² / (δ_f - δ₀)        for δ₀ ≤ δ < δ_f
+    φ(δ) = Γ                                            for δ ≥ δ_f
+    ```
 
     where ``δ_f = 2Γ / σc``, ``δ₀ = σc / k₀``, ``k₀ = σc² / (2Γ)``.
 
@@ -214,11 +224,13 @@ class CohesiveInterface:
     """Cohesive zone interface with mixed-mode support.
 
     Decomposes the displacement jump into normal and tangential components
-    and computes an effective opening for the cohesive potential::
+    and computes an effective opening for the cohesive potential:
 
-        δ_n = jump · n                     (normal)
-        δ_t = |jump - δ_n · n|             (tangential)
-        δ   = sqrt(⟨δ_n⟩₊² + β² δ_t²)    (effective)
+    ```python
+    δ_n = jump · n                     (normal)
+    δ_t = |jump - δ_n · n|             (tangential)
+    δ   = sqrt(⟨δ_n⟩₊² + β² δ_t²)    (effective)
+    ```
 
     where ``⟨·⟩₊ = max(·, 0)`` is the Macaulay bracket (no energy in
     compression) and β is the mode-mixity ratio.
@@ -304,9 +316,11 @@ class CohesiveInterface:
     def get_opening(self, u_flat):
         """Compute effective opening at interface nodes.
 
-        Returns the mixed-mode effective opening::
+        Returns the mixed-mode effective opening:
 
-            δ = sqrt(⟨δ_n⟩₊² + β² δ_t²)
+        ```python
+        δ = sqrt(⟨δ_n⟩₊² + β² δ_t²)
+        ```
 
         Parameters
         ----------

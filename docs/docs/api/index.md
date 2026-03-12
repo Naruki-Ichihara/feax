@@ -20,7 +20,7 @@ Complete API documentation for FEAX (Finite Element Analysis with JAX).
 ### Assembly & Solving
 - **[feax.assembler](./reference/feax/assembler.md)** - System matrix and residual assembly
 - **[feax.solver](./reference/feax/solver.md)** - High-level solver creation (`create_solver`)
-- **[feax.solvers](./reference/feax/solvers/index.md)** - Solver infrastructure (options, linear, Newton, reduced)
+- **[feax.solvers](./reference/feax/solvers/index.md)** - Solver infrastructure (options, linear, Newton, matrix-free, reduced)
 
 ### Boundary Conditions
 - **[feax.DCboundary](./reference/feax/DCboundary.md)** - Dirichlet boundary conditions
@@ -30,6 +30,12 @@ Complete API documentation for FEAX (Finite Element Analysis with JAX).
 
 ### Utilities
 - **[feax.utils](./reference/feax/utils.md)** - Utility functions (save_sol, etc.)
+
+## Mechanics
+
+Constitutive models for finite element simulations:
+
+- **[feax.mechanics.cohesive](./reference/feax/mechanics/cohesive.md)** - Cohesive zone models for fracture mechanics
 
 ## Topology Optimization (gene)
 

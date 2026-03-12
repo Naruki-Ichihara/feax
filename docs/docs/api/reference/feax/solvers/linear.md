@@ -102,14 +102,18 @@ Returns
 
 Notes
 -----
-Forward pass performs a single linear solve::
+Forward pass performs a single linear solve:
 
-    J * delta_sol = -res
-    sol = initial_guess + delta_sol
+```python
+J * delta_sol = -res
+sol = initial_guess + delta_sol
+```
 
-Backward pass solves the adjoint system::
+Backward pass solves the adjoint system:
 
-    J^T * adjoint = v
+```python
+J^T * adjoint = v
+```
 
 and returns the VJP of the residual w.r.t. ``internal_vars``.
 

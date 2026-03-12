@@ -10,6 +10,174 @@ separated internal variables. It handles the assembly of residual vectors and
 Jacobian matrices for both volume and surface integrals, supporting various
 physics kernels (Laplace, mass, surface, and universal).
 
+## Operator Objects
+
+```python
+class Operator()
+```
+
+Element-level operator for quadrature-point computations.
+
+Provides methods for interpolating solutions, computing gradients,
+interpolating internal variables, and integrating over quadrature points.
+Used internally by kernel functions to eliminate code duplication.
+
+Parameters
+----------
+- **problem** (*Problem*): The finite element problem.
+- **fe_index** (*int*): Index of the finite element variable (default 0).
+
+
+#### eval
+
+```python
+def eval(cell_sol: np.ndarray, shape_vals: np.ndarray = None) -> np.ndarray
+```
+
+Interpolate nodal solution to quadrature points.
+
+Parameters
+----------
+- **cell_sol** (*np.ndarray*): Nodal solution values, shape (num_nodes, vec).
+- **shape_vals** (*np.ndarray, optional*): Shape function values. Uses volume shape functions if None.
+
+
+Returns
+-------
+np.ndarray
+    Solution at quadrature points, shape (num_quads, vec).
+
+#### grad
+
+```python
+def grad(cell_sol: np.ndarray, cell_shape_grads: np.ndarray) -> np.ndarray
+```
+
+Compute solution gradient at quadrature points.
+
+Parameters
+----------
+- **cell_sol** (*np.ndarray*): Nodal solution values, shape (num_nodes, vec).
+- **cell_shape_grads** (*np.ndarray*): Shape function gradients, shape (num_quads, num_nodes, dim).
+
+
+Returns
+-------
+np.ndarray
+    Gradient at quadrature points, shape (num_quads, vec, dim).
+
+#### interpolate\_var
+
+```python
+def interpolate_var(var: np.ndarray) -> np.ndarray
+```
+
+Interpolate a single internal variable to quadrature points.
+
+Handles node-based (shape function interpolation), cell-based
+(broadcast), and quad-based (pass-through) variables.
+
+Parameters
+----------
+- **var** (*np.ndarray*): Internal variable. Shape determines interpolation strategy: - scalar: broadcast to all quad points - (num_nodes,): node-based, interpolate via shape functions - (1,) or cell-based: broadcast to all quad points - (num_quads,): quad-based, pass through
+
+
+Returns
+-------
+np.ndarray
+    Values at quadrature points, shape (num_quads,).
+
+#### interpolate\_vars
+
+```python
+def interpolate_vars(
+        cell_internal_vars: Tuple[np.ndarray, ...]) -> List[np.ndarray]
+```
+
+Interpolate all internal variables to quadrature points.
+
+Parameters
+----------
+- **cell_internal_vars** (*tuple of np.ndarray*): Internal variables for a single element.
+
+
+Returns
+-------
+list of np.ndarray
+    Interpolated values at quadrature points.
+
+#### integrate\_grad
+
+```python
+def integrate_grad(quad_values: np.ndarray,
+                   cell_v_grads_JxW: np.ndarray) -> np.ndarray
+```
+
+Integrate tensor quad-point values against test function gradients.
+
+Computes: sum_q sigma(q) : grad_v(q) * JxW(q)
+
+Parameters
+----------
+- **quad_values** (*np.ndarray*): Physics values at quad points, shape (num_quads, vec, dim).
+- **cell_v_grads_JxW** (*np.ndarray*): Pre-multiplied test function gradients × JxW, shape (num_quads, num_nodes, vec, dim).
+
+
+Returns
+-------
+np.ndarray
+    Element contribution, shape (num_nodes, vec).
+
+#### integrate\_val
+
+```python
+def integrate_val(quad_values: np.ndarray,
+                  cell_JxW: np.ndarray,
+                  shape_vals: np.ndarray = None) -> np.ndarray
+```
+
+Integrate scalar/vector quad-point values with shape functions.
+
+Computes: sum_q f(q) * N(q) * JxW(q)
+
+Parameters
+----------
+- **quad_values** (*np.ndarray*): Physics values at quad points, shape (num_quads, vec).
+- **cell_JxW** (*np.ndarray*): Jacobian determinant × quadrature weights, shape (num_quads,).
+- **shape_vals** (*np.ndarray, optional*): Shape function values. Uses volume shape functions if None.
+
+
+Returns
+-------
+np.ndarray
+    Element contribution, shape (num_nodes, vec).
+
+#### gather\_internal\_vars
+
+```python
+@staticmethod
+def gather_internal_vars(
+        problem: 'Problem', internal_vars: Tuple[np.ndarray,
+                                                 ...]) -> List[np.ndarray]
+```
+
+Gather global internal variables to per-cell format.
+
+Transforms node-based variables from global (num_nodes,) arrays to
+per-cell (num_cells, num_nodes_per_elem) arrays using element
+connectivity. Cell-based and quad-based variables are passed through.
+
+Parameters
+----------
+- **problem** (*Problem*): The finite element problem with connectivity information.
+- **internal_vars** (*tuple of np.ndarray*): Global internal variables.
+
+
+Returns
+-------
+list of np.ndarray
+    Per-cell internal variables ready for vmapped kernels.
+
 #### interpolate\_to\_quad\_points
 
 ```python
@@ -18,6 +186,9 @@ def interpolate_to_quad_points(var: np.ndarray, shape_vals: np.ndarray,
 ```
 
 Interpolate node-based or cell-based values to quadrature points.
+
+.. deprecated::
+    Use :meth:`Operator.interpolate_var` instead.
 
 This function handles three cases:
 1. Node-based: shape (num_nodes,) -&gt; interpolate using shape functions
@@ -62,12 +233,6 @@ Callable
     Laplace kernel function that computes the contribution to the weak form
     from gradient-based physics.
 
-Notes
------
-The kernel operates on a single element and is vectorized over quadrature
-points for efficiency. The tensor_map function is applied via vmap to all
-quadrature points simultaneously.
-
 #### get\_mass\_kernel
 
 ```python
@@ -91,11 +256,6 @@ Returns
 Callable
     Mass kernel function that computes the contribution to the weak form
     from non-gradient physics.
-
-Notes
------
-This kernel is useful for time-dependent problems (inertia terms),
-reaction-diffusion equations, or adding body forces/sources.
 
 #### get\_surface\_kernel
 
@@ -121,11 +281,6 @@ Callable
     Surface kernel function that computes the contribution to the weak form
     from boundary loads/fluxes.
 
-Notes
------
-The Nanson scale factor accounts for the transformation from reference to
-physical surface elements, including the Jacobian and surface normal.
-
 #### create\_volume\_kernel
 
 ```python
@@ -135,13 +290,13 @@ def create_volume_kernel(problem: 'Problem') -> Callable
 Create unified volume kernel combining all volume physics.
 
 This function creates a kernel that combines contributions from all volume
-integral terms: Laplace (gradient-based), mass (non-gradient), and universal
-(custom) kernels. The resulting kernel is used for both residual and
-Jacobian assembly.
+integral terms: Laplace (gradient-based), mass (non-gradient), universal
+(custom), and weak form kernels. The resulting kernel is used for both
+residual and Jacobian assembly.
 
 Parameters
 ----------
-- **problem** (*Problem*): The finite element problem that may define get_tensor_map(), get_mass_map(), and/or get_universal_kernel() methods.
+- **problem** (*Problem*): The finite element problem that may define get_tensor_map(), get_mass_map(), get_weak_form(), and/or get_universal_kernel() methods.
 
 
 Returns
@@ -155,6 +310,10 @@ Notes
 The kernel checks for the existence of each physics method in the problem
 and only includes contributions from those that are defined. This allows
 for flexible problem definitions with any combination of physics terms.
+
+For multi-variable problems, the priority order is:
+1. ``get_universal_kernel()`` — full low-level control
+2. ``get_weak_form()`` — high-level quad-point physics definition
 
 #### create\_surface\_kernel
 

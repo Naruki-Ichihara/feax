@@ -129,7 +129,7 @@ result = run(
             h_min=0.2, h_max=1.0,
         ),
         adapt_every=epoch,
-        n_adapts_max=4,
+        n_adapts_max=2,
     ),
     output_dir="output_adaptive",
     save_every=2,

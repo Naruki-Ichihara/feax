@@ -13,7 +13,7 @@ fluctuation problem is solved and the volume-averaged stress response is
 assembled into C_hom.
 """
 
-from typing import Any
+from typing import Any, NamedTuple, Tuple
 
 import jax
 import jax.numpy as np
@@ -26,7 +26,7 @@ from ..solvers.options import IterativeSolverOptions
 # ---------------------------------------------------------------------------
 
 # 3D: ε11, ε22, ε33, γ23 (=2ε23), γ13 (=2ε13), γ12 (=2ε12)
-_UNIT_STRAINS_3D = np.array([
+UNIT_STRAINS_3D = np.array([
     [[1., 0., 0.], [0., 0., 0.], [0., 0., 0.]],
     [[0., 0., 0.], [0., 1., 0.], [0., 0., 0.]],
     [[0., 0., 0.], [0., 0., 0.], [0., 0., 1.]],
@@ -36,7 +36,7 @@ _UNIT_STRAINS_3D = np.array([
 ])
 
 # 2D: ε11, ε22, γ12 (=2ε12)
-_UNIT_STRAINS_2D = np.array([
+UNIT_STRAINS_2D = np.array([
     [[1., 0., 0.], [0., 0., 0.], [0., 0., 0.]],
     [[0., 0., 0.], [0., 1., 0.], [0., 0., 0.]],
     [[0., .5, 0.], [.5, 0., 0.], [0., 0., 0.]],
@@ -44,28 +44,36 @@ _UNIT_STRAINS_2D = np.array([
 
 
 # ---------------------------------------------------------------------------
-# Private helpers
+# Helpers (public)
 # ---------------------------------------------------------------------------
 
-def _macro_displacement(mesh, epsilon_macro: np.ndarray) -> np.ndarray:
+def macro_displacement(mesh, epsilon_macro: np.ndarray) -> np.ndarray:
     """Affine displacement field u_i = ε_ij X_j for each mesh node.
 
     Parameters
     ----------
     mesh :
-        FEAX mesh with ``points`` array of shape ``(num_nodes, 3)``.
+        FEAX mesh with ``points`` array of shape ``(num_nodes, 2)`` or
+        ``(num_nodes, 3)``.
     epsilon_macro : ndarray, shape (3, 3)
         Symmetric macroscopic strain tensor.
 
     Returns
     -------
-    ndarray, shape (num_nodes * 3,)
-        Flattened affine displacement vector.
+    ndarray
+        Flattened affine displacement vector with the same number of
+        components per node as the mesh spatial dimension.
     """
-    return (mesh.points @ epsilon_macro.T).flatten()
+    pts = mesh.points
+    ndim = pts.shape[1]
+    if ndim < 3:
+        # Pad 2D points to 3D, compute full product, keep first ndim components
+        pts_3d = np.concatenate([pts, np.zeros((pts.shape[0], 3 - ndim))], axis=1)
+        return (pts_3d @ epsilon_macro.T)[:, :ndim].flatten()
+    return (pts @ epsilon_macro.T).flatten()
 
 
-def _average_stress(problem, u_total: np.ndarray, internal_vars, dim: int) -> np.ndarray:
+def average_stress(problem, u_total: np.ndarray, internal_vars, dim: int) -> np.ndarray:
     """Compute the volume-averaged Cauchy stress in Voigt notation.
 
     Parameters
@@ -148,6 +156,43 @@ def _average_stress(problem, u_total: np.ndarray, internal_vars, dim: int) -> np
 
 
 # ---------------------------------------------------------------------------
+# Backward-compatible aliases
+# ---------------------------------------------------------------------------
+_macro_displacement = macro_displacement
+_average_stress = average_stress
+_UNIT_STRAINS_3D = UNIT_STRAINS_3D
+_UNIT_STRAINS_2D = UNIT_STRAINS_2D
+
+
+# ---------------------------------------------------------------------------
+# Result container
+# ---------------------------------------------------------------------------
+
+class HomogenizationResult(NamedTuple):
+    """Result of a computational homogenization analysis.
+
+    Attributes
+    ----------
+    C_hom : ndarray, shape (3, 3) or (6, 6)
+        Homogenized stiffness matrix in Voigt notation.
+    u_totals : tuple of ndarray
+        Total displacement fields for each unit strain case.
+        ``u_totals[k]`` has shape ``(num_dofs,)``.
+    u_macros : tuple of ndarray
+        Macroscopic (affine) displacement fields for each unit strain case.
+    unit_strains : ndarray
+        The unit strain tensors used, shape ``(n_cases, 3, 3)``.
+    labels : tuple of str
+        Labels for each strain case (e.g. ``('eps11', 'eps22', ...)``)
+    """
+    C_hom: np.ndarray
+    u_totals: Tuple[np.ndarray, ...]
+    u_macros: Tuple[np.ndarray, ...]
+    unit_strains: np.ndarray
+    labels: Tuple[str, ...]
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -169,11 +214,6 @@ def create_homogenization_solver(
 
     where ε^(k) is the k-th unit strain in Voigt order.
 
-    Internally uses ``feax.solver.create_solver`` with the prolongation matrix
-    P.  For each macroscopic strain ε^(k), the fluctuation solver returns the
-    periodic fluctuation P u'_red, and the total displacement is reconstructed
-    as u_total = P u'_red + u_macro.
-
     Parameters
     ----------
     problem :
@@ -186,66 +226,59 @@ def create_homogenization_solver(
     mesh :
         FEAX mesh of the unit cell.
     solver_options : IterativeSolverOptions, optional
-        Iterative solver configuration. Default: ``IterativeSolverOptions()``
-        which uses ``solver="auto"`` (→ CG, since P^T K P is SPD),
-        ``tol=1e-10``, ``atol=1e-10``, ``maxiter=10000``.
+        Iterative solver configuration.
     dim : int
-        Problem dimension. ``2`` → output shape ``(3, 3)``;
-        ``3`` → output shape ``(6, 6)``. Default: ``3``.
+        Problem dimension. ``2`` or ``3``. Default: ``3``.
 
     Returns
     -------
     callable
-        ``compute_C_hom(internal_vars) -> ndarray`` of shape
-        ``(3, 3)`` (2D) or ``(6, 6)`` (3D).
-
-    Raises
-    ------
-    ValueError
-        If ``dim`` is not 2 or 3.
+        ``solve(internal_vars) -> HomogenizationResult``
 
     Examples
     --------
-    >>> from feax.flat.pbc import periodic_bc_3D, prolongation_matrix
-    >>> from feax.solvers.options import IterativeSolverOptions
-    >>> pbc = periodic_bc_3D(unitcell, vec=3, dim=3)
-    >>> P = prolongation_matrix(pbc, mesh, vec=3)
-    >>> opts = IterativeSolverOptions(solver="cg", tol=1e-10, maxiter=5000)
-    >>> compute_C_hom = create_homogenization_solver(
-    ...     problem, bc, P, mesh, solver_options=opts, dim=3
-    ... )
-    >>> C_hom = compute_C_hom(internal_vars)  # ndarray, shape (6, 6)
+    >>> solve = create_homogenization_solver(problem, bc, P, mesh, dim=3)
+    >>> result = solve(internal_vars)
+    >>> result.C_hom   # ndarray, shape (6, 6)
+    >>> result.u_totals[0]  # displacement field for first strain case
     """
     if dim not in (2, 3):
         raise ValueError(f"dim must be 2 or 3, got {dim}")
 
-    unit_strains = _UNIT_STRAINS_3D if dim == 3 else _UNIT_STRAINS_2D
-    n_cases = len(unit_strains)
-    _labels = (
-        ['ε11', 'ε22', 'ε33', 'γ23', 'γ13', 'γ12'] if dim == 3
-        else ['ε11', 'ε22', 'γ12']
+    unit_strains_arr = UNIT_STRAINS_3D if dim == 3 else UNIT_STRAINS_2D
+    n_cases = len(unit_strains_arr)
+    labels = (
+        ('eps11', 'eps22', 'eps33', 'gam23', 'gam13', 'gam12') if dim == 3
+        else ('eps11', 'eps22', 'gam12')
     )
 
     if solver_options is None:
         solver_options = IterativeSolverOptions()
     _verbose = solver_options.verbose
 
-    # create_solver with P routes to _create_reduced_solver.
-    # Calling fluctuation_solver(internal_vars, u_macro) returns P @ u'_red,
-    # the periodic fluctuation part only.
     fluctuation_solver = create_solver(problem, bc, solver_options, P=P)
 
-    def compute_C_hom(internal_vars):
+    def solve(internal_vars) -> HomogenizationResult:
         columns = []
+        u_totals = []
+        u_macros = []
         for k in range(n_cases):
             if _verbose:
-                print(f"  [homogenization] strain case {k + 1}/{n_cases}: {_labels[k]}")
-            u_macro = _macro_displacement(mesh, unit_strains[k])
+                print(f"  [homogenization] strain case {k + 1}/{n_cases}: {labels[k]}")
+            u_macro = macro_displacement(mesh, unit_strains_arr[k])
             u_fluct = fluctuation_solver(internal_vars, u_macro)
             u_total = u_fluct + u_macro
-            sigma_voigt = _average_stress(problem, u_total, internal_vars, dim)
+            sigma_voigt = average_stress(problem, u_total, internal_vars, dim)
             columns.append(sigma_voigt)
-        # C_hom[:, k] = stress response to unit strain k
-        return np.stack(columns, axis=1)
+            u_totals.append(u_total)
+            u_macros.append(u_macro)
+        C_hom = np.stack(columns, axis=1)
+        return HomogenizationResult(
+            C_hom=C_hom,
+            u_totals=tuple(u_totals),
+            u_macros=tuple(u_macros),
+            unit_strains=unit_strains_arr,
+            labels=labels,
+        )
 
-    return compute_C_hom
+    return solve

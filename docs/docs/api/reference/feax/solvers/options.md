@@ -421,6 +421,7 @@ Parameters
 - **preconditioner** (*callable, optional*): Custom preconditioner function M(x) -&gt; y.
 - **use_jacobi_preconditioner** (*bool, default False*): Whether to auto-create Jacobi (diagonal) preconditioner.
 - **jacobi_shift** (*float, default 1e-12*): Regularization parameter for Jacobi preconditioner.
+- **restart** (*int, optional*): Restart parameter for GMRES. Only used when solver=&#x27;gmres&#x27;. If None, defaults to min(200, n) where n is the system size.
 - **x0_fn** (*callable, optional*): Custom function to compute initial guess: f(current_sol) -&gt; x0.
 
 

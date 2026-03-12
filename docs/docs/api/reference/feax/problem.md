@@ -106,32 +106,73 @@ Parameters
 #### get\_tensor\_map
 
 ```python
-def get_tensor_map() -> Callable
+def get_tensor_map() -> Optional[Callable]
 ```
 
 Get tensor map function for gradient-based physics.
 
-This method must be implemented by subclasses to define the constitutive
-relationship between gradients and stress/flux tensors.
+Override this method to define the constitutive relationship between
+gradients and stress/flux tensors directly.
+
+Alternatively, override :meth:`get_energy_density` to define a scalar
+energy density — the stress tensor will be derived automatically via
+``jax.grad``.
 
 Returns
 -------
-TensorMap
-    Function that maps gradients to stress/flux tensors
-    Signature: (u_grad: Array, *internal_vars) -&gt; stress_tensor: Array
-
-Raises
-------
-NotImplementedError
-    If not implemented by subclass
+Optional[Callable]
+    Function that maps gradients to stress/flux tensors.
+    Signature: ``(u_grad, *internal_vars) -&gt; stress_tensor``
+    Returns ``None`` if not defined (default).
 
 Examples
 --------
 For linear elasticity:
 ```python
->>> def tensor_map(u_grad, E, nu):
-...     # Compute stress from displacement gradient
-...     return stress_tensor
+def get_tensor_map(self):
+    def stress(u_grad):
+        eps = 0.5 * (u_grad + u_grad.T)
+        return lmbda * jnp.trace(eps) * jnp.eye(3) + 2 * mu * eps
+    return stress
+```
+
+#### get\_energy\_density
+
+```python
+def get_energy_density() -> Optional[Callable]
+```
+
+Get energy density function for gradient-based physics.
+
+Override this method to define the strain energy density as a scalar
+function of the displacement gradient. The stress tensor is derived
+automatically via ``jax.grad``:
+
+```python
+σ = ∂ψ/∂(∇u)
+```
+
+This is an alternative to :meth:`get_tensor_map`. If both are defined,
+``get_tensor_map`` takes precedence.
+
+Returns
+-------
+Optional[Callable]
+    Scalar energy density function.
+    Signature: ``(u_grad, *internal_vars) -&gt; scalar``
+    Returns ``None`` if not defined (default).
+
+Examples
+--------
+For Neo-Hookean hyperelasticity:
+```python
+def get_energy_density(self):
+    def psi(F):
+        C = F.T @ F
+        I1 = jnp.trace(C)
+        J = jnp.linalg.det(F)
+        return mu/2 * (I1 - 3) - mu * jnp.log(J) + lmbda/2 * jnp.log(J)**2
+    return psi
 ```
 
 #### get\_surface\_maps
@@ -173,6 +214,96 @@ Optional[MassMap]
     Function for mass/reaction terms with signature:
     (u: Array, x: Array, *internal_vars) -&gt; mass_term: Array
     Returns None if no mass terms are present
+
+#### get\_weak\_form
+
+```python
+def get_weak_form() -> Optional[Callable]
+```
+
+Get weak form function for multi-variable problems.
+
+Override this method to define coupled physics at a single quadrature
+point. The framework automatically handles solution interpolation,
+gradient computation, and integration. This is the recommended
+interface for multi-variable problems.
+
+The function is automatically ``jax.vmap``-ed over quadrature points.
+
+Returns
+-------
+Optional[Callable]
+    Weak form function with signature:
+
+    ```python
+    (vals, grads, x, *internal_vars) -&gt; (mass_terms, grad_terms)
+    ```
+
+    where:
+
+    - ``vals[i]``: solution of variable *i*, shape ``(vec_i,)``
+    - ``grads[i]``: gradient of variable *i*, shape ``(vec_i, dim)``
+    - ``x``: physical coordinate, shape ``(dim,)``
+    - ``mass_terms[i]``: residual integrated as ``∫ · v dΩ``, shape ``(vec_i,)``
+    - ``grad_terms[i]``: residual integrated as ``∫ · ∇v dΩ``, shape ``(vec_i, dim)``
+
+    Returns ``None`` if not defined (default).
+
+Examples
+--------
+Cahn-Hilliard with mixed (c, μ) formulation:
+```python
+def get_weak_form(self):
+    def weak_form(vals, grads, x, c_old):
+        c, mu = vals[0], vals[1]
+        grad_c, grad_mu = grads[0], grads[1]
+        return ([(c - c_old) / dt, mu - (c**3 - c)],
+                [M * grad_mu, -kappa * grad_c])
+    return weak_form
+```
+
+#### get\_surface\_weak\_forms
+
+```python
+def get_surface_weak_forms() -> List[Callable]
+```
+
+Get surface weak form functions for multi-variable boundary loads.
+
+Override this method to define surface tractions/fluxes at a single
+surface quadrature point. The framework handles solution interpolation
+and integration automatically. This is the recommended interface for
+multi-variable problems with boundary conditions.
+
+The function is automatically ``jax.vmap``-ed over surface quadrature
+points.
+
+Returns
+-------
+List[Callable]
+    List of surface weak form functions, one per boundary (matching
+    ``location_fns``). Each function has signature:
+
+    ```python
+    (vals, x, *internal_vars) -&gt; tractions
+    ```
+
+    where:
+
+    - ``vals[i]``: solution of variable *i*, shape ``(vec_i,)``
+    - ``x``: physical coordinate, shape ``(dim,)``
+    - ``tractions[i]``: surface load integrated as ``∫ t_i · v_i dΓ``,
+      shape ``(vec_i,)``
+
+Examples
+--------
+Pressure BC on a Stokes problem (u: vec=2, p: vec=1):
+```python
+def get_surface_weak_forms(self):
+    def inlet_pressure(vals, x):
+        return [np.array([p_in, 0.]), np.zeros(1)]
+    return [inlet_pressure]
+```
 
 #### tree\_flatten
 

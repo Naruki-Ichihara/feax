@@ -74,6 +74,10 @@ grads = grad_fn(internal_vars)
 - **Fixed mesh**: The mesh topology must remain constant throughout JAX transformations. No adaptive remeshing or h-refinement during differentiation.
 - **Single machine**: No MPI or distributed computing support. Parallelism is limited to JAX's device-level parallelism (`vmap`).
 
+## Overview
+
+New to FEAX? The [Overview](./overview.md) page summarizes the core workflow — Mesh → Problem → Boundary Conditions → Solver → Solution — and the key concepts you need to get started.
+
 ## Installation
 
 ```bash

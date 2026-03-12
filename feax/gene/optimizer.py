@@ -4,24 +4,26 @@ Provides a ``Pipeline`` abstract class and ``run()`` function for
 density-based topology optimization with optional constraints,
 continuation parameters, and adaptive remeshing.
 
-Usage::
+Usage:
 
-    from feax.gene.optimizer import Pipeline, constraint, run
+```python
+from feax.gene.optimizer import Pipeline, constraint, run
 
-    class MyPipeline(Pipeline):
-        def build(self, mesh):
-            ...  # set up mesh-dependent objects
+class MyPipeline(Pipeline):
+    def build(self, mesh):
+        ...  # set up mesh-dependent objects
 
-        def objective(self, rho, beta=1.0):
-            ...
-            return compliance
+    def objective(self, rho, beta=1.0):
+        ...
+        return compliance
 
-        @constraint(target=0.4)
-        def volume(self, rho, beta=1.0):
-            ...
-            return vol_frac
+    @constraint(target=0.4)
+    def volume(self, rho, beta=1.0):
+        ...
+        return vol_frac
 
-    result = run(MyPipeline(), mesh, max_iter=300)
+result = run(MyPipeline(), mesh, max_iter=300)
+```
 """
 
 from __future__ import annotations
@@ -54,15 +56,17 @@ def constraint(target: float, type: str = 'le'):
         ``'le'`` for *f(rho) <= target* (inequality, default),
         ``'eq'`` for *f(rho) == target* (equality).
 
-    Examples::
+    Examples:
 
-        @constraint(target=0.4)
-        def volume(self, rho, beta=1.0):
-            return volume_fn(rho)
+    ```python
+    @constraint(target=0.4)
+    def volume(self, rho, beta=1.0):
+        return volume_fn(rho)
 
-        @constraint(target=100.0, type='eq')
-        def mass(self, rho):
-            return mass_fn(rho)
+    @constraint(target=100.0, type='eq')
+    def mass(self, rho):
+        return mass_fn(rho)
+    ```
     """
     if type not in ('le', 'eq'):
         raise ValueError(f"constraint type must be 'le' or 'eq', got {type!r}")
@@ -136,13 +140,15 @@ class Continuation:
     Continuation values are passed as traced (not static) JAX
     arguments, so updates do **not** trigger recompilation.
 
-    Examples::
+    Examples:
 
-        # Heaviside beta: 1 -> 16, doubled every 40 iterations
-        Continuation(initial=1.0, final=16.0, update_every=40, multiply_by=2.0)
+    ```python
+    # Heaviside beta: 1 -> 16, doubled every 40 iterations
+    Continuation(initial=1.0, final=16.0, update_every=40, multiply_by=2.0)
 
-        # SIMP penalty: 1 -> 3, +0.5 every 30 iterations
-        Continuation(initial=1.0, final=3.0, update_every=30, multiply_by=1.0, add=0.5)
+    # SIMP penalty: 1 -> 3, +0.5 every 30 iterations
+    Continuation(initial=1.0, final=3.0, update_every=30, multiply_by=1.0, add=0.5)
+    ```
     """
     initial: float
     final: float
@@ -181,18 +187,20 @@ class AdaptiveConfig:
         ``(rho_old, points_old, points_new) -> rho_new``.
         Defaults to ``gene.adaptive.interpolate_field``.
 
-    Examples::
+    Examples:
 
-        from feax.gene import adaptive
+    ```python
+    from feax.gene import adaptive
 
-        AdaptiveConfig(
-            remesh=lambda m, rho: adaptive.adaptive_mesh(
-                geometry, refinement_field=adaptive.gradient_refinement(rho, m),
-                old_mesh=m, h_min=0.5, h_max=2.0,
-            ),
-            adapt_every=100,
-            n_adapts_max=4,
-        )
+    AdaptiveConfig(
+        remesh=lambda m, rho: adaptive.adaptive_mesh(
+            geometry, refinement_field=adaptive.gradient_refinement(rho, m),
+            old_mesh=m, h_min=0.5, h_max=2.0,
+        ),
+        adapt_every=100,
+        n_adapts_max=4,
+    )
+    ```
     """
     remesh: Callable[[Mesh, onp.ndarray], Mesh]
     adapt_every: int = 40

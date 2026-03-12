@@ -359,13 +359,15 @@ class Problem:
 
         Examples
         --------
-        For linear elasticity::
+        For linear elasticity:
 
-            def get_tensor_map(self):
-                def stress(u_grad):
-                    eps = 0.5 * (u_grad + u_grad.T)
-                    return lmbda * jnp.trace(eps) * jnp.eye(3) + 2 * mu * eps
-                return stress
+        ```python
+        def get_tensor_map(self):
+            def stress(u_grad):
+                eps = 0.5 * (u_grad + u_grad.T)
+                return lmbda * jnp.trace(eps) * jnp.eye(3) + 2 * mu * eps
+            return stress
+        ```
         """
         return None
 
@@ -374,9 +376,11 @@ class Problem:
 
         Override this method to define the strain energy density as a scalar
         function of the displacement gradient. The stress tensor is derived
-        automatically via ``jax.grad``::
+        automatically via ``jax.grad``:
 
-            σ = ∂ψ/∂(∇u)
+        ```python
+        σ = ∂ψ/∂(∇u)
+        ```
 
         This is an alternative to :meth:`get_tensor_map`. If both are defined,
         ``get_tensor_map`` takes precedence.
@@ -390,15 +394,17 @@ class Problem:
 
         Examples
         --------
-        For Neo-Hookean hyperelasticity::
+        For Neo-Hookean hyperelasticity:
 
-            def get_energy_density(self):
-                def psi(F):
-                    C = F.T @ F
-                    I1 = jnp.trace(C)
-                    J = jnp.linalg.det(F)
-                    return mu/2 * (I1 - 3) - mu * jnp.log(J) + lmbda/2 * jnp.log(J)**2
-                return psi
+        ```python
+        def get_energy_density(self):
+            def psi(F):
+                C = F.T @ F
+                I1 = jnp.trace(C)
+                J = jnp.linalg.det(F)
+                return mu/2 * (I1 - 3) - mu * jnp.log(J) + lmbda/2 * jnp.log(J)**2
+            return psi
+        ```
         """
         return None
 
@@ -449,9 +455,11 @@ class Problem:
         Returns
         -------
         Optional[Callable]
-            Weak form function with signature::
+            Weak form function with signature:
 
-                (vals, grads, x, *internal_vars) -> (mass_terms, grad_terms)
+            ```python
+            (vals, grads, x, *internal_vars) -> (mass_terms, grad_terms)
+            ```
 
             where:
 
@@ -465,15 +473,17 @@ class Problem:
 
         Examples
         --------
-        Cahn-Hilliard with mixed (c, μ) formulation::
+        Cahn-Hilliard with mixed (c, μ) formulation:
 
-            def get_weak_form(self):
-                def weak_form(vals, grads, x, c_old):
-                    c, mu = vals[0], vals[1]
-                    grad_c, grad_mu = grads[0], grads[1]
-                    return ([(c - c_old) / dt, mu - (c**3 - c)],
-                            [M * grad_mu, -kappa * grad_c])
-                return weak_form
+        ```python
+        def get_weak_form(self):
+            def weak_form(vals, grads, x, c_old):
+                c, mu = vals[0], vals[1]
+                grad_c, grad_mu = grads[0], grads[1]
+                return ([(c - c_old) / dt, mu - (c**3 - c)],
+                        [M * grad_mu, -kappa * grad_c])
+            return weak_form
+        ```
         """
         return None
 
@@ -492,9 +502,11 @@ class Problem:
         -------
         List[Callable]
             List of surface weak form functions, one per boundary (matching
-            ``location_fns``). Each function has signature::
+            ``location_fns``). Each function has signature:
 
-                (vals, x, *internal_vars) -> tractions
+            ```python
+            (vals, x, *internal_vars) -> tractions
+            ```
 
             where:
 
@@ -505,12 +517,14 @@ class Problem:
 
         Examples
         --------
-        Pressure BC on a Stokes problem (u: vec=2, p: vec=1)::
+        Pressure BC on a Stokes problem (u: vec=2, p: vec=1):
 
-            def get_surface_weak_forms(self):
-                def inlet_pressure(vals, x):
-                    return [np.array([p_in, 0.]), np.zeros(1)]
-                return [inlet_pressure]
+        ```python
+        def get_surface_weak_forms(self):
+            def inlet_pressure(vals, x):
+                return [np.array([p_in, 0.]), np.zeros(1)]
+            return [inlet_pressure]
+        ```
         """
         return []
 

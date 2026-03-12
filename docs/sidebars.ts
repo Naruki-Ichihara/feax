@@ -24,6 +24,7 @@ const sidebars: SidebarsConfig = {
         id: 'getting-started/index',
       },
       items: [
+        'getting-started/overview',
         'getting-started/installation',
       ],
     },
@@ -52,6 +53,7 @@ const sidebars: SidebarsConfig = {
         'advanced/periodic_boundary_conditions',
         'advanced/lattice_homogenization',
         'advanced/adaptive_topology_optimization',
+        'advanced/cohesive_fracture',
       ],
     },
   ],
@@ -79,6 +81,7 @@ const sidebars: SidebarsConfig = {
         'api/reference/feax/solvers/options',
         'api/reference/feax/solvers/linear',
         'api/reference/feax/solvers/newton',
+        'api/reference/feax/solvers/matrix_free',
         'api/reference/feax/solvers/common',
         'api/reference/feax/solvers/reduced',
       ],
@@ -96,6 +99,17 @@ const sidebars: SidebarsConfig = {
         'api/reference/feax/gene/filters',
         'api/reference/feax/gene/responses',
         'api/reference/feax/gene/mdmm',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Mechanics',
+      link: {
+        type: 'doc',
+        id: 'api/reference/feax/mechanics/index',
+      },
+      items: [
+        'api/reference/feax/mechanics/cohesive',
       ],
     },
     {

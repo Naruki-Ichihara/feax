@@ -11,16 +11,18 @@ The solver is suitable for problems with custom energy contributions
 (e.g., cohesive zones, phase-field fracture) that are difficult to
 express within the standard FE assembly framework.
 
-Usage pattern::
+Usage pattern:
 
-    from feax.solvers.matrix_free import MatrixFreeOptions, newton_solve
+```python
+from feax.solvers.matrix_free import MatrixFreeOptions, newton_solve
 
-    # Define total energy as a pure JAX function
-    def total_energy(u_flat, *args):
-        return elastic_energy(u_flat) + custom_energy(u_flat, *args)
+# Define total energy as a pure JAX function
+def total_energy(u_flat, *args):
+    return elastic_energy(u_flat) + custom_energy(u_flat, *args)
 
-    # Solve
-    u, info = newton_solve(total_energy, u0, fixed_dofs, args=(delta_max,))
+# Solve
+u, info = newton_solve(total_energy, u0, fixed_dofs, args=(delta_max,))
+```
 """
 
 import logging
@@ -29,6 +31,8 @@ from typing import Callable, Optional, Tuple
 
 import jax
 import jax.numpy as np
+
+from .options import AbstractSolverOptions
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +73,12 @@ class LinearSolverOptions:
 
 
 @dataclass(frozen=True)
-class MatrixFreeOptions:
+class MatrixFreeOptions(AbstractSolverOptions):
     """Options for the matrix-free Newton solver.
+
+    Can be passed as ``solver_options`` to :func:`feax.create_solver` to use
+    the fully matrix-free Newton path, or used directly with
+    :func:`newton_solve`.
 
     Parameters
     ----------
@@ -80,13 +88,22 @@ class MatrixFreeOptions:
         Maximum number of Newton iterations.
     linear_solver : LinearSolverOptions, default LinearSolverOptions()
         Options for the inner iterative linear solver.
-    verbose : bool, default False
-        Log Newton iteration info via jax.debug.print (visible inside JIT).
+    verbose : bool
+        Inherited from AbstractSolverOptions.  Log Newton iteration info
+        via jax.debug.print (visible inside JIT).
     """
     newton_tol: float = 1e-8
     newton_max_iter: int = 200
     linear_solver: LinearSolverOptions = field(default_factory=LinearSolverOptions)
-    verbose: bool = False
+
+    @property
+    def solver(self) -> str:
+        """Solver identifier for dispatch in create_solver."""
+        return "matrix_free"
+
+    def uses_x0(self) -> bool:
+        """Matrix-free solver uses an initial iterate."""
+        return True
 
 
 # ============================================================================
@@ -294,7 +311,19 @@ def newton_solve(
     res0_norm = np.linalg.norm(res0)
     state0 = (u0, res0_norm, 0)
 
+    if options.verbose:
+        jax.debug.print(
+            "Matrix-free Newton: initial res_norm = {r:.6e}, tol = {t:.1e}",
+            r=res0_norm, t=options.newton_tol,
+        )
+
     u_sol, final_res, n_iter = jax.lax.while_loop(cond_fn, body_fn, state0)
+
+    if options.verbose:
+        jax.debug.print(
+            "Matrix-free Newton: finished, n_iter = {n}, final res_norm = {r:.6e}",
+            n=n_iter, r=final_res,
+        )
 
     info = NewtonInfo(
         converged=bool(final_res <= options.newton_tol),
@@ -319,9 +348,11 @@ def create_energy_fn(problem) -> Callable:
     """Create an energy integration function from a feax Problem.
 
     Builds a pure JAX function that computes the total energy by
-    integrating the problem's energy density over the domain::
+    integrating the problem's energy density over the domain:
 
-        E(u) = ∫ ψ(∇u) dΩ
+    ```python
+    E(u) = ∫ ψ(∇u) dΩ
+    ```
 
     The energy density is obtained from ``problem.get_energy_density()``.
 
@@ -369,3 +400,157 @@ def create_energy_fn(problem) -> Callable:
         return np.sum(jax.vmap(cell_energy)(cell_u, sg, jxw))
 
     return energy
+
+
+# ============================================================================
+# create_solver-compatible wrapper
+# ============================================================================
+
+def create_matrix_free_solver(
+    problem,
+    bc,
+    options: Optional[MatrixFreeOptions] = None,
+    energy_fn: Optional[Callable] = None,
+):
+    """Create a differentiable matrix-free Newton solver.
+
+    Returns a callable with the same ``(internal_vars, initial_guess) -> solution``
+    signature used by :func:`feax.create_solver`, enabling use as a drop-in
+    replacement for assembly-based solvers.
+
+    The tangent operator is computed via JVP (forward-mode AD) of the residual,
+    and the inner linear system is solved by an iterative Krylov method.
+
+    Parameters
+    ----------
+    problem : feax.Problem
+        A feax problem.  When ``energy_fn`` is not provided, the problem must
+        define ``get_energy_density()`` returning a non-None callable.
+    bc : feax.DirichletBC
+        Dirichlet boundary conditions.
+    options : MatrixFreeOptions, optional
+        Solver options.  Uses defaults if not provided.
+    energy_fn : callable, optional
+        Custom total energy function with signature
+        ``energy_fn(u_flat, internal_vars) -> scalar``.
+        When provided, this is used instead of auto-generating from
+        ``problem.get_energy_density()``.  This is useful for problems
+        with extra energy contributions (e.g. cohesive zones):
+
+        ```python
+        energy_fn = lambda u, delta_max: elastic_energy(u) + cohesive_energy(u, delta_max)
+        ```
+
+    Returns
+    -------
+    solver : callable
+        ``solver(internal_vars, initial_guess) -> solution``.
+        Supports ``jax.grad`` via a custom VJP (adjoint method).
+
+    Examples
+    --------
+    >>> # Simple: auto-generate energy from problem
+    >>> solver = create_matrix_free_solver(problem, bc, MatrixFreeOptions(newton_tol=1e-6))
+    >>> sol = solver(internal_vars, initial_guess)
+
+    >>> # Custom energy (e.g. elastic + cohesive)
+    >>> def total_energy(u_flat, delta_max):
+    ...     return elastic_energy(u_flat) + cohesive_energy(u_flat, delta_max)
+    >>> solver = create_matrix_free_solver(problem, bc, options, energy_fn=total_energy)
+    >>> sol = solver(delta_max, initial_guess)
+    """
+    if options is None:
+        options = MatrixFreeOptions()
+
+    if energy_fn is not None:
+        # Custom energy: energy_fn(u_flat, internal_vars) -> scalar
+        _energy_fn = energy_fn
+        _has_internal_vars = True
+    else:
+        # Auto-generate from problem (no internal_vars dependency)
+        _energy_fn = create_energy_fn(problem)
+        _has_internal_vars = False
+
+    fixed_dofs = np.asarray(bc.bc_rows)
+
+    def project(v):
+        return v.at[fixed_dofs].set(0.0)
+
+    # ------------------------------------------------------------------
+    # Differentiable wrapper with custom VJP
+    # ------------------------------------------------------------------
+
+    @jax.custom_vjp
+    def differentiable_solve(internal_vars, initial_guess):
+        # NOTE: initial_guess must already have BC values set by the caller.
+        if _has_internal_vars:
+            u_sol, _ = newton_solve(
+                lambda u, iv=internal_vars: _energy_fn(u, iv),
+                initial_guess, fixed_dofs, options=options,
+            )
+        else:
+            u_sol, _ = newton_solve(
+                _energy_fn, initial_guess, fixed_dofs, options=options,
+            )
+        return u_sol
+
+    def f_fwd(internal_vars, initial_guess):
+        sol = differentiable_solve(internal_vars, initial_guess)
+        return sol, (internal_vars, sol)
+
+    def f_bwd(res, v):
+        internal_vars, sol = res
+
+        # Build gradient/residual function at the solution
+        if _has_internal_vars:
+            grad_fn = jax.grad(lambda u: _energy_fn(u, internal_vars))
+        else:
+            grad_fn = jax.grad(_energy_fn)
+
+        def hessian_matvec(w):
+            _, Hv = jax.jvp(grad_fn, (sol,), (w,))
+            return project(Hv)
+
+        rhs = project(v)
+        x0 = np.zeros_like(rhs)
+
+        # Solve adjoint: H @ adjoint = v
+        _solver_opts = options.linear_solver
+        _iterative_solver = getattr(
+            jax.scipy.sparse.linalg, _solver_opts.solver
+        )
+        _kw = dict(
+            x0=x0,
+            tol=_solver_opts.tol,
+            atol=_solver_opts.atol,
+            maxiter=_solver_opts.maxiter,
+        )
+        if _solver_opts.solver == "gmres":
+            _kw["restart"] = _solver_opts.restart
+        adjoint_vec, _ = _iterative_solver(hessian_matvec, rhs, **_kw)
+        adjoint_vec = project(adjoint_vec)
+
+        # VJP w.r.t. internal_vars
+        if _has_internal_vars:
+            def res_fn_params(iv):
+                return jax.grad(lambda u: _energy_fn(u, iv))(sol)
+            _, f_vjp = jax.vjp(res_fn_params, internal_vars)
+            vjp_result, = f_vjp(adjoint_vec)
+            vjp_result = jax.tree_util.tree_map(lambda x: -x, vjp_result)
+        else:
+            # Energy doesn't depend on internal_vars; use assembler-based VJP
+            from ..assembler import create_res_bc_function
+            res_bc_func = create_res_bc_function(problem, bc)
+
+            def res_fn_params(iv):
+                return problem.unflatten_fn_sol_list(res_bc_func(sol, iv))
+
+            adjoint_list = problem.unflatten_fn_sol_list(adjoint_vec)
+            _, f_vjp = jax.vjp(res_fn_params, internal_vars)
+            vjp_result, = f_vjp(adjoint_list)
+            vjp_result = jax.tree_util.tree_map(lambda x: -x, vjp_result)
+
+        return (vjp_result, None)
+
+    differentiable_solve.defvjp(f_fwd, f_bwd)
+    return differentiable_solve

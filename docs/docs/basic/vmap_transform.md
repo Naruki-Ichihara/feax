@@ -69,7 +69,7 @@ print(f"Problem: {problem.num_total_dofs_all_vars} DOFs")
 
 ```python
 solver_options = fe.DirectSolverOptions(solver="cudss")
-solver = fe.solver.create_solver(problem, bc, solver_options, iter_num=1)
+solver = fe.create_solver(problem, bc, solver_options, iter_num=1)
 ```
 
 ## Single Solve Function
@@ -78,13 +78,13 @@ Encapsulate a solve for one density value:
 
 ```python
 def single_solve(density):
-    rho       = fe.internal_vars.InternalVars.create_uniform_volume_var(problem, density)
-    traction_z = fe.internal_vars.InternalVars.create_uniform_surface_var(problem, T)
-    iv = fe.internal_vars.InternalVars(
+    rho       = fe.InternalVars.create_uniform_volume_var(problem, density)
+    traction_z = fe.InternalVars.create_uniform_surface_var(problem, T)
+    iv = fe.InternalVars(
         volume_vars=[rho],
         surface_vars=[(traction_z,)]
     )
-    return solver(iv, fe.utils.zero_like_initial_guess(problem, bc))
+    return solver(iv, fe.zero_like_initial_guess(problem, bc))
 ```
 
 ## Vectorization with vmap

@@ -353,17 +353,19 @@ def adaptive_mesh(
     Mesh
         New TET4 mesh with adaptive element sizes.
 
-    Examples::
+    Examples:
 
-        # From a STEP file — refine by density
-        mesh = adaptive_mesh("bracket.step", rho_filtered, old_mesh,
-                             h_min=0.5, h_max=3.0)
+    ```python
+    # From a STEP file — refine by density
+    mesh = adaptive_mesh("bracket.step", rho_filtered, old_mesh,
+                         h_min=0.5, h_max=3.0)
 
-        # Refine by density-gradient magnitude
-        grad_mag = compute_gradient_magnitude(rho_filtered, old_mesh)
-        grad_norm = grad_mag / grad_mag.max()  # normalise to [0, 1]
-        mesh = adaptive_mesh(geometry, grad_norm, old_mesh,
-                             h_min=0.5, h_max=3.0)
+    # Refine by density-gradient magnitude
+    grad_mag = compute_gradient_magnitude(rho_filtered, old_mesh)
+    grad_norm = grad_mag / grad_mag.max()  # normalise to [0, 1]
+    mesh = adaptive_mesh(geometry, grad_norm, old_mesh,
+                         h_min=0.5, h_max=3.0)
+    ```
     """
     size_cb, _ = _make_size_callback(refinement_field, old_mesh, h_min, h_max)
 

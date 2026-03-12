@@ -29,7 +29,9 @@ def create_solver(
         newton_options: Optional[NewtonOptions] = None,
         iter_num: Optional[int] = None,
         P: Optional[BCOO] = None,
-        internal_vars=None) -> Callable
+        internal_vars=None,
+        extra_residual_fn: Optional[Callable] = None,
+        energy_fn: Optional[Callable] = None) -> Callable
 ```
 
 Create a differentiable solver with custom VJP for gradient computation.
@@ -44,6 +46,7 @@ Parameters
 - **iter_num** (*int, optional*): Number of Newton iterations:
 - **P** (*BCOO matrix, optional*): Prolongation matrix for periodic boundary conditions.
 - **internal_vars** (*InternalVars, optional*): Sample internal variables for auto solver selection and cuDSS pre-warming. Required when ``solver=&quot;auto&quot;`` or cuDSS is used.
+- **extra_residual_fn** (*callable, optional*): Additional residual contribution: ``extra_residual_fn(sol_flat) -&gt; residual_flat``. Combined with feax&#x27;s bulk residual via hybrid matrix-free Newton-Krylov: the bulk Jacobian is assembled (sparse), while the extra contribution&#x27;s Jacobian-vector product is computed via ``jax.jvp`` (forward-mode AD). Requires ``IterativeSolverOptions`` and ``iter_num != 1`` (Newton path).
 
 
 Returns

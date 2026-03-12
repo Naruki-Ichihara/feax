@@ -26,6 +26,10 @@ from .problem import Problem
 from .solvers.linear import (
     create_linear_solver,
 )
+from .solvers.matrix_free import (
+    MatrixFreeOptions,
+    create_matrix_free_solver,
+)
 from .solvers.newton import (
     create_newton_solver,
 )
@@ -54,6 +58,7 @@ def create_solver(
     P: Optional[BCOO] = None,
     internal_vars=None,
     extra_residual_fn: Optional[Callable] = None,
+    energy_fn: Optional[Callable] = None,
 ) -> Callable:
     """Create a differentiable solver with custom VJP for gradient computation.
 
@@ -133,6 +138,13 @@ def create_solver(
             "Use DirectSolverOptions or IterativeSolverOptions."
         )
 
+    # Validate energy_fn constraints
+    if energy_fn is not None and not isinstance(linear_options, MatrixFreeOptions):
+        raise ValueError(
+            "energy_fn is only supported with MatrixFreeOptions. "
+            "Pass solver_options=MatrixFreeOptions(...) to use a custom energy function."
+        )
+
     # Validate extra_residual_fn constraints
     if extra_residual_fn is not None:
         if iter_num == 1:
@@ -172,6 +184,28 @@ def create_solver(
             )
         return create_reduced_solver(problem, bc, P, linear_options, adjoint_linear_options)
 
+    # 2) Matrix-free path (energy-based, JVP tangent)
+    if isinstance(linear_options, MatrixFreeOptions):
+        if iter_num == 1:
+            raise ValueError(
+                "MatrixFreeOptions requires nonlinear Newton solve (iter_num != 1). "
+                "The matrix-free solver always performs a full Newton iteration."
+            )
+        if newton_options is not None:
+            import warnings as _warnings
+            _warnings.warn(
+                "[feax] newton_options is ignored when MatrixFreeOptions is used. "
+                "Configure Newton tolerances via MatrixFreeOptions(newton_tol=..., newton_max_iter=...).",
+                UserWarning,
+                stacklevel=2,
+            )
+        return create_matrix_free_solver(
+            problem=problem,
+            bc=bc,
+            options=linear_options,
+            energy_fn=energy_fn,
+        )
+
     # Non-reduced paths (Newton / linear): normalize missing options.
     _linear_options_missing = linear_options is None
     if linear_options is None:
@@ -195,15 +229,15 @@ def create_solver(
                 "or specify the solver explicitly (e.g. IterativeSolverOptions(solver='cg'))."
             )
 
-    if not isinstance(linear_options, (DirectSolverOptions, IterativeSolverOptions)):
+    if not isinstance(linear_options, (DirectSolverOptions, IterativeSolverOptions, MatrixFreeOptions)):
         raise TypeError(
             "Unsupported solver_options type. "
-            f"Expected DirectSolverOptions or IterativeSolverOptions, got {type(linear_options).__name__}."
+            f"Expected DirectSolverOptions, IterativeSolverOptions, or MatrixFreeOptions, got {type(linear_options).__name__}."
         )
-    if not isinstance(adjoint_linear_options, (DirectSolverOptions, IterativeSolverOptions)):
+    if not isinstance(adjoint_linear_options, (DirectSolverOptions, IterativeSolverOptions, MatrixFreeOptions)):
         raise TypeError(
             "Unsupported adjoint_solver_options type. "
-            f"Expected DirectSolverOptions or IterativeSolverOptions, got {type(adjoint_linear_options).__name__}."
+            f"Expected DirectSolverOptions, IterativeSolverOptions, or MatrixFreeOptions, got {type(adjoint_linear_options).__name__}."
         )
 
     J_bc_func = create_J_bc_function(problem, bc)

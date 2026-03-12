@@ -26,8 +26,16 @@
         },
         {
           "items": [
+            "reference/feax/mechanics/cohesive"
+          ],
+          "label": "feax.mechanics",
+          "type": "category"
+        },
+        {
+          "items": [
             "reference/feax/solvers/common",
             "reference/feax/solvers/linear",
+            "reference/feax/solvers/matrix_free",
             "reference/feax/solvers/newton",
             "reference/feax/solvers/options",
             "reference/feax/solvers/reduced"

@@ -114,25 +114,25 @@ bc_config = fe.DCboundary.DirichletBCConfig([
 ```python
 feax_problem = HyperElasticityFeax(mesh, vec=3, dim=3, location_fns=[right])
 
-traction_surface = fe.internal_vars.InternalVars.create_uniform_surface_var(feax_problem, T)
-internal_vars = fe.internal_vars.InternalVars(
+traction_surface = fe.InternalVars.create_uniform_surface_var(feax_problem, T)
+internal_vars = fe.InternalVars(
     volume_vars=[],
     surface_vars=[(traction_surface,)]
 )
 
 bc = bc_config.create_bc(feax_problem)
 
-solver_options = fe.solver.DirectSolverOptions(verbose=True)
-solver = fe.solver.create_solver(feax_problem, bc, solver_options, internal_vars=internal_vars)
+solver_options = fe.DirectSolverOptions()
+solver = fe.create_solver(feax_problem, bc, solver_options, internal_vars=internal_vars)
 ```
 
-Omitting `iter_num=1` enables Newton's method for the nonlinear problem. `verbose=True` prints convergence info at each Newton iteration using `jax.debug.print()`, which is JIT- and vmap-compatible.
+Omitting `iter_num=1` enables Newton's method for the nonlinear problem.
 
 ## Solving
 
 ```python
 def solve_fn(iv):
-    sol = solver(iv, fe.utils.zero_like_initial_guess(feax_problem, bc))
+    sol = solver(iv, fe.zero_like_initial_guess(feax_problem, bc))
     return sol
 
 sol = solve_fn(internal_vars)

@@ -3,10 +3,7 @@
 Demonstrates fully matrix-free Newton fracture simulation:
   - Bulk: 2D plane strain elasticity (QUAD4, energy density via feax)
   - Interface: exponential cohesive law (pure JAX)
-  - Solver: feax.solvers.matrix_free.newton_solve with JVP-based tangent
-      total_energy = elastic_energy + cohesive_energy
-      residual = jax.grad(total_energy)
-      tangent @ v = jax.jvp(residual, (u,), (v,))[1]
+  - Solver: feax.create_solver with MatrixFreeOptions (JVP-based tangent)
 
 The mesh is split along y=0 to create a cohesive interface.
 A pre-crack extends from x=0 to x=a (free surfaces).
@@ -28,7 +25,6 @@ from feax.mechanics.cohesive import (
 from feax.solvers.matrix_free import (
     LinearSolverOptions,
     MatrixFreeOptions,
-    newton_solve,
     create_energy_fn,
 )
 
@@ -266,16 +262,18 @@ def make_bc(disp):
     return fe.DCboundary.DirichletBCConfig(specs).create_bc(problem)
 
 
-# Pre-compute fixed DOFs (same for all load steps, only values change)
+# Solver options and solver (created once, reused for all steps)
 bc0 = make_bc(0.0)
-fixed_dofs = bc0.bc_rows
-
-# Solver options
 solver_options = MatrixFreeOptions(
     newton_tol=1e-6,
     newton_max_iter=1000,
     linear_solver=LinearSolverOptions(solver='cg', atol=1e-8, maxiter=200),
     verbose=True,
+)
+solver = fe.create_solver(
+    problem, bc0,
+    solver_options=solver_options,
+    energy_fn=total_energy,
 )
 
 
@@ -309,23 +307,14 @@ print(f"  Pre-crack: x=[0, {a}], Cohesive: x=[{a}, {Lx}]")
 
 u_flat = np.zeros(problem.num_total_dofs_all_vars)
 delta_max = np.zeros(interface.n_nodes)
-not_converged_steps = []
 
 for step in range(1, n_steps + 1):
     disp = max_disp * step / n_steps
 
-    # Apply BC
+    # Apply BC values to initial guess, then solve
     bc = make_bc(disp)
     u_flat = u_flat.at[bc.bc_rows].set(bc.bc_vals)
-
-    # Solve
-    u_flat, info = newton_solve(
-        total_energy, u_flat, fixed_dofs,
-        args=(delta_max,), options=solver_options,
-    )
-
-    if not info.converged:
-        not_converged_steps.append((step, info.res_norm, info.n_iter))
+    u_flat = solver(delta_max, u_flat)
 
     # Update state variables
     delta_current = interface.get_opening(u_flat)
@@ -333,19 +322,10 @@ for step in range(1, n_steps + 1):
 
     if step % 2 == 0 or step <= 5:
         max_opening = float(delta_current.max())
-        status = "OK" if info.converged else "NOT converged"
         logger.info(
-            f"  step {step:3d}: disp={disp:.5f}, δ_max={max_opening:.6f}, "
-            f"Newton iters={info.n_iter}, res={info.res_norm:.2e} [{status}]"
+            f"  step {step:3d}: disp={disp:.5f}, δ_max={max_opening:.6f}"
         )
         save_step(u_flat, delta_max, step)
-
-if not_converged_steps:
-    logger.warning(
-        f"WARNING: {len(not_converged_steps)} steps did not converge:"
-    )
-    for s, res, iters in not_converged_steps:
-        logger.warning(f"  step {s}: res={res:.2e}, iters={iters}")
 
 print("Done.")
 save_step(u_flat, delta_max, n_steps)

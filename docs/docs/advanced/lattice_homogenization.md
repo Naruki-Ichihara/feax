@@ -141,9 +141,9 @@ bc_config = fe.DCboundary.DirichletBCConfig([])
 bc = bc_config.create_bc(problem)
 
 # Density-based Young's modulus
-E_field = fe.internal_vars.InternalVars.create_cell_var(problem, E_base * rho)
-nu_field = fe.internal_vars.InternalVars.create_cell_var(problem, nu)
-internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
+E_field = fe.InternalVars.create_cell_var(problem, E_base * rho)
+nu_field = fe.InternalVars.create_cell_var(problem, nu)
+internal_vars = fe.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
 ```
 
 **Why cell-based variables?**
@@ -284,9 +284,9 @@ P = flat.pbc.prolongation_matrix(pairings, mesh, vec=3)
 
 # Boundary conditions and internal variables
 bc = fe.DCboundary.DirichletBCConfig([]).create_bc(problem)
-E_field = fe.internal_vars.InternalVars.create_cell_var(problem, E_base * rho)
-nu_field = fe.internal_vars.InternalVars.create_cell_var(problem, nu)
-internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
+E_field = fe.InternalVars.create_cell_var(problem, E_base * rho)
+nu_field = fe.InternalVars.create_cell_var(problem, nu)
+internal_vars = fe.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
 
 # Homogenization
 solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-8)

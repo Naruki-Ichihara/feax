@@ -39,6 +39,7 @@ from .solvers.matrix_free import (
     MatrixFreeOptions,
     NewtonInfo,
     create_energy_fn,
+    create_matrix_free_solver,
     newton_solve as matrix_free_newton_solve,
 )
 from .solvers.newton import newton_solve, newton_solve_fori, newton_solve_py

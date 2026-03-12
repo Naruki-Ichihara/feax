@@ -17,6 +17,67 @@ For each of the n independent unit strain cases ε^(k), the periodic
 fluctuation problem is solved and the volume-averaged stress response is
 assembled into C_hom.
 
+#### macro\_displacement
+
+```python
+def macro_displacement(mesh, epsilon_macro: np.ndarray) -> np.ndarray
+```
+
+Affine displacement field u_i = ε_ij X_j for each mesh node.
+
+Parameters
+----------
+- **mesh** (*FEAX mesh with ``points`` array of shape ``(num_nodes, 2)`` or*): ``(num_nodes, 3)``.
+- **epsilon_macro** (*ndarray, shape (3, 3)*): Symmetric macroscopic strain tensor.
+
+
+Returns
+-------
+ndarray
+    Flattened affine displacement vector with the same number of
+    components per node as the mesh spatial dimension.
+
+#### average\_stress
+
+```python
+def average_stress(problem, u_total: np.ndarray, internal_vars,
+                   dim: int) -> np.ndarray
+```
+
+Compute the volume-averaged Cauchy stress in Voigt notation.
+
+Parameters
+----------
+- **problem** (*FEAX Problem instance.*)
+- **u_total** (*ndarray, shape (num_dofs,)*): Total displacement field.
+- **internal_vars** (*FEAX InternalVars.*)
+- **dim** (*int*): Problem dimension (2 or 3).
+
+
+Returns
+-------
+ndarray
+    Volume-averaged stress in Voigt notation.
+    Shape ``(3,)`` for 2D: ``[σ11, σ22, σ12]``.
+    Shape ``(6,)`` for 3D: ``[σ11, σ22, σ33, σ23, σ13, σ12]``.
+
+## HomogenizationResult Objects
+
+```python
+class HomogenizationResult(NamedTuple)
+```
+
+Result of a computational homogenization analysis.
+
+Attributes
+----------
+- **C_hom** (*ndarray, shape (3, 3) or (6, 6)*): Homogenized stiffness matrix in Voigt notation.
+- **u_totals** (*tuple of ndarray*): Total displacement fields for each unit strain case. ``u_totals[k]`` has shape ``(num_dofs,)``.
+- **u_macros** (*tuple of ndarray*): Macroscopic (affine) displacement fields for each unit strain case.
+- **unit_strains** (*ndarray*): The unit strain tensors used, shape ``(n_cases, 3, 3)``.
+- **labels** (*tuple of str*): Labels for each strain case (e.g. ``(&#x27;eps11&#x27;, &#x27;eps22&#x27;, ...)``)
+
+
 #### create\_homogenization\_solver
 
 ```python
@@ -38,43 +99,27 @@ are assembled into the homogenized stiffness matrix C_hom:
 
 where ε^(k) is the k-th unit strain in Voigt order.
 
-Internally uses ``feax.solver.create_solver`` with the prolongation matrix
-P.  For each macroscopic strain ε^(k), the fluctuation solver returns the
-periodic fluctuation P u&#x27;_red, and the total displacement is reconstructed
-as u_total = P u&#x27;_red + u_macro.
-
 Parameters
 ----------
 - **problem** (*FEAX Problem instance (linear elasticity).*)
 - **bc** (*FEAX DirichletBC (typically empty for periodic unit cells).*)
 - **P** (*Prolongation matrix from ``feax.flat.pbc.prolongation_matrix``.*): Shape ``(num_dofs, num_reduced_dofs)``.
 - **mesh** (*FEAX mesh of the unit cell.*)
-- **solver_options** (*IterativeSolverOptions, optional*): Iterative solver configuration. Default: ``IterativeSolverOptions()`` which uses ``solver=&quot;auto&quot;`` (→ CG, since P^T K P is SPD), ``tol=1e-10``, ``atol=1e-10``, ``maxiter=10000``.
-- **dim** (*int*): Problem dimension. ``2`` → output shape ``(3, 3)``; ``3`` → output shape ``(6, 6)``. Default: ``3``.
+- **solver_options** (*IterativeSolverOptions, optional*): Iterative solver configuration.
+- **dim** (*int*): Problem dimension. ``2`` or ``3``. Default: ``3``.
 
 
 Returns
 -------
 callable
-    ``compute_C_hom(internal_vars) -&gt; ndarray`` of shape
-    ``(3, 3)`` (2D) or ``(6, 6)`` (3D).
-
-Raises
-------
-ValueError
-    If ``dim`` is not 2 or 3.
+    ``solve(internal_vars) -&gt; HomogenizationResult``
 
 Examples
 --------
 ```python
->>> from feax.flat.pbc import periodic_bc_3D, prolongation_matrix
->>> from feax.solvers.options import IterativeSolverOptions
->>> pbc = periodic_bc_3D(unitcell, vec=3, dim=3)
->>> P = prolongation_matrix(pbc, mesh, vec=3)
->>> opts = IterativeSolverOptions(solver=&quot;cg&quot;, tol=1e-10, maxiter=5000)
->>> compute_C_hom = create_homogenization_solver(
-...     problem, bc, P, mesh, solver_options=opts, dim=3
-... )
->>> C_hom = compute_C_hom(internal_vars)  # ndarray, shape (6, 6)
+>>> solve = create_homogenization_solver(problem, bc, P, mesh, dim=3)
+>>> result = solve(internal_vars)
+>>> result.C_hom   # ndarray, shape (6, 6)
+>>> result.u_totals[0]  # displacement field for first strain case
 ```
 

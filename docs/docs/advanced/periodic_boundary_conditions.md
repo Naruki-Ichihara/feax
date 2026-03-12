@@ -96,15 +96,15 @@ bc = bc_config.create_bc(problem)
 
 ```python
 theta = 1.0
-theta_array = fe.internal_vars.InternalVars.create_uniform_volume_var(problem, theta)
-internal_vars = fe.internal_vars.InternalVars(volume_vars=(theta_array,), surface_vars=())
+theta_array = fe.InternalVars.create_uniform_volume_var(problem, theta)
+internal_vars = fe.InternalVars(volume_vars=(theta_array,), surface_vars=())
 ```
 
 ### Step 6: Solver
 
 ```python
 solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-8)
-solver = fe.solver.create_solver(problem, bc, solver_options, iter_num=1, P=P)
+solver = fe.create_solver(problem, bc, solver_options, iter_num=1, P=P)
 ```
 
 Pass prolongation matrix `P` to `create_solver()`.
@@ -120,7 +120,7 @@ fe.utils.save_sol(mesh, "periodic_poisson.vtu", point_infos=[("u", sol_full.resh
 ## 3D Periodic Boundary Conditions
 
 ```python
-from feax.lattice_toolkit.pbc import periodic_bc_3D
+from feax.flat.pbc import periodic_bc_3D
 
 mesh_3d = fe.mesh.box_mesh(size=1.0, mesh_size=0.1)
 pairings_3d = periodic_bc_3D(mesh_3d, vec=3, dim=3)
@@ -190,12 +190,12 @@ bc = bc_config.create_bc(problem)
 
 # Internal variables
 theta = 1.0
-theta_array = fe.internal_vars.InternalVars.create_uniform_volume_var(problem, theta)
-internal_vars = fe.internal_vars.InternalVars(volume_vars=(theta_array,), surface_vars=())
+theta_array = fe.InternalVars.create_uniform_volume_var(problem, theta)
+internal_vars = fe.InternalVars(volume_vars=(theta_array,), surface_vars=())
 
 # Solver
 solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-8)
-solver = fe.solver.create_solver(problem, bc, solver_options=solver_options, iter_num=1, P=P)
+solver = fe.create_solver(problem, bc, solver_options=solver_options, iter_num=1, P=P)
 
 # Solve
 initial_guess = np.zeros(problem.num_total_dofs_all_vars)

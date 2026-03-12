@@ -27,10 +27,16 @@ def create_newton_solver(problem,
                          adjoint_linear_options,
                          iter_num: Optional[int],
                          newton_options: Optional[NewtonOptions] = None,
-                         internal_vars=None)
+                         internal_vars=None,
+                         extra_residual_fn=None)
 ```
 
 Create a differentiable Newton solver (iter_num is None or &gt;1).
+
+Parameters
+----------
+- **extra_residual_fn** (*callable, optional*): Additional residual: ``extra_residual_fn(sol_flat) -&gt; residual_flat``. When provided, uses hybrid matrix-free Newton-Krylov: feax assembles the bulk Jacobian (sparse), and the extra contribution&#x27;s JVP is computed via ``jax.jvp``.  The combined matvec is: ``J_total @ v = J_bulk @ v + jvp(extra_res_bc, sol, v)``. Dirichlet BC rows of the extra residual are zeroed automatically.
+
 
 #### create\_armijo\_line\_search\_jax
 
@@ -115,8 +121,14 @@ def newton_solve_py(J_bc_applied,
                     linear_solver_options,
                     internal_vars=None,
                     P_mat=None,
+                    linear_solve_fn=None,
+                    x0_fn=None,
                     matrix_view: MatrixView = MatrixView.FULL)
 ```
 
-Newton solver using Python while loop (non-JIT debug path).
+Newton solver using Python while loop.
+
+``linear_solve_fn`` and ``x0_fn`` can be passed in pre-built (and
+optionally pre-JIT-compiled) by the caller, avoiding redundant
+reconstruction on every time step.
 

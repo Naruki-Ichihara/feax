@@ -56,15 +56,15 @@ bc = bc_config.create_bc(problem)
 ## Creating JIT and Non-JIT Solvers
 
 ```python
-traction_array = fe.internal_vars.InternalVars.create_uniform_surface_var(problem, traction)
-internal_vars  = fe.internal_vars.InternalVars(volume_vars=(), surface_vars=[(traction_array,)])
+traction_array = fe.InternalVars.create_uniform_surface_var(problem, traction)
+internal_vars  = fe.InternalVars(volume_vars=(), surface_vars=[(traction_array,)])
 
-solver_option = fe.solver.DirectSolverOptions()
+solver_option = fe.DirectSolverOptions()
 
-solver_no_jit = fe.solver.create_solver(problem, bc, solver_option, iter_num=1, internal_vars=internal_vars)
-solver_jit    = jax.jit(fe.solver.create_solver(problem, bc, solver_option, iter_num=1, internal_vars=internal_vars))
+solver_no_jit = fe.create_solver(problem, bc, solver_option, iter_num=1, internal_vars=internal_vars)
+solver_jit    = jax.jit(fe.create_solver(problem, bc, solver_option, iter_num=1, internal_vars=internal_vars))
 
-initial = fe.utils.zero_like_initial_guess(problem, bc)
+initial = fe.zero_like_initial_guess(problem, bc)
 ```
 
 `jax.jit` wraps the solver into a compiled function. Compilation happens on the first call and is cached for subsequent calls.

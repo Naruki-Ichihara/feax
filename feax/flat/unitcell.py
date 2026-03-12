@@ -483,11 +483,11 @@ class UnitCell(ABC):
                 "Master and slave point sets must have the same number of points."
             )
 
-        deltas = slave_pts - master_pts
+        # Compute translation from centroids — robust regardless of
+        # the ordering of points in the mesh array.
+        translation = np.mean(slave_pts, axis=0) - np.mean(master_pts, axis=0)
 
         def fn(point: np.ndarray) -> np.ndarray:
-            dists = np.linalg.norm(master_pts - point, axis=1)
-            idx = np.argmin(dists)
-            return point + deltas[idx]
+            return point + translation
 
         return fn
