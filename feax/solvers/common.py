@@ -64,77 +64,72 @@ def create_jacobi_preconditioner(A: BCOO, shift: float = 1e-12):
     return matvec
 
 
-def create_direct_solve_fn(options: DirectSolverOptions):
+def create_direct_solve_fn(
+    options: DirectSolverOptions,
+    *,
+    cache_namespace: str = "global",
+):
     """Create a direct linear solve function."""
     if options.solver == "auto":
         raise ValueError(
             "DirectSolverOptions.solver is 'auto' (unresolved). "
             "Call resolve_direct_solver() before create_direct_solve_fn()."
         )
+    solver = options.solver
 
-    lineax_solvers = {"cholesky", "lu", "qr"}
-    if options.solver in lineax_solvers:
-        try:
-            import lineax as _lx
-        except ImportError:
-            raise RuntimeError(
-                f"lineax is required to use the '{options.solver}' solver. "
-                f"Install it with: pip install lineax"
-            )
-
-        solver_map = {
-            "cholesky": (_lx.Cholesky(), (_lx.symmetric_tag, _lx.positive_semidefinite_tag)),
-            "lu": (_lx.LU(), ()),
-            "qr": (_lx.QR(), ()),
-        }
-        lx_solver, lx_tags = solver_map[options.solver]
-
-        def solve(A, b, x0=None):
-            input_structure = jax.ShapeDtypeStruct((A.shape[1],), b.dtype)
-
-            def matvec(v):
-                return A @ v
-
-            operator = _lx.FunctionLinearOperator(
-                matvec,
-                input_structure=input_structure,
-                tags=lx_tags,
-            )
-
-            sol = _lx.linear_solve(operator, b, solver=lx_solver)
-            return sol.value
-
-        return solve
-
-    if options.solver == "spsolve":
-        if jax.default_backend() != "cpu":
-            raise RuntimeError(
-                "jax.experimental.sparse.linalg.spsolve is only enabled on the CPU. "
-                "Run on CPU or use an iterative solver on GPU."
-            )
+    if solver == "spsolve":
+        from .direct.spsolve import spsolve
 
         def solve(A, b, x0=None):
             A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A.sum_duplicates(nse=A.nse))
-            x = jax.experimental.sparse.linalg.spsolve(
-                A_bcsr.data, A_bcsr.indices, A_bcsr.indptr, b,
-                tol=0.0,
+            x = spsolve(
+                b_values=b,
+                csr_values=A_bcsr.data,
+                csr_offsets=A_bcsr.indptr,
+                csr_columns=A_bcsr.indices,
                 reorder=1,
+                vmap_method=options.sksparse_options.vmap_method,
             )
             return x
         return solve
 
-    if options.solver == "cudss":
-        if jax.default_backend() != "gpu":
-            raise RuntimeError(
-                "spineax.cudss.solver.CuDSSSolver is only enabled on the GPU"
+    if solver == "umfpack":
+        from .direct.umfpack import umfpack_solve
+
+        def solve(A, b, x0=None):
+            A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A.sum_duplicates(nse=A.nse))
+            x = umfpack_solve(
+                b_values=b,
+                csr_values=A_bcsr.data,
+                csr_offsets=A_bcsr.indptr,
+                csr_columns=A_bcsr.indices,
+                trans="N",
+                cache_namespace=cache_namespace,
+                vmap_method=options.sksparse_options.vmap_method,
             )
-        try:
-            from spineax.cudss.solver import CuDSSSolver
-        except Exception as e:
-            raise RuntimeError(
-                "Failed to import `spineax.cudss.solver.CuDSSSolver`. "
-                "The optional dependency `spineax` is required to use the `cudss` solver."
-            ) from e
+            return x
+        return solve
+
+    if solver == "cholmod":
+        from .direct.cholmod import cholmod_solve
+
+        def solve(A, b, x0=None):
+            A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A.sum_duplicates(nse=A.nse))
+            x = cholmod_solve(
+                b_values=b,
+                csr_values=A_bcsr.data,
+                csr_offsets=A_bcsr.indptr,
+                csr_columns=A_bcsr.indices,
+                lower=options.sksparse_options.lower,
+                order=options.sksparse_options.order,
+                cache_namespace=cache_namespace,
+                vmap_method=options.sksparse_options.vmap_method,
+            )
+            return x
+        return solve
+
+    if solver == "cudss":
+        from spineax.cudss.solver import CuDSSSolver
         cudss_solver = None
 
         def solve(A, b, x0=None):
@@ -160,8 +155,8 @@ def create_direct_solve_fn(options: DirectSolverOptions):
         return solve
 
     raise ValueError(
-        f"Unknown direct solver: {options.solver}. "
-        f"Choose from ('cudss', 'spsolve', 'cholesky', 'lu', 'qr')"
+        f"Unknown direct solver: {solver}. "
+        "Choose from ('cudss', 'spsolve', 'umfpack', 'cholmod')"
     )
 
 
@@ -225,7 +220,11 @@ def create_iterative_solve_fn(options: IterativeSolverOptions):
     )
 
 
-def create_linear_solve_fn(solver_options):
+def create_linear_solve_fn(
+    solver_options,
+    *,
+    cache_namespace: str = "global",
+):
     """Create a linear solve function based on solver options."""
     if isinstance(solver_options, SolverOptions):
         raise RuntimeError(
@@ -234,7 +233,10 @@ def create_linear_solve_fn(solver_options):
         )
 
     if isinstance(solver_options, DirectSolverOptions):
-        return create_direct_solve_fn(solver_options)
+        return create_direct_solve_fn(
+            solver_options,
+            cache_namespace=cache_namespace,
+        )
     if isinstance(solver_options, IterativeSolverOptions):
         return create_iterative_solve_fn(solver_options)
     raise TypeError(

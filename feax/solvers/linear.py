@@ -7,7 +7,7 @@ in finite element analysis.
 
 Key Features:
 - Jacobi (diagonal) preconditioner
-- Solver selection: cg, bicgstab, gmres, spsolve, cudss, lineax
+- Solver selection: cg, bicgstab, gmres, spsolve, umfpack, cholmod, cudss
 - Convergence checking for ill-conditioned problems
 - Adjoint linear solve for gradient computation
 - create_linear_solver: high-level differentiable solver for linear problems
@@ -269,11 +269,17 @@ def create_linear_solver(
 
     J_bc_func = create_J_bc_function(problem, bc)
     res_bc_func = create_res_bc_function(problem, bc)
-    linear_solve_fn = create_linear_solve_fn(solver_options)
+    linear_solve_fn = create_linear_solve_fn(
+        solver_options,
+        cache_namespace="forward",
+    )
     if adjoint_solver_options is solver_options:
         adjoint_linear_solve_fn = linear_solve_fn
     else:
-        adjoint_linear_solve_fn = create_linear_solve_fn(adjoint_solver_options)
+        adjoint_linear_solve_fn = create_linear_solve_fn(
+            adjoint_solver_options,
+            cache_namespace="adjoint",
+        )
     x0_fn = solver_options.x0_fn if isinstance(solver_options, IterativeSolverOptions) else None
 
     prewarm_cudss_solvers(

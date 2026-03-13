@@ -53,6 +53,7 @@ from .solvers.options import (
     IterativeSolverOptions,
     MatrixProperty,
     NewtonOptions,
+    SKSPARSEOptions,
     SolverOptions,
     detect_backend,
     detect_matrix_property,

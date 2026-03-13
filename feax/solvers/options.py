@@ -10,6 +10,7 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Optional, Union
+from ..problem import MatrixView
 
 import jax
 
@@ -67,6 +68,85 @@ def has_spsolve() -> bool:
     Only supported on the CPU backend.
     """
     return is_cpu()
+
+
+def detect_available_solver_backends(solver: str = "auto") -> tuple[str, ...]:
+    """Detect available direct solvers for the current runtime.
+
+    Parameters
+    ----------
+    solver : str, default "auto"
+        - "auto": return all available direct solvers.
+        - specific solver: return that solver if available, otherwise raise.
+    """
+    backend = jax.default_backend()
+
+    def _has_cudss() -> bool:
+        if backend != "gpu":
+            return False
+        try:
+            from spineax.cudss.solver import CuDSSSolver  # noqa: F401
+            return True
+        except Exception:
+            return False
+
+    def _has_cholmod() -> bool:
+        if backend != "cpu":
+            return False
+        try:
+            from sksparse import cholmod as _cholmod  # noqa: F401
+            return True
+        except Exception:
+            return False
+
+    def _has_umfpack() -> bool:
+        if backend != "cpu":
+            return False
+        try:
+            from sksparse import umfpack as _umfpack  # noqa: F401
+            return True
+        except Exception:
+            return False
+
+    if solver != "auto":
+        if solver == "spsolve":
+            if backend != "cpu":
+                raise RuntimeError("spsolve is only enabled on the CPU")
+            return ("spsolve",)
+        if solver == "cudss":
+            if backend != "gpu":
+                raise RuntimeError(
+                    "spineax.cudss.solver.CuDSSSolver is only enabled on the GPU"
+                )
+            if not _has_cudss():
+                raise RuntimeError("spineax is not installed")
+            return ("cudss",)
+        if solver == "cholmod":
+            if backend != "cpu":
+                raise RuntimeError("cholmod is only enabled on the CPU")
+            if not _has_cholmod():
+                raise RuntimeError("sksparse is not installed")
+            return ("cholmod",)
+        if solver == "umfpack":
+            if backend != "cpu":
+                raise RuntimeError("umfpack is only enabled on the CPU")
+            if not _has_umfpack():
+                raise RuntimeError("sksparse is not installed")
+            return ("umfpack",)
+        raise ValueError(
+            f"Unknown direct solver '{solver}'. "
+            "Choose from ('auto', 'cudss', 'spsolve', 'umfpack', 'cholmod')"
+        )
+
+    available_solvers = {"spsolve"} if backend == "cpu" else set()
+    if _has_cudss():
+        available_solvers.add("cudss")
+    if _has_cholmod():
+        available_solvers.add("cholmod")
+    if _has_umfpack():
+        available_solvers.add("umfpack")
+
+    return tuple(sorted(available_solvers))
 
 
 # ============================================================================
@@ -309,6 +389,48 @@ class CUDSSOptions:
 
 
 @dataclass(frozen=True)
+class SKSPARSEOptions:
+    """Options for host-side sparse direct solvers.
+
+    These options are shared by the CPU direct solver backends. Some fields
+    apply to all host-callback solvers, while others are backend-specific.
+
+    Parameters
+    ----------
+    vmap_method : str, default "broadcast_all"
+        JAX ``pure_callback`` vmap behavior. Supported values:
+        ``"expand_dims"``, ``"sequential"``, or ``"broadcast_all"``.
+        Used by ``spsolve``, ``umfpack``, and ``cholmod``.
+    order : str default "amd"
+        CHOLMOD ordering strategy. Supported values:
+        ``"default"``, ``"best"``, ``"metis"``, ``"nesdis"``, ``"amd"``,
+        ``"colamd"``, ``"postordered"``, ``"natural"``, or ``None``.
+    lower : bool, default False
+        Whether CHOLMOD should use lower-triangular input.
+    """
+
+    vmap_method: str = "broadcast_all"
+    order: str = "amd"
+    lower: bool = False
+
+    def __post_init__(self):
+        valid_orders = {"default", "best", "metis", "nesdis", "amd", "colamd", "postordered", "natural"}
+        if self.order not in valid_orders:
+            raise ValueError(
+                f"Invalid sksparse order: {self.order}. "
+                f"Choose from {sorted(x for x in valid_orders if x is not None)} or None."
+            )
+        valid_vmap_methods = {"expand_dims", "sequential", "broadcast_all"}
+        if self.vmap_method not in valid_vmap_methods:
+            raise ValueError(
+                f"Invalid sksparse vmap_method: {self.vmap_method}. "
+                f'Choose from {sorted(valid_vmap_methods)}.'
+            )
+        if self.lower not in (True, False):
+            raise ValueError("sksparse_options.lower must be True or False")
+
+
+@dataclass(frozen=True)
 class AbstractSolverOptions:
     """Base class for all solver option types.
 
@@ -394,7 +516,7 @@ class SolverOptions(AbstractSolverOptions):
         Linear solver type. If not specified, automatically selects based on backend:
         - GPU backend: "cudss" (cuDSS direct solver, requires CUDA)
         - CPU backend: "cg" (Conjugate Gradient, JAX-native)
-        Manual options: "cg", "bicgstab", "gmres", "spsolve", "cudss", "lineax"
+        Manual options: "cg", "bicgstab", "gmres", "spsolve", "cudss"
     preconditioner : callable, optional
         Preconditioner function for linear solver
     use_jacobi_preconditioner : bool, default False
@@ -455,21 +577,25 @@ class DirectSolverOptions(AbstractSolverOptions):
     solver : str, default "auto"
         Direct solver algorithm:
         - "auto": Automatically selected based on backend and matrix property
-          (CUDA -> cudss, CPU -> spsolve). Resolved at create_solver time.
+          (CUDA -> cudss, CPU SPD -> cholmod, otherwise umfpack).
+          Resolved at create_solver time.
         - "cudss": NVIDIA cuDSS direct solver (GPU only)
-        - "spsolve": JAX experimental sparse solve (CPU only)
-        - "cholesky": Cholesky decomposition via lineax (SPD matrices)
-        - "lu": LU decomposition via lineax (general matrices)
-        - "qr": QR decomposition via lineax (general/rectangular matrices)
+        - "spsolve": sparse direct solve via SciPy callback (CPU host)
+        - "umfpack": sparse direct solve via scikit-sparse UMFPACK (CPU host)
+        - "cholmod": CHOLMOD sparse Cholesky via scikit-sparse (SPD)
     cudss_options : CUDSSOptions, optional
         cuDSS-specific configuration. Only used when solver="cudss".
         Auto-configured when solver="auto" and backend is CUDA.
+    sksparse_options : SKSPARSEOptions, optional
+        Host-side direct solver configuration shared by ``spsolve``,
+        ``umfpack``, and ``cholmod``.
     """
     solver: str = "auto"
     cudss_options: CUDSSOptions = None
+    sksparse_options: SKSPARSEOptions = None
 
     def __post_init__(self):
-        valid_solvers = ("auto", "cudss", "spsolve", "cholesky", "lu", "qr")
+        valid_solvers = ("auto", "cudss", "spsolve", "umfpack", "cholmod")
         if self.solver not in valid_solvers:
             raise ValueError(
                 f"Invalid direct solver: {self.solver}. "
@@ -477,16 +603,17 @@ class DirectSolverOptions(AbstractSolverOptions):
             )
         if self.cudss_options is None:
             object.__setattr__(self, 'cudss_options', CUDSSOptions())
+        if self.sksparse_options is None:
+            object.__setattr__(self, 'sksparse_options', SKSPARSEOptions())
 
     def uses_x0(self) -> bool:
         """Direct solvers do not consume an initial iterate."""
         return False
 
-
 def resolve_direct_solver(
     options: DirectSolverOptions,
     matrix_property: MatrixProperty,
-    matrix_view=None,
+    matrix_view: MatrixView,
 ) -> DirectSolverOptions:
     """Resolve "auto" to a concrete direct solver based on backend and matrix property.
 
@@ -497,37 +624,45 @@ def resolve_direct_solver(
     matrix_property : MatrixProperty
         Detected matrix property (SPD, SYMMETRIC, GENERAL).
     matrix_view : MatrixView, optional
-        Problem's matrix storage format.  When UPPER or LOWER, the cuDSS
-        solver is automatically configured to match.
+        Problem's matrix storage format. Used to fill backend defaults when
+        corresponding option fields are not explicitly set.
 
     Returns
     -------
     DirectSolverOptions
         Options with solver resolved to a concrete algorithm.
-        If solver != "auto", returns the input unchanged.
     """
     if options.solver != "auto":
-        return options
+        detect_available_solver_backends(options.solver)
+        return DirectSolverOptions(
+            solver=options.solver,
+            cudss_options=options.cudss_options,
+            sksparse_options=options.sksparse_options,
+            check_convergence=options.check_convergence,
+            convergence_threshold=options.convergence_threshold,
+            verbose=options.verbose,
+        )
 
-    from ..problem import MatrixView
+    available_solvers = set(detect_available_solver_backends("auto"))
+    has_spsolve_backend = "spsolve" in available_solvers
+    has_cudss_backend = "cudss" in available_solvers
+    has_cholmod = "cholmod" in available_solvers
+    has_umfpack = "umfpack" in available_solvers
 
-    backend = jax.default_backend()
-    if backend == "gpu":
-        # Map MatrixProperty to CUDSSMatrixType
+    sksparse_opts = options.sksparse_options
+
+    if has_cudss_backend:
         mp_to_cudss = {
             MatrixProperty.SPD: CUDSSMatrixType.SPD,
             MatrixProperty.SYMMETRIC: CUDSSMatrixType.SYMMETRIC,
             MatrixProperty.GENERAL: CUDSSMatrixType.GENERAL,
         }
         cudss_mtype = mp_to_cudss[matrix_property]
-
-        # Auto-configure cuDSS matrix_view from problem's storage format
-        if matrix_view == MatrixView.UPPER:
-            cudss_mview = CUDSSMatrixView.UPPER
-        elif matrix_view == MatrixView.LOWER:
-            cudss_mview = CUDSSMatrixView.LOWER
-        else:
-            cudss_mview = options.cudss_options.matrix_view
+        mv_to_cudss = {
+            MatrixView.UPPER: CUDSSMatrixView.UPPER,
+            MatrixView.LOWER: CUDSSMatrixView.LOWER,
+        }
+        cudss_mview = mv_to_cudss.get(matrix_view, options.cudss_options.matrix_view)
 
         cudss_opts = CUDSSOptions(
             matrix_type=cudss_mtype,
@@ -537,27 +672,63 @@ def resolve_direct_solver(
         resolved = DirectSolverOptions(
             solver="cudss",
             cudss_options=cudss_opts,
+            sksparse_options=sksparse_opts,
             check_convergence=options.check_convergence,
             convergence_threshold=options.convergence_threshold,
             verbose=options.verbose,
         )
         logger.info(
-            f"DirectSolver auto: backend=CUDA, matrix_property={matrix_property.name} "
+            f"DirectSolver auto: matrix_property={matrix_property.name} "
             f"-> cudss (matrix_type={cudss_mtype.name})"
         )
+        return resolved
+    if matrix_property == MatrixProperty.SPD:
+        if has_cholmod:
+            solver = "cholmod"
+        elif has_umfpack:
+            solver = "umfpack"
+        elif has_spsolve_backend:
+            solver = "spsolve"
+        else:
+            raise RuntimeError(
+                "No direct solver backend is available for solver='auto'. "
+                f"Available solvers: {tuple(sorted(available_solvers))}"
+            )
     else:
-        resolved = DirectSolverOptions(
-            solver="spsolve",
-            cudss_options=options.cudss_options,
-            check_convergence=options.check_convergence,
-            convergence_threshold=options.convergence_threshold,
-            verbose=options.verbose,
-        )
-        logger.info(
-            f"DirectSolver auto: backend=CPU, matrix_property={matrix_property.name} "
-            f"-> spsolve"
-        )
+        if has_umfpack:
+            solver = "umfpack"
+        elif has_spsolve_backend:
+            solver = "spsolve"
+        else:
+            raise RuntimeError(
+                "No direct solver backend is available for solver='auto'. "
+                f"Available solvers: {tuple(sorted(available_solvers))}"
+            )
 
+    sksparse_lower = options.sksparse_options.lower
+    if matrix_property == MatrixProperty.SPD:
+        if matrix_view == MatrixView.UPPER:
+            sksparse_lower = False
+        elif matrix_view in (MatrixView.LOWER, MatrixView.FULL):
+            sksparse_lower = True
+
+    sksparse_opts = SKSPARSEOptions(
+        vmap_method=options.sksparse_options.vmap_method,
+        order=options.sksparse_options.order,
+        lower=sksparse_lower,
+    )
+
+    resolved = DirectSolverOptions(
+        solver=solver,
+        cudss_options=options.cudss_options,
+        sksparse_options=sksparse_opts,
+        check_convergence=options.check_convergence,
+        convergence_threshold=options.convergence_threshold,
+        verbose=options.verbose,
+    )
+    logger.info(
+        f"DirectSolver auto: matrix_property={matrix_property.name} -> {solver}"
+    )
     return resolved
 
 
