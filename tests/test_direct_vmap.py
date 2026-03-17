@@ -1,5 +1,6 @@
 """Regression tests for direct sparse solvers under vmap."""
 
+
 import importlib.util
 
 import jax

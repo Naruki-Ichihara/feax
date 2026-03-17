@@ -94,6 +94,7 @@ class Problem:
     location_fns: Optional[List[Callable]] = None
     matrix_view: Union[MatrixView, str] = MatrixView.FULL
     additional_info: Tuple[Any, ...] = ()
+    hess: bool = False
 
     def __post_init__(self) -> None:
         """Initialize all state data for the finite element problem.
@@ -135,7 +136,7 @@ class Problem:
             go_i = (self.gauss_order[i]
                     if type(self.gauss_order) == type([])
                     else self.gauss_order)
-            cache_key = (id(self.mesh[i]), self.vec[i], self.ele_type[i], go_i)
+            cache_key = (id(self.mesh[i]), self.vec[i], self.ele_type[i], go_i, self.hess)
             if cache_key not in _fe_cache:
                 _fe_cache[cache_key] = FiniteElement(
                     mesh=self.mesh[i],
@@ -143,6 +144,7 @@ class Problem:
                     dim=self.dim,
                     ele_type=self.ele_type[i],
                     gauss_order=go_i,
+                    hess=self.hess,
                 )
             fes.append(_fe_cache[cache_key])
         self.fes = fes
@@ -558,6 +560,7 @@ class Problem:
             'location_fns': self.location_fns,
             'matrix_view': self.matrix_view,
             'additional_info': self.additional_info,
+            'hess': self.hess,
         }
         return dynamic, static
 
@@ -587,6 +590,7 @@ class Problem:
             location_fns=static['location_fns'],
             matrix_view=static.get('matrix_view', MatrixView.FULL),  # Default for backward compatibility
             additional_info=static['additional_info'],
+            hess=static.get('hess', False),
         )
 
         return instance

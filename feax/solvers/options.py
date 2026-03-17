@@ -617,13 +617,30 @@ def resolve_direct_solver(
 ) -> DirectSolverOptions:
     """Resolve "auto" to a concrete direct solver based on backend and matrix property.
 
+    The selection follows a priority order inspired by COMSOL's solver
+    guidelines, with cuDSS given highest priority on GPU:
+
+    **GPU (CUDA backend)**::
+
+        cuDSS  (always — matrix type adjusted to SPD/SYMMETRIC/GENERAL)
+
+    **CPU backend, SPD matrix**::
+
+        cholmod  →  umfpack  →  spsolve
+        (Cholesky)  (LU)        (SciPy LU)
+
+    **CPU backend, SYMMETRIC or GENERAL matrix**::
+
+        umfpack  →  spsolve
+        (LU)        (SciPy LU)
+
     Parameters
     ----------
     options : DirectSolverOptions
         Options with solver possibly set to "auto".
     matrix_property : MatrixProperty
         Detected matrix property (SPD, SYMMETRIC, GENERAL).
-    matrix_view : MatrixView, optional
+    matrix_view : MatrixView
         Problem's matrix storage format. Used to fill backend defaults when
         corresponding option fields are not explicitly set.
 
@@ -795,6 +812,12 @@ def resolve_iterative_solver(
     matrix_property: MatrixProperty,
 ) -> IterativeSolverOptions:
     """Resolve "auto" to a concrete iterative solver based on matrix property.
+
+    Selection mapping::
+
+        SPD       →  cg        (Conjugate Gradient — optimal for SPD)
+        SYMMETRIC →  bicgstab  (no symmetry exploitation, but robust)
+        GENERAL   →  gmres     (general-purpose Krylov method)
 
     Parameters
     ----------

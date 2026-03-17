@@ -69,7 +69,7 @@ grads = grad_fn(internal_vars)
 ## Limitations
 
 - **First-order differentiation only**: Solvers use `custom_vjp` internally, so `jax.grad` (first-order) is supported but `jax.hessian` (second-order) is not.
-- **Static problems only**: No time-dependent or transient solvers. Only steady-state and quasi-static analyses are available.
+- **Time integration is user-driven**: FEAX provides pipeline abstractions (`ImplicitPipeline`, `ExplicitPipeline`) but does not include built-in adaptive error control or multi-rate schemes.
 - **Element order up to quadratic**: Linear (degree 1) and quadratic (degree 2) elements are supported. Cubic or higher-order elements are not.
 - **Fixed mesh**: The mesh topology must remain constant throughout JAX transformations. No adaptive remeshing or h-refinement during differentiation.
 - **Single machine**: No MPI or distributed computing support. Parallelism is limited to JAX's device-level parallelism (`vmap`).

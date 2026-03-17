@@ -81,6 +81,27 @@ class Operator:
         u_grads = cell_sol[None, :, :, None] * cell_shape_grads[:, :, None, :]
         return np.sum(u_grads, axis=1)
 
+    def hess(self, cell_sol: np.ndarray, cell_shape_hessians: np.ndarray) -> np.ndarray:
+        """Compute solution Hessian (second spatial derivatives) at quadrature points.
+
+        Parameters
+        ----------
+        cell_sol : np.ndarray
+            Nodal solution values, shape (num_nodes, vec).
+        cell_shape_hessians : np.ndarray
+            Shape function second derivatives in physical coordinates,
+            shape (num_quads, num_nodes, dim, dim).
+
+        Returns
+        -------
+        np.ndarray
+            Hessian at quadrature points, shape (num_quads, vec, dim, dim).
+            H[q, i, K, L] = sum_a u[a, i] * d²h_a/(dX_K dX_L) at quad point q.
+        """
+        # cell_sol: (a=num_nodes, v=vec)
+        # cell_shape_hessians: (q=num_quads, a=num_nodes, K=dim, L=dim)
+        return np.einsum('av,qaKL->qvKL', cell_sol, cell_shape_hessians)
+
     def interpolate_var(self, var: np.ndarray) -> np.ndarray:
         """Interpolate a single internal variable to quadrature points.
 
@@ -1055,26 +1076,33 @@ def get_res(problem: 'Problem',
     return compute_residual_vars_helper(problem, weak_form_flat, weak_form_face_flat)
 
 
-def create_J_bc_function(problem: 'Problem', bc: 'DirichletBC') -> Callable[[np.ndarray, InternalVars], sparse.BCOO]:
+def create_J_bc_function(
+    problem: 'Problem', bc: 'DirichletBC', symmetric: bool = True,
+) -> Callable[[np.ndarray, InternalVars], sparse.BCOO]:
     """Create Jacobian function with Dirichlet BC applied.
-    
+
     Returns a function that computes the Jacobian matrix with Dirichlet
     boundary conditions enforced. The BC application modifies the matrix
     to enforce constraints.
-    
+
     Parameters
     ----------
     problem : Problem
         The finite element problem definition.
     bc : DirichletBC
         Dirichlet boundary condition specifications.
-    
+    symmetric : bool, default True
+        If True, use symmetric elimination (zero BC rows and columns).
+        If False, use non-symmetric elimination (zero BC rows only, keep columns).
+        Non-symmetric elimination preserves the K_10 coupling, which is needed
+        for the incremental Newton approach without pre-applied BCs.
+
     Returns
     -------
     Callable
         Function with signature (sol_flat, internal_vars) -> sparse.BCOO
         that returns the BC-modified Jacobian matrix.
-    
+
     Notes
     -----
     The returned function is suitable for use in Newton solvers and
@@ -1085,7 +1113,7 @@ def create_J_bc_function(problem: 'Problem', bc: 'DirichletBC') -> Callable[[np.
     def J_bc_func(sol_flat, internal_vars: InternalVars):
         sol_list = problem.unflatten_fn_sol_list(sol_flat)
         J = _get_J(problem, sol_list, internal_vars)
-        return apply_boundary_to_J(bc, J)
+        return apply_boundary_to_J(bc, J, symmetric=symmetric)
 
     return J_bc_func
 
@@ -1118,6 +1146,64 @@ def create_res_bc_function(problem: 'Problem', bc: 'DirichletBC') -> Callable[[n
     from feax.DCboundary import apply_boundary_to_res
 
     def res_bc_func(sol_flat, internal_vars: InternalVars):
+        sol_list = problem.unflatten_fn_sol_list(sol_flat)
+        res = get_res(problem, sol_list, internal_vars)
+        res_flat = jax.flatten_util.ravel_pytree(res)[0]
+        return apply_boundary_to_res(bc, res_flat, sol_flat)
+
+    return res_bc_func
+
+
+def create_J_bc_parametric(problem: 'Problem', symmetric: bool = True) -> Callable:
+    """Create a Jacobian function that takes ``bc`` as an explicit argument.
+
+    Unlike :func:`create_J_bc_function` which captures ``bc`` in a closure,
+    this version accepts ``bc`` as a third argument so that the function
+    traces through the BC pytree under ``jax.vmap``.
+
+    Parameters
+    ----------
+    problem : Problem
+        The finite element problem definition.
+    symmetric : bool, default True
+        If True, use symmetric elimination.
+
+    Returns
+    -------
+    Callable
+        Function with signature ``(sol_flat, internal_vars, bc) -> sparse.BCOO``.
+    """
+    from feax.DCboundary import apply_boundary_to_J
+
+    def J_bc_func(sol_flat, internal_vars: InternalVars, bc):
+        sol_list = problem.unflatten_fn_sol_list(sol_flat)
+        J = _get_J(problem, sol_list, internal_vars)
+        return apply_boundary_to_J(bc, J, symmetric=symmetric)
+
+    return J_bc_func
+
+
+def create_res_bc_parametric(problem: 'Problem') -> Callable:
+    """Create a residual function that takes ``bc`` as an explicit argument.
+
+    Unlike :func:`create_res_bc_function` which captures ``bc`` in a closure,
+    this version accepts ``bc`` as a third argument.  This enables a single
+    JIT-compiled function to be reused across time steps where only the
+    prescribed BC values change (same DOF locations, different values).
+
+    Parameters
+    ----------
+    problem : Problem
+        The finite element problem definition.
+
+    Returns
+    -------
+    Callable
+        Function with signature ``(sol_flat, internal_vars, bc) -> np.ndarray``.
+    """
+    from feax.DCboundary import apply_boundary_to_res
+
+    def res_bc_func(sol_flat, internal_vars: InternalVars, bc):
         sol_list = problem.unflatten_fn_sol_list(sol_flat)
         res = get_res(problem, sol_list, internal_vars)
         res_flat = jax.flatten_util.ravel_pytree(res)[0]

@@ -118,6 +118,26 @@ Examples
 >>> print(grads.shape) # (8, 8, 3) for 3D gradients
 ```
 
+#### get\_shape\_hessians\_ref
+
+```python
+def get_shape_hessians_ref(ele_type: str,
+                           gauss_order: Optional[int] = None) -> Array
+```
+
+Compute second derivatives of shape functions in reference coordinates.
+
+Parameters
+----------
+- **ele_type** (*str*): Element type identifier (e.g., &#x27;QUAD8&#x27;, &#x27;HEX20&#x27;, &#x27;TET10&#x27;)
+- **gauss_order** (*int, optional*): Gaussian quadrature order. If None, uses element-specific default.
+
+
+Returns
+-------
+- **shape_hessians_ref** (*np.ndarray*): Second derivatives d²h_a/(dr_I dr_J) at quadrature points. Shape: (num_quads, num_nodes, dim, dim), symmetric in last two axes.
+
+
 #### get\_face\_shape\_vals\_and\_grads
 
 ```python

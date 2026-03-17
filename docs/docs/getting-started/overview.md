@@ -343,7 +343,7 @@ grads = grad_fn(internal_vars)
 
 ### Solver Options
 
-FEAX provides three solver paths via `fe.create_solver`:
+FEAX provides three solver paths via `fe.create_solver`. When `solver_options` is omitted, a direct solver is selected automatically (cuDSS on GPU, cholmod/umfpack/spsolve on CPU). See the [Solver Guide](./solver.md) for the full selection logic.
 
 | Solver Options | Method | Best for |
 |---|---|---|
@@ -467,6 +467,7 @@ fe.utils.save_sol(
 
 ## Next Steps
 
+- **[Solver Guide](./solver.md)** — solver options, Newton settings, BC elimination, and incremental loading
 - **[Linear Elasticity](../basic/linear_elasticity.md)** — full walkthrough of a first problem
 - **[JIT Transform](../basic/jit_transform.md)** — accelerate solves with `jax.jit`
 - **[Vectorization Transform](../basic/vmap_transform.md)** — batch parameter studies with `jax.vmap`

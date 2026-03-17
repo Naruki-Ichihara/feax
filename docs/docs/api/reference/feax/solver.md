@@ -31,7 +31,8 @@ def create_solver(
         P: Optional[BCOO] = None,
         internal_vars=None,
         extra_residual_fn: Optional[Callable] = None,
-        energy_fn: Optional[Callable] = None) -> Callable
+        energy_fn: Optional[Callable] = None,
+        symmetric_bc: bool = True) -> Callable
 ```
 
 Create a differentiable solver with custom VJP for gradient computation.
@@ -47,6 +48,7 @@ Parameters
 - **P** (*BCOO matrix, optional*): Prolongation matrix for periodic boundary conditions.
 - **internal_vars** (*InternalVars, optional*): Sample internal variables for auto solver selection and cuDSS pre-warming. Required when ``solver=&quot;auto&quot;`` or cuDSS is used.
 - **extra_residual_fn** (*callable, optional*): Additional residual contribution: ``extra_residual_fn(sol_flat) -&gt; residual_flat``. Combined with feax&#x27;s bulk residual via hybrid matrix-free Newton-Krylov: the bulk Jacobian is assembled (sparse), while the extra contribution&#x27;s Jacobian-vector product is computed via ``jax.jvp`` (forward-mode AD). Requires ``IterativeSolverOptions`` and ``iter_num != 1`` (Newton path).
+- **symmetric_bc** (*bool, default True*): Controls how Dirichlet BCs are applied to the Jacobian matrix.
 
 
 Returns
@@ -56,7 +58,13 @@ callable
         ``solver(internal_vars) -&gt; solution``
         (``initial_guess`` is optional and ignored if provided.)
     When ``IterativeSolverOptions`` is used:
-        ``solver(internal_vars, initial_guess) -&gt; solution``
+        ``solver(internal_vars, initial_guess, bc=None) -&gt; solution``
+
+    The optional ``bc`` parameter accepts a
+    :class:``8 whose ``bc_rows`` match the
+    original BC but ``bc_vals`` may differ.  This avoids rebuilding
+    the solver when only prescribed values change (e.g. incremental
+    loading).  Use :meth:``3 for convenience.
 
 Examples
 --------
@@ -75,5 +83,16 @@ Examples
 >>> solver = create_solver(problem, bc, solver_options=IterativeSolverOptions(solver=&quot;gmres&quot;),
 ...                        iter_num=1)
 >>> solution = solver(internal_vars, initial_guess)
+>>>
+>>> # Incremental loading with non-symmetric BC elimination
+>>> solver = create_solver(problem, bc,
+...                        solver_options=DirectSolverOptions(solver=&quot;spsolve&quot;),
+...                        newton_options=NewtonOptions(tol=1e-6, max_iter=20),
+...                        iter_num=None, symmetric_bc=False,
+...                        internal_vars=internal_vars)
+>>> sol = zero_like_initial_guess(problem, bc)
+>>> for step in range(1, num_steps + 1):
+...     bc_step = bc.replace_vals(new_vals)  # update prescribed values
+...     sol = solver(internal_vars, sol, bc=bc_step)
 ```
 

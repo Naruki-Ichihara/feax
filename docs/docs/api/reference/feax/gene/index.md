@@ -34,7 +34,7 @@ from feax.gene.optimizer import Continuation, AdaptiveConfig, run
 def build_pipeline(mesh):
     filter_fn = gene.create_density_filter(mesh, radius=3.0)
     # ... build objective, volume, filter
-    return {````````'objective': objective, 'volume': volume, 'filter': filter_fn````````}
+    return {``````````````````'objective': objective, 'volume': volume, 'filter': filter_fn``````````````````}
 
 # Run optimization
 result = run(

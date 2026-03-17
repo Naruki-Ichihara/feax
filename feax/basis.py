@@ -100,6 +100,12 @@ def get_elements(ele_type: str) -> Tuple[basix.ElementFamily, basix.CellType, ba
         basix_face_ele = basix.CellType.interval
         gauss_order = 2
         degree = 2
+    elif ele_type == 'QUAD9':
+        re_order = [0, 1, 3, 2, 4, 6, 7, 5, 8]
+        basix_ele = basix.CellType.quadrilateral
+        basix_face_ele = basix.CellType.interval
+        gauss_order = 4
+        degree = 2
     elif ele_type == 'TRI3':
         re_order = [0, 1, 2]
         basix_ele = basix.CellType.triangle
@@ -115,7 +121,7 @@ def get_elements(ele_type: str) -> Tuple[basix.ElementFamily, basix.CellType, ba
     else:
         raise NotImplementedError(f"Element type '{ele_type}' is not supported. "
                                 f"Supported types: HEX8, HEX20, TET4, TET10, "
-                                f"QUAD4, QUAD8, TRI3, TRI6")
+                                f"QUAD4, QUAD8, QUAD9, TRI3, TRI6")
 
     return element_family, basix_ele, basix_face_ele, gauss_order, degree, re_order
 
@@ -189,6 +195,50 @@ def get_shape_vals_and_grads(ele_type: str, gauss_order: Optional[int] = None) -
     shape_values = vals_and_grads[0, :, :, 0]
     shape_grads_ref = onp.transpose(vals_and_grads[1:, :, :, 0], axes=(1, 2, 0))
     return shape_values, shape_grads_ref, weights
+
+
+def get_shape_hessians_ref(ele_type: str, gauss_order: Optional[int] = None) -> Array:
+    """Compute second derivatives of shape functions in reference coordinates.
+
+    Parameters
+    ----------
+    ele_type : str
+        Element type identifier (e.g., 'QUAD8', 'HEX20', 'TET10')
+    gauss_order : int, optional
+        Gaussian quadrature order. If None, uses element-specific default.
+
+    Returns
+    -------
+    shape_hessians_ref : np.ndarray
+        Second derivatives d²h_a/(dr_I dr_J) at quadrature points.
+        Shape: (num_quads, num_nodes, dim, dim), symmetric in last two axes.
+    """
+    element_family, basix_ele, _, gauss_order_default, degree, re_order = get_elements(ele_type)
+
+    if gauss_order is None:
+        gauss_order = gauss_order_default
+
+    quad_points, _ = basix.make_quadrature(basix_ele, gauss_order)
+    element = basix.create_element(element_family, basix_ele, degree)
+    tab = element.tabulate(2, quad_points)[:, :, re_order, 0]
+    # tab shape: (num_derivs, num_quads, num_nodes)
+
+    dim = quad_points.shape[1]
+    num_quads, num_nodes = tab.shape[1], tab.shape[2]
+
+    # Extract 2nd derivative components and assemble into (num_quads, num_nodes, dim, dim)
+    # For dim=2: indices 3,4,5 -> (0,0),(0,1),(1,1)
+    # For dim=3: indices 4,5,6,7,8,9 -> (0,0),(0,1),(0,2),(1,1),(1,2),(2,2)
+    hess = onp.zeros((num_quads, num_nodes, dim, dim))
+    idx = 1 + dim  # skip order-0 (1 entry) and order-1 (dim entries)
+    for i in range(dim):
+        for j in range(i, dim):
+            hess[:, :, i, j] = tab[idx, :, :]
+            if i != j:
+                hess[:, :, j, i] = tab[idx, :, :]
+            idx += 1
+
+    return hess
 
 
 def get_face_shape_vals_and_grads(ele_type: str, gauss_order: Optional[int] = None) -> Tuple[Array, Array, Array, Array, Array]:

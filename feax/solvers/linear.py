@@ -19,7 +19,12 @@ from typing import Any, Callable, Optional
 import jax
 import jax.numpy as np
 
-from ..assembler import create_J_bc_function, create_res_bc_function
+from ..assembler import (
+    create_J_bc_function,
+    create_J_bc_parametric,
+    create_res_bc_function,
+    create_res_bc_parametric,
+)
 from ..DCboundary import DirichletBC
 from ..problem import MatrixView, Problem
 from .common import (
@@ -267,8 +272,12 @@ def create_linear_solver(
                 matrix_view=problem.matrix_view,
             )
 
+    _default_bc = bc
+
     J_bc_func = create_J_bc_function(problem, bc)
+    J_bc_parametric = create_J_bc_parametric(problem)
     res_bc_func = create_res_bc_function(problem, bc)
+    res_bc_parametric = create_res_bc_parametric(problem)
     linear_solve_fn = create_linear_solve_fn(
         solver_options,
         cache_namespace="forward",
@@ -294,12 +303,16 @@ def create_linear_solver(
     )
 
     @jax.custom_vjp
-    def differentiable_solve(internal_vars, initial_guess):
+    def differentiable_solve(internal_vars, initial_guess, effective_bc):
+        # Use parametric versions so bc flows as data (vmap-compatible).
+        _J_fn = lambda sol, iv: J_bc_parametric(sol, iv, effective_bc)
+        _res_fn = lambda sol, iv: res_bc_parametric(sol, iv, effective_bc)
+
         sol, _ = linear_solve(
-            J_bc_func,
-            res_bc_func,
+            _J_fn,
+            _res_fn,
             initial_guess,
-            bc,
+            effective_bc,
             solver_options,
             problem.matrix_view,
             internal_vars=internal_vars,
@@ -308,52 +321,51 @@ def create_linear_solver(
         )
         return sol
 
-    def f_fwd(internal_vars, initial_guess):
-        sol = differentiable_solve(internal_vars, initial_guess)
-        return sol, (internal_vars, sol)
+    def f_fwd(internal_vars, initial_guess, effective_bc):
+        sol = differentiable_solve(internal_vars, initial_guess, effective_bc)
+        return sol, (internal_vars, sol, effective_bc)
 
     def f_bwd(res, v):
-        internal_vars, sol = res
+        internal_vars, sol, effective_bc = res
 
         # Adjoint solve: J^T @ adjoint = v
-        J = J_bc_func(sol, internal_vars)
+        J = J_bc_parametric(sol, internal_vars, effective_bc)
         use_transpose = problem.matrix_view not in (MatrixView.UPPER, MatrixView.LOWER)
         J_adjoint = J.transpose() if use_transpose else J
         adjoint_vec = linear_solve_adjoint(
-            J_adjoint, v, adjoint_solver_options, problem.matrix_view, bc,
+            J_adjoint, v, adjoint_solver_options, problem.matrix_view,
+            effective_bc,
             linear_solve_fn=adjoint_linear_solve_fn
         )
 
-        # VJP of residual w.r.t. internal_vars
-        def res_fn(iv):
-            return problem.unflatten_fn_sol_list(res_bc_func(sol, iv))
+        # VJP of residual w.r.t. internal_vars and bc
+        def res_fn(iv, bc_arg):
+            return problem.unflatten_fn_sol_list(
+                res_bc_parametric(sol, iv, bc_arg)
+            )
 
         adjoint_list = problem.unflatten_fn_sol_list(adjoint_vec)
-        _, f_vjp = jax.vjp(res_fn, internal_vars)
-        vjp_result, = f_vjp(adjoint_list)
-        vjp_result = jax.tree_util.tree_map(_safe_negate, vjp_result)
+        _, f_vjp = jax.vjp(res_fn, internal_vars, effective_bc)
+        vjp_iv, vjp_bc = f_vjp(adjoint_list)
+        vjp_iv = jax.tree_util.tree_map(_safe_negate, vjp_iv)
+        vjp_bc = jax.tree_util.tree_map(_safe_negate, vjp_bc)
 
-        return (vjp_result, None)  # No gradient w.r.t. initial_guess
+        return (vjp_iv, None, vjp_bc)
 
     differentiable_solve.defvjp(f_fwd, f_bwd)
 
     can_omit_initial_guess = not solver_options.uses_x0()
-    if not can_omit_initial_guess:
-        return differentiable_solve
 
     import warnings
-
     from ..utils import zero_like_initial_guess
 
     default_initial_guess = zero_like_initial_guess(problem, bc)
 
-    def solver_wrapper(internal_vars, initial_guess=None):
-        if initial_guess is not None:
-            warnings.warn(
-                "initial_guess is ignored for direct solvers. "
-                "You can omit it: solver(internal_vars)",
-                stacklevel=2,
-            )
-        return differentiable_solve(internal_vars, default_initial_guess)
+    def solver_wrapper(internal_vars, initial_guess=None, bc=None):
+        effective_bc = bc if isinstance(bc, DirichletBC) else _default_bc
+        ig = default_initial_guess if (can_omit_initial_guess and initial_guess is None) else initial_guess
+        if ig is None:
+            ig = default_initial_guess
+        return differentiable_solve(internal_vars, ig, effective_bc)
 
     return solver_wrapper

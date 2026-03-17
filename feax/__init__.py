@@ -7,7 +7,7 @@ try:
     from importlib.metadata import PackageNotFoundError, version
     __version__ = version("feax")
 except (ImportError, PackageNotFoundError):
-    __version__ = "0.3.0"
+    __version__ = "0.4.0"
 
 # Main API
 from .assembler import create_J_bc_function, create_res_bc_function, get_jacobian_info, get_res
@@ -43,6 +43,16 @@ from .solvers.matrix_free import (
     newton_solve as matrix_free_newton_solve,
 )
 from .solvers.newton import newton_solve, newton_solve_fori, newton_solve_py
+from .solvers.time_solver import (
+    AdaptiveDtConfig,
+    Callback,
+    ExplicitPipeline,
+    ImplicitPipeline,
+    TimeConfig,
+    TimePipeline,
+    TimeResult,
+    run as run_time,
+)
 from .solvers.options import (
     AbstractSolverOptions,
     Backend,
@@ -65,11 +75,3 @@ from .solvers.options import (
     resolve_iterative_solver,
 )
 from .utils import zero_like_initial_guess
-
-# Note: Experimental features available in feax.experimental
-# from feax.experimental import SymbolicProblem
-
-# Generative design toolkit (gene module)
-# Gene = Generative design in FEAX
-# Available: feax.gene.create_compliance_fn, feax.gene.create_volume_fn,
-#            feax.gene.create_helmholtz_filter, feax.gene.mdmm, etc.

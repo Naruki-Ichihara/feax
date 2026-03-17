@@ -318,8 +318,12 @@ def run(
         **{name: [] for name in constraint_names},
     }
 
-    # Initial density
+    # Initial density: default to the tightest 'le' constraint target so we
+    # start feasible, falling back to 0.5 when there are no constraints.
     default_init = 0.5
+    for _, _, target, ctype in constraints:
+        if ctype == 'le':
+            default_init = min(default_init, target)
     x = (onp.full(mesh.points.shape[0], default_init)
          if rho_init is None else onp.array(rho_init))
 
@@ -361,24 +365,9 @@ def run(
     print(f"  JIT          : {jit}")
     print("-" * 60)
 
-    # -- Epoch length ---------------------------------------------------------
-    epoch_iters = adaptive.adapt_every if adaptive else max_iter
-    for c in continuations.values():
-        from math import gcd
-        epoch_iters = gcd(epoch_iters, c.update_every)
-
-    # -- Optimisation loop ----------------------------------------------------
-    while iter_count < max_iter:
-        # Update continuation params at epoch start
-        for k, c in continuations.items():
-            old = params[k]
-            params[k] = c.value_at(iter_count)
-            if params[k] != old:
-                print(f"  >>> {k} = {params[k]:.4g}")
-
-        budget = min(epoch_iters, max_iter - iter_count)
-        n_vars = cur_mesh.points.shape[0]
-
+    # -- Helper: create MMA optimizer and register objective/constraints ------
+    def _create_mma(n_vars):
+        """Build a fresh NLopt MMA instance with objective and constraints."""
         opt = nlopt.opt(nlopt.LD_MMA, n_vars)
         opt.set_lower_bounds(rho_bounds[0])
         opt.set_upper_bounds(rho_bounds[1])
@@ -443,12 +432,67 @@ def run(
             else:
                 opt.add_equality_constraint(con_fn, 1e-8)
 
+        return opt
+
+    # -- Compute epoch boundaries (continuation changes and remesh points) ----
+    def _next_continuation_change(current_iter):
+        """Find the next iteration where any continuation param changes."""
+        next_change = max_iter
+        for c in continuations.values():
+            # Next update boundary for this continuation
+            phase = current_iter // c.update_every
+            boundary = (phase + 1) * c.update_every
+            # Only counts if it actually changes the value
+            if boundary < max_iter:
+                old_val = c.value_at(current_iter)
+                new_val = c.value_at(boundary)
+                if old_val != new_val:
+                    next_change = min(next_change, boundary)
+        return next_change
+
+    # -- Optimisation loop ----------------------------------------------------
+    need_new_mma = True
+
+    while iter_count < max_iter:
+        n_vars = cur_mesh.points.shape[0]
+
+        # Update continuation params at phase start
+        for k, c in continuations.items():
+            old = params[k]
+            params[k] = c.value_at(iter_count)
+            if params[k] != old:
+                print(f"  >>> {k} = {params[k]:.4g}")
+
+        # Create MMA when needed: initial, after remesh, or after param change
+        if need_new_mma:
+            opt = _create_mma(n_vars)
+            need_new_mma = False
+
+        # Budget: run until next continuation change, remesh, or end
+        next_stop = max_iter
+        # Next continuation parameter change
+        next_cont = _next_continuation_change(iter_count)
+        next_stop = min(next_stop, next_cont)
+        # Next remesh point
+        if adaptive and n_adapts_done < adaptive.n_adapts_max:
+            next_remesh = ((iter_count // adaptive.adapt_every) + 1) * adaptive.adapt_every
+            next_stop = min(next_stop, next_remesh)
+
+        budget = next_stop - iter_count
+
         opt.set_maxeval(budget)
 
         try:
             x = opt.optimize(x)
         except nlopt.RoundoffLimited:
             print("  NLopt: roundoff limit (converged)")
+
+        # Restart MMA if continuation params will change next iteration
+        if iter_count < max_iter:
+            for c in continuations.values():
+                if c.value_at(iter_count) != c.value_at(iter_count - 1):
+                    need_new_mma = True
+                    break
 
         # -- Adaptive remesh --------------------------------------------------
         if (adaptive
@@ -482,6 +526,7 @@ def run(
             obj_and_grad, compiled_constraints = _compile(
                 pipeline, constraints, use_jit=jit)
             n_adapts_done += 1
+            need_new_mma = True  # array size changed, must recreate MMA
 
     # -- Final summary --------------------------------------------------------
     print("-" * 60)

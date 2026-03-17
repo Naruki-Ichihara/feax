@@ -53,6 +53,36 @@ def create_x0(bc_rows=None, bc_vals=None, P_mat=None):
     return x0_fn
 
 
+def create_x0_parametric(P_mat=None):
+    """Create BC-aware initial guess function that takes bc as an explicit argument.
+
+    Unlike :func:`create_x0` which captures ``bc_rows``/``bc_vals`` in a closure,
+    this version accepts a :class:`DirichletBC` so it can be traced under ``jax.vmap``.
+    """
+
+    def x0_fn(current_sol, bc):
+        bc_rows_array = bc.bc_rows
+        bc_vals_array = bc.bc_vals
+
+        if P_mat is not None:
+            x0_1 = np.zeros(P_mat.shape[0])
+            x0_1 = x0_1.at[bc_rows_array].set(bc_vals_array)
+            current_sol_full = P_mat @ current_sol
+            x0_2 = np.zeros(P_mat.shape[0])
+            x0_2 = x0_2.at[bc_rows_array].set(current_sol_full[bc_rows_array])
+            x0 = P_mat.T @ (x0_1 - x0_2)
+        else:
+            x0_1 = np.zeros_like(current_sol)
+            x0_1 = x0_1.at[bc_rows_array].set(bc_vals_array)
+            x0_2 = np.zeros_like(current_sol)
+            x0_2 = x0_2.at[bc_rows_array].set(current_sol[bc_rows_array])
+            x0 = x0_1 - x0_2
+
+        return x0
+
+    return x0_fn
+
+
 def create_jacobi_preconditioner(A: BCOO, shift: float = 1e-12):
     """Create Jacobi (diagonal) preconditioner from sparse matrix."""
     diagonal = _extract_sparse_diagonal(A)
@@ -132,14 +162,19 @@ def create_direct_solve_fn(
         from spineax.cudss.solver import CuDSSSolver
         cudss_solver = None
 
+        _actual_nnz = None
+
         def solve(A, b, x0=None):
-            nonlocal cudss_solver
+            nonlocal cudss_solver, _actual_nnz
             A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A.sum_duplicates(nse=A.nse))
 
-            csr_values = A_bcsr.data
             if cudss_solver is None:
                 csr_offsets = A_bcsr.indptr.astype(np.int32)
-                csr_columns = A_bcsr.indices.astype(np.int32)
+                # BCSR from padded BCOO may contain trailing entries with
+                # out-of-bounds column indices beyond offsets[-1].  Trim to
+                # the actual nnz so cuDSS never sees invalid columns.
+                _actual_nnz = int(csr_offsets[-1])
+                csr_columns = A_bcsr.indices[:_actual_nnz].astype(np.int32)
                 import warnings
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
@@ -150,6 +185,7 @@ def create_direct_solve_fn(
                         mtype_id=options.cudss_options.mtype_id,
                         mview_id=options.cudss_options.mview_id,
                     )
+            csr_values = A_bcsr.data[:_actual_nnz]
             x, _ = cudss_solver(b, csr_values)
             return x
         return solve

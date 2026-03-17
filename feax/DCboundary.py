@@ -35,6 +35,31 @@ class DirichletBC:
     bc_vals: np.ndarray  # Boundary condition values for each BC row
     total_dofs: int
 
+    def replace_vals(self, new_bc_vals: np.ndarray) -> 'DirichletBC':
+        """Return a new DirichletBC with updated prescribed values.
+
+        The DOF locations (``bc_rows``, ``bc_mask``) are preserved; only the
+        values at those DOFs change.  This is useful for incremental loading
+        where the same DOFs are constrained but the prescribed displacement
+        increases each step.
+
+        Parameters
+        ----------
+        new_bc_vals : np.ndarray
+            New boundary condition values, same shape as ``self.bc_vals``.
+
+        Returns
+        -------
+        DirichletBC
+            A new instance with the updated values.
+        """
+        return DirichletBC(
+            bc_rows=self.bc_rows,
+            bc_mask=self.bc_mask,
+            bc_vals=new_bc_vals,
+            total_dofs=self.total_dofs,
+        )
+
     @staticmethod
     def from_specs(problem: 'Problem', specs: List['DirichletBCSpec']) -> 'DirichletBC':
         """Create DirichletBC directly from a list of DirichletBCSpec objects.
@@ -120,16 +145,15 @@ register_pytree_node(
 )
 
 
-def apply_boundary_to_J(bc: DirichletBC, J: BCOO) -> BCOO:
+def apply_boundary_to_J(bc: DirichletBC, J: BCOO, symmetric: bool = True) -> BCOO:
     """Apply Dirichlet boundary conditions to Jacobian matrix J.
 
     This function modifies the Jacobian matrix to enforce Dirichlet boundary conditions
-    by zeroing out entries in boundary condition rows and columns, and setting diagonal
-    entries to 1.0 for those rows. This preserves symmetry and transforms the system to
-    enforce u[bc_dof] = bc_val.
+    by zeroing out entries in boundary condition rows (and optionally columns), and setting
+    diagonal entries to 1.0 for those rows.
 
     The algorithm:
-    1. Zero out all entries in BC rows and columns (symmetric elimination)
+    1. Zero out BC row entries (and BC column entries if symmetric=True)
     2. Set diagonal entries to 1.0 for all BC rows
     3. Handle potential duplicates by concatenation (JAX sparse solvers handle this)
 
@@ -143,6 +167,14 @@ def apply_boundary_to_J(bc: DirichletBC, J: BCOO) -> BCOO:
         - total_dofs: Total number of DOFs in the system
     J : jax.experimental.sparse.BCOO
         The sparse Jacobian matrix in BCOO format with shape (total_dofs, total_dofs)
+    symmetric : bool, default True
+        If True, zero both BC rows and columns (symmetric elimination).
+        Preserves matrix symmetry, allowing use of symmetric solvers like CG.
+        If False, zero only BC rows (non-symmetric elimination).
+        Keeps the off-diagonal coupling K_10 in BC columns, which is required
+        for the partitioned/incremental Newton approach where BC DOFs are
+        driven to their values through the modified residual rather than
+        being pre-applied to the initial guess.
 
     Returns
     -------
@@ -154,7 +186,6 @@ def apply_boundary_to_J(bc: DirichletBC, J: BCOO) -> BCOO:
     This function is JAX-JIT compatible and designed for efficient use in Newton solvers.
     The returned matrix may have duplicate entries (original zeros + new diagonal ones),
     but JAX sparse solvers handle this correctly by summing duplicates.
-    Symmetric elimination preserves matrix symmetry, allowing use of symmetric solvers like CG.
     """
     # Get the data and indices from the BCOO matrix
     data = J.data
@@ -168,13 +199,14 @@ def apply_boundary_to_J(bc: DirichletBC, J: BCOO) -> BCOO:
     is_bc_row = bc.bc_mask[row_indices]
     is_bc_col = bc.bc_mask[col_indices]
 
-    # The algorithm:
-    # 1. Zero out all BC row/column entries (symmetric elimination)
-    # 2. Add diagonal entries for ALL BC rows with value 1.0
-
-    # Step 1: Zero out all BC row/column entries to preserve symmetry
-    bc_row_col_mask = is_bc_row | is_bc_col
-    data_modified = np.where(bc_row_col_mask, 0.0, data)
+    # Step 1: Zero out BC entries
+    if symmetric:
+        # Symmetric elimination: zero both BC rows and columns
+        bc_mask_entries = is_bc_row | is_bc_col
+    else:
+        # Non-symmetric elimination: zero only BC rows, keep columns
+        bc_mask_entries = is_bc_row
+    data_modified = np.where(bc_mask_entries, 0.0, data)
 
     # Step 2: Add diagonal entries for ALL BC rows
     # Direct approach that works with JIT: always add all BC diagonal entries

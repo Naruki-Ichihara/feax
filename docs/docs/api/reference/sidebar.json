@@ -19,7 +19,8 @@
             "reference/feax/gene/filters",
             "reference/feax/gene/mdmm",
             "reference/feax/gene/optimizer",
-            "reference/feax/gene/responses"
+            "reference/feax/gene/responses",
+            "reference/feax/gene/sdf"
           ],
           "label": "feax.gene",
           "type": "category"
@@ -33,12 +34,23 @@
         },
         {
           "items": [
+            {
+              "items": [
+                "reference/feax/solvers/direct/_callback_utils",
+                "reference/feax/solvers/direct/cholmod",
+                "reference/feax/solvers/direct/spsolve",
+                "reference/feax/solvers/direct/umfpack"
+              ],
+              "label": "feax.solvers.direct",
+              "type": "category"
+            },
             "reference/feax/solvers/common",
             "reference/feax/solvers/linear",
             "reference/feax/solvers/matrix_free",
             "reference/feax/solvers/newton",
             "reference/feax/solvers/options",
-            "reference/feax/solvers/reduced"
+            "reference/feax/solvers/reduced",
+            "reference/feax/solvers/time_solver"
           ],
           "label": "feax.solvers",
           "type": "category"

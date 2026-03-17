@@ -43,6 +43,16 @@ from .matrix_free import (
     newton_solve as matrix_free_newton_solve,
 )
 from .reduced import create_reduced_solver
+from .time_solver import (
+    AdaptiveDtConfig,
+    Callback,
+    ExplicitPipeline,
+    ImplicitPipeline,
+    TimeConfig,
+    TimePipeline,
+    TimeResult,
+    run as run_time,
+)
 from .direct import (
     cholmod_solve,
     spsolve,
@@ -85,4 +95,12 @@ __all__ = [
     "cholmod_solve",
     "spsolve",
     "umfpack_solve",
+    "AdaptiveDtConfig",
+    "Callback",
+    "ExplicitPipeline",
+    "ImplicitPipeline",
+    "TimeConfig",
+    "TimePipeline",
+    "TimeResult",
+    "run_time",
 ]

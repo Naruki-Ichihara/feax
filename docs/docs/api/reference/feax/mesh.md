@@ -231,15 +231,15 @@ Notes
 #### rectangle\_mesh
 
 ```python
-def rectangle_mesh(
-    Nx: int,
-    Ny: int,
-    domain_x: float = 1.0,
-    domain_y: float = 1.0,
-    origin: Tuple[float, float] = (0.0, 0.0)) -> Mesh
+def rectangle_mesh(Nx: int,
+                   Ny: int,
+                   domain_x: float = 1.0,
+                   domain_y: float = 1.0,
+                   origin: Tuple[float, float] = (0.0, 0.0),
+                   ele_type: str = 'QUAD4') -> Mesh
 ```
 
-Generate structured 2D rectangular mesh with QUAD4 elements.
+Generate structured 2D rectangular mesh with QUAD4 or QUAD8 elements.
 
 Creates a simple structured quadrilateral mesh for rectangular domains.
 This is a lightweight alternative to Gmsh for simple 2D problems.
@@ -251,25 +251,13 @@ Parameters
 - **domain_x** (*float, optional*): Length of domain in x-direction. Default is 1.0
 - **domain_y** (*float, optional*): Length of domain in y-direction. Default is 1.0
 - **origin** (*tuple of 2 floats, optional*): Origin point (x0, y0) of the rectangle. Default is (0, 0)
+- **ele_type** (*str, optional*): Element type: &#x27;QUAD4&#x27; (bilinear) or &#x27;QUAD8&#x27; (serendipity quadratic). Default is &#x27;QUAD4&#x27;.
 
 
 Returns
 -------
-- **mesh** (*Mesh*): Mesh with QUAD4 elements
+- **mesh** (*Mesh*): Mesh with the specified element type.
 
-
-Examples
---------
-Create 32x32 mesh on unit square:
-```python
->>> mesh = rectangle_mesh(Nx=32, Ny=32, domain_x=1.0, domain_y=1.0)
-```
-
-Notes
------
-- Generates (Nx+1) × (Ny+1) nodes
-- Generates Nx × Ny QUAD4 elements
-- Node ordering follows standard QUAD4 convention
 
 #### sphere\_mesh
 

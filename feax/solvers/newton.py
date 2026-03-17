@@ -44,6 +44,9 @@ def create_newton_solve_fn(
     linear_solve_fn,
     x0_fn,
     matrix_view,
+    J_bc_parametric=None,
+    res_bc_parametric=None,
+    x0_fn_parametric=None,
 ):
     """Create a Newton solve callable for adaptive or fixed-iteration solves."""
     if iter_num == 1:
@@ -59,7 +62,7 @@ def create_newton_solve_fn(
             rho=newton_options.line_search_rho,
             max_backtracks=newton_options.line_search_max_backtracks,
         )
-        return lambda internal_vars, initial_sol: newton_solve(
+        return lambda internal_vars, initial_sol, bc_arg=None: newton_solve(
             J_bc_func,
             res_bc_func,
             initial_sol,
@@ -79,20 +82,43 @@ def create_newton_solve_fn(
         rho=newton_options.line_search_rho,
         max_backtracks=newton_options.line_search_max_backtracks,
     )
-    return lambda internal_vars, initial_sol: newton_solve_fori(
-        J_bc_func,
-        res_bc_func,
-        initial_sol,
-        bc,
-        newton_options,
-        iter_num,
-        linear_solver_options=linear_solver_options,
-        internal_vars=internal_vars,
-        linear_solve_fn=linear_solve_fn,
-        armijo_search_fn=armijo_fn,
-        x0_fn=x0_fn,
-        matrix_view=matrix_view,
-    )
+
+    # Build parametric Armijo for fori_loop vmap path
+    armijo_fn_parametric = None
+    if res_bc_parametric is not None:
+        armijo_fn_parametric = create_armijo_line_search_scan_parametric(
+            res_bc_parametric,
+            c1=newton_options.line_search_c1,
+            rho=newton_options.line_search_rho,
+            max_backtracks=newton_options.line_search_max_backtracks,
+        )
+
+    def _solve(internal_vars, initial_sol, bc_arg=None):
+        if bc_arg is not None and J_bc_parametric is not None:
+            return newton_solve_fori_parametric(
+                J_bc_parametric, res_bc_parametric,
+                initial_sol, bc_arg,
+                newton_options, iter_num,
+                linear_solver_options=linear_solver_options,
+                internal_vars=internal_vars,
+                linear_solve_fn=linear_solve_fn,
+                armijo_search_fn=armijo_fn_parametric,
+                x0_fn_parametric=x0_fn_parametric,
+                matrix_view=matrix_view,
+            )
+        return newton_solve_fori(
+            J_bc_func, res_bc_func,
+            initial_sol, bc,
+            newton_options, iter_num,
+            linear_solver_options=linear_solver_options,
+            internal_vars=internal_vars,
+            linear_solve_fn=linear_solve_fn,
+            armijo_search_fn=armijo_fn,
+            x0_fn=x0_fn,
+            matrix_view=matrix_view,
+        )
+
+    return _solve
 
 
 def _create_differentiable_newton_solver(
@@ -105,6 +131,9 @@ def _create_differentiable_newton_solver(
     adjoint_linear_solve_fn,
     extra_res_bc_fn=None,
     bulk_J_bc_func=None,
+    J_bc_parametric=None,
+    res_bc_parametric=None,
+    symmetric_bc=True,
 ):
     """Create custom-VJP Newton solver wrapper around a prepared solve_fn.
 
@@ -116,41 +145,42 @@ def _create_differentiable_newton_solver(
         Original (unwrapped) bulk Jacobian function.  Required when
         ``extra_res_bc_fn`` is provided so the adjoint can construct
         ``J_adjoint_matvec(v) = J_bulk^T @ v + VJP(extra_res_bc, v)``.
+    J_bc_parametric : callable, optional
+        Parametric Jacobian ``(sol, iv, bc) -> BCOO`` for vmap over bc_vals.
+    res_bc_parametric : callable, optional
+        Parametric residual ``(sol, iv, bc) -> array`` for vmap over bc_vals.
+    symmetric_bc : bool, default True
+        Whether symmetric BC elimination is used in the forward solve.
+        When True, a correction is applied in the backward pass to account
+        for the zeroed BC coupling columns (K_fb) in the Jacobian, which
+        are needed for correct gradients w.r.t. bc_vals.
     """
-    @jax.custom_vjp
-    def differentiable_solve(internal_vars, initial_guess):
-        return solve_fn(internal_vars, initial_guess)[0]
+    _has_parametric = J_bc_parametric is not None and res_bc_parametric is not None
+    # When symmetric BC elimination is used and we need bc_vals gradients,
+    # the adjoint at BC DOFs must be corrected.  The symmetric Jacobian
+    # zeros out K_fb columns, but the true residual Jacobian keeps them.
+    # The correction is: λ_bc = v_bc - K_fb^T @ λ_free, computed via
+    # the bulk (un-eliminated) Jacobian.
+    _needs_adjoint_bc_correction = symmetric_bc and _has_parametric
 
-    def f_fwd(internal_vars, initial_guess):
-        sol = differentiable_solve(internal_vars, initial_guess)
-        return sol, (internal_vars, sol)
+    @jax.custom_vjp
+    def differentiable_solve(internal_vars, initial_guess, bc_arg):
+        return solve_fn(internal_vars, initial_guess, bc_arg)[0]
+
+    def f_fwd(internal_vars, initial_guess, bc_arg):
+        sol = differentiable_solve(internal_vars, initial_guess, bc_arg)
+        return sol, (internal_vars, sol, bc_arg)
 
     def f_bwd(res, v):
-        internal_vars, sol = res
+        internal_vars, sol, effective_bc = res
 
-        def constraint_fn(dofs, internal_vars):
-            return res_bc_func(dofs, internal_vars)
-
-        def constraint_fn_sol_to_sol(sol_list, internal_vars):
-            dofs = jax.flatten_util.ravel_pytree(sol_list)[0]
-            con_vec = constraint_fn(dofs, internal_vars)
-            return problem.unflatten_fn_sol_list(con_vec)
-
-        def get_partial_params_c_fn(sol_list):
-            def partial_params_c_fn(internal_vars):
-                return constraint_fn_sol_to_sol(sol_list, internal_vars)
-
-            return partial_params_c_fn
-
-        def get_vjp_contraint_fn_params(internal_vars, sol_list):
-            partial_c_fn = get_partial_params_c_fn(sol_list)
-
-            def vjp_linear_fn(v_list):
-                _, f_vjp = jax.vjp(partial_c_fn, internal_vars)
-                val, = f_vjp(v_list)
-                return val
-
-            return vjp_linear_fn
+        # Choose parametric or closure-based functions for adjoint
+        if _has_parametric:
+            _res_fn = lambda dofs, iv: res_bc_parametric(dofs, iv, effective_bc)
+            _J_fn = lambda s, iv: J_bc_parametric(s, iv, effective_bc)
+        else:
+            _res_fn = res_bc_func
+            _J_fn = J_bc_func
 
         v_vec = jax.flatten_util.ravel_pytree(v)[0]
 
@@ -169,11 +199,11 @@ def _create_differentiable_newton_solver(
                 v_vec,
                 adjoint_solver_options,
                 problem.matrix_view,
-                bc,
+                effective_bc,
                 linear_solve_fn=adjoint_linear_solve_fn,
             )
         else:
-            J = J_bc_func(sol, internal_vars)
+            J = _J_fn(sol, internal_vars)
 
             use_transpose = True
             if problem.matrix_view in (MatrixView.UPPER, MatrixView.LOWER):
@@ -189,19 +219,81 @@ def _create_differentiable_newton_solver(
                 v_vec,
                 adjoint_solver_options,
                 problem.matrix_view,
-                bc,
+                effective_bc,
                 linear_solve_fn=adjoint_linear_solve_fn,
             )
 
-        sol_list = problem.unflatten_fn_sol_list(sol)
-        vjp_linear_fn = get_vjp_contraint_fn_params(internal_vars, sol_list)
-        vjp_result = vjp_linear_fn(problem.unflatten_fn_sol_list(adjoint_vec))
-        vjp_result = jax.tree_util.tree_map(_safe_negate, vjp_result)
+        # Correct adjoint at BC DOFs for symmetric BC elimination.
+        # The symmetric Jacobian J_sym has zeroed BC columns, so the adjoint
+        # solve J_sym^T λ = v gives correct λ_free but wrong λ_bc = v_bc.
+        # The true adjoint satisfies J_true^T λ = v where J_true keeps BC
+        # columns (K_fb).  Since J_true^T is block lower-triangular:
+        #   λ_free = K_ff^{-T} v_free  (same as symmetric, already correct)
+        #   λ_bc = v_bc - K_fb^T λ_free  (correction needed)
+        if _needs_adjoint_bc_correction:
+            from ..assembler import _get_J
+            sol_list_for_correction = problem.unflatten_fn_sol_list(sol)
+            K_bulk = _get_J(problem, sol_list_for_correction, internal_vars)
+            # Isolate λ_free by zeroing BC entries
+            lambda_free_padded = adjoint_vec.at[effective_bc.bc_rows].set(0.0)
+            # K_fb^T @ λ_free = (K_bulk^T @ λ_free_padded)[bc_rows]
+            correction = (K_bulk.T @ lambda_free_padded)[effective_bc.bc_rows]
+            adjoint_vec = adjoint_vec.at[effective_bc.bc_rows].set(
+                v_vec[effective_bc.bc_rows] - correction
+            )
 
-        return (vjp_result, None)
+        # VJP of residual w.r.t. internal_vars and bc
+        adjoint_list = problem.unflatten_fn_sol_list(adjoint_vec)
+        sol_list = problem.unflatten_fn_sol_list(sol)
+
+        if _has_parametric:
+            def res_fn_params(iv, bc_arg):
+                dofs = jax.flatten_util.ravel_pytree(sol_list)[0]
+                return problem.unflatten_fn_sol_list(
+                    res_bc_parametric(dofs, iv, bc_arg)
+                )
+
+            _, f_vjp = jax.vjp(res_fn_params, internal_vars, effective_bc)
+            vjp_iv, vjp_bc = f_vjp(adjoint_list)
+            vjp_iv = jax.tree_util.tree_map(_safe_negate, vjp_iv)
+            vjp_bc = jax.tree_util.tree_map(_safe_negate, vjp_bc)
+        else:
+            def res_fn_iv(iv):
+                dofs = jax.flatten_util.ravel_pytree(sol_list)[0]
+                return problem.unflatten_fn_sol_list(
+                    res_bc_func(dofs, iv)
+                )
+
+            _, f_vjp = jax.vjp(res_fn_iv, internal_vars)
+            vjp_iv, = f_vjp(adjoint_list)
+            vjp_iv = jax.tree_util.tree_map(_safe_negate, vjp_iv)
+            vjp_bc = None
+
+        return (vjp_iv, None, vjp_bc)
 
     differentiable_solve.defvjp(f_fwd, f_bwd)
-    return differentiable_solve
+
+    def solver_with_bc(internal_vars, initial_guess, bc=None):
+        """Differentiable Newton solver with optional BC override.
+
+        Parameters
+        ----------
+        internal_vars : InternalVars
+            Internal variables (material parameters, loads, etc.).
+        initial_guess : jnp.ndarray
+            Initial guess for the Newton solve.
+        bc : DirichletBC, optional
+            Override boundary conditions.  When provided, the forward
+            solve uses this BC instead of the one captured at construction.
+            The ``bc_rows`` / ``bc_mask`` must match the original BC
+            (same constrained DOFs); only ``bc_vals`` should differ.
+        """
+        from ..DCboundary import DirichletBC
+        effective_bc = bc if isinstance(bc, DirichletBC) else _default_bc
+        return differentiable_solve(internal_vars, initial_guess, effective_bc)
+
+    _default_bc = bc
+    return solver_with_bc
 
 
 def create_newton_solver(
@@ -213,6 +305,7 @@ def create_newton_solver(
     newton_options: Optional[NewtonOptions] = None,
     internal_vars=None,
     extra_residual_fn=None,
+    symmetric_bc: bool = True,
 ):
     """Create a differentiable Newton solver (iter_num is None or >1).
 
@@ -232,7 +325,7 @@ def create_newton_solver(
             "Use linear_solver.create_linear_solver for that path."
         )
 
-    J_bc_func = create_J_bc_function(problem, bc)
+    J_bc_func = create_J_bc_function(problem, bc, symmetric=symmetric_bc)
     res_bc_func = create_res_bc_function(problem, bc)
 
     # --- Hybrid matrix-free path ---
@@ -281,7 +374,7 @@ def create_newton_solver(
             jax.scipy.sparse.linalg, linear_options.solver
         )
 
-        def hybrid_solve_fn(internal_vars, initial_sol):
+        def hybrid_solve_fn(internal_vars, initial_sol, bc_arg=None):
             """Python-loop Newton solver with hybrid matrix-free Jacobian."""
             sol = initial_sol
             res_total = _hybrid_total_res(sol, internal_vars)
@@ -392,6 +485,7 @@ def create_newton_solver(
             adjoint_linear_solve_fn=adjoint_linear_solve_fn,
             extra_res_bc_fn=extra_res_bc,
             bulk_J_bc_func=J_bc_func,
+            symmetric_bc=symmetric_bc,
         )
 
     # --- Standard path (no extra residual) ---
@@ -422,6 +516,14 @@ def create_newton_solver(
         _res_fn = J_bc_func_for_adjoint = J_bc_func
         _J_fn = res_bc_func
 
+        # Parametric functions: take bc as an explicit argument
+        # so that a single JIT-compiled function can serve different bc_vals,
+        # and so the backward pass can compute gradients w.r.t. bc_vals.
+        from ..assembler import create_J_bc_parametric, create_res_bc_parametric
+        from ..DCboundary import apply_boundary_to_res as _apply_res_bc
+        _res_bc_parametric = create_res_bc_parametric(problem)
+        _J_bc_parametric = create_J_bc_parametric(problem, symmetric=symmetric_bc)
+
         if newton_options.internal_jit:
             logger.info(
                 "Python-loop Newton: JIT-compiling res_bc_func, J_bc_func, "
@@ -429,6 +531,7 @@ def create_newton_solver(
             )
             J_bc_func = jax.jit(J_bc_func)
             res_bc_func = jax.jit(res_bc_func)
+            _res_bc_parametric = jax.jit(_res_bc_parametric)
             linear_solve_fn = jax.jit(linear_solve_fn)
             if adjoint_fn_shared:
                 adjoint_linear_solve_fn = linear_solve_fn
@@ -446,17 +549,26 @@ def create_newton_solver(
             x0_fn_from_opts = linear_options.x0_fn
         x0_fn = x0_fn_from_opts or create_x0(bc_rows=bc.bc_rows, bc_vals=bc.bc_vals)
 
-        def python_loop_solve_fn(internal_vars, initial_sol):
+        def python_loop_solve_fn(internal_vars, initial_sol, bc_arg=None):
+            if bc_arg is not None and bc_arg is not bc:
+                # Use parametric residual that takes bc as argument
+                _res_bc = lambda sol, iv: _res_bc_parametric(sol, iv, bc_arg)
+                _x0 = create_x0(bc_rows=bc_arg.bc_rows, bc_vals=bc_arg.bc_vals)
+                _effective_bc = bc_arg
+            else:
+                _res_bc = res_bc_func
+                _x0 = x0_fn
+                _effective_bc = bc
             return newton_solve_py(
                 J_bc_applied=J_bc_func,
-                res_bc_applied=res_bc_func,
+                res_bc_applied=_res_bc,
                 initial_guess=initial_sol,
-                bc=bc,
+                bc=_effective_bc,
                 newton_options=newton_options,
                 linear_solver_options=linear_options,
                 internal_vars=internal_vars,
                 linear_solve_fn=linear_solve_fn,
-                x0_fn=x0_fn,
+                x0_fn=_x0,
                 matrix_view=problem.matrix_view,
             )
 
@@ -468,6 +580,9 @@ def create_newton_solver(
             solve_fn=python_loop_solve_fn,
             adjoint_solver_options=adjoint_linear_options,
             adjoint_linear_solve_fn=adjoint_linear_solve_fn,
+            J_bc_parametric=_J_bc_parametric,
+            res_bc_parametric=_res_bc_parametric,
+            symmetric_bc=symmetric_bc,
         )
 
     # ------------------------------------------------------------------ #
@@ -508,6 +623,13 @@ def create_newton_solver(
         x0_fn_from_opts = linear_options.x0_fn
     x0_fn = x0_fn_from_opts or create_x0(bc_rows=bc.bc_rows, bc_vals=bc.bc_vals)
 
+    # Parametric functions for vmap over bc_vals (fori_loop path only)
+    from ..assembler import create_J_bc_parametric, create_res_bc_parametric
+    from .common import create_x0_parametric
+    J_bc_parametric_fn = create_J_bc_parametric(problem, symmetric=symmetric_bc)
+    res_bc_parametric_fn = create_res_bc_parametric(problem)
+    x0_fn_parametric = create_x0_parametric()
+
     solve_fn = create_newton_solve_fn(
         iter_num=iter_num,
         J_bc_func=J_bc_func,
@@ -518,6 +640,9 @@ def create_newton_solver(
         linear_solve_fn=linear_solve_fn,
         x0_fn=x0_fn,
         matrix_view=problem.matrix_view,
+        J_bc_parametric=J_bc_parametric_fn,
+        res_bc_parametric=res_bc_parametric_fn,
+        x0_fn_parametric=x0_fn_parametric,
     )
 
     return _create_differentiable_newton_solver(
@@ -528,6 +653,9 @@ def create_newton_solver(
         solve_fn=solve_fn,
         adjoint_solver_options=adjoint_linear_options,
         adjoint_linear_solve_fn=adjoint_linear_solve_fn,
+        J_bc_parametric=J_bc_parametric_fn,
+        res_bc_parametric=res_bc_parametric_fn,
+        symmetric_bc=symmetric_bc,
     )
 
 def create_armijo_line_search_jax(res_bc_applied, c1=1e-4, rho=0.5, max_backtracks=30):
@@ -619,6 +747,49 @@ def create_armijo_line_search_scan(res_bc_applied, c1=1e-4, rho=0.5, max_backtra
             fallback_res = res_bc_applied(fallback_sol, internal_vars)
         else:
             fallback_res = res_bc_applied(fallback_sol)
+        fallback_norm = np.linalg.norm(fallback_res)
+
+        final_sol = np.where(found_good, best_sol, fallback_sol)
+        final_norm = np.where(found_good, best_norm, fallback_norm)
+        final_alpha_out = np.where(found_good, final_alpha / rho, 1e-8)
+
+        return final_sol, final_norm, final_alpha_out, found_good
+
+    return line_search
+
+
+def create_armijo_line_search_scan_parametric(res_bc_parametric, c1=1e-4, rho=0.5, max_backtracks=30):
+    """Create scan-based Armijo line search with bc as explicit argument (vmap-friendly)."""
+
+    def line_search(sol, delta_sol, res, res_norm, internal_vars, bc):
+        grad_merit = -np.dot(res, res)
+
+        def scan_fn(carry, _):
+            alpha, best_sol, best_norm, found_good = carry
+            trial_sol = sol + alpha * delta_sol
+            trial_res = res_bc_parametric(trial_sol, internal_vars, bc)
+            trial_norm = np.linalg.norm(trial_res)
+
+            is_valid = np.logical_not(np.any(np.isnan(trial_res)))
+            merit_decrease = 0.5 * (trial_norm**2 - res_norm**2)
+            armijo_satisfied = merit_decrease <= c1 * alpha * grad_merit
+            is_acceptable = is_valid & armijo_satisfied
+
+            should_update = is_acceptable & np.logical_not(found_good)
+            new_sol = np.where(should_update, trial_sol, best_sol)
+            new_norm = np.where(should_update, trial_norm, best_norm)
+            new_alpha = alpha * rho
+            new_found = found_good | is_acceptable
+
+            return (new_alpha, new_sol, new_norm, new_found), None
+
+        init_carry = (1.0, sol, res_norm, False)
+        (final_alpha, best_sol, best_norm, found_good), _ = jax.lax.scan(
+            scan_fn, init_carry, None, length=max_backtracks
+        )
+
+        fallback_sol = sol + 1e-8 * delta_sol
+        fallback_res = res_bc_parametric(fallback_sol, internal_vars, bc)
         fallback_norm = np.linalg.norm(fallback_res)
 
         final_sol = np.where(found_good, best_sol, fallback_sol)
@@ -830,6 +1001,58 @@ def newton_solve_fori(J_bc_applied, res_bc_applied, initial_guess, bc, newton_op
             n=num_iters, r=final_res_norm, c=converged,
         )
 
+    return final_sol, final_res_norm, converged
+
+
+def newton_solve_fori_parametric(
+    J_bc_parametric, res_bc_parametric, initial_guess, bc,
+    newton_options, num_iters,
+    linear_solver_options,
+    internal_vars,
+    linear_solve_fn, armijo_search_fn, x0_fn_parametric,
+    matrix_view: MatrixView = MatrixView.FULL,
+):
+    """Newton solver using fori_loop with bc as traced argument (vmap-compatible)."""
+
+    def newton_iteration(i, state):
+        sol, res_norm = state
+
+        res = res_bc_parametric(sol, internal_vars, bc)
+        J = J_bc_parametric(sol, internal_vars, bc)
+
+        x0 = x0_fn_parametric(sol, bc)
+        delta_sol = linear_solve_fn(J, -res, x0)
+        if linear_solver_options.check_convergence:
+            delta_sol = check_convergence(
+                A=J, x=delta_sol, b=-res,
+                solver_options=linear_solver_options,
+                matrix_view=matrix_view,
+                solver_label="Newton linear solve",
+            )
+
+        new_sol, new_res_norm, alpha, success = armijo_search_fn(
+            sol, delta_sol, res, res_norm, internal_vars, bc
+        )
+
+        if linear_solver_options.verbose:
+            jax.debug.print(
+                "Newton iter {iter:3d}: res_norm = {r:.6e}, alpha = {a:.4f}, success = {s}",
+                iter=i, r=new_res_norm, a=alpha, s=success,
+            )
+
+        return (new_sol, new_res_norm)
+
+    initial_res = res_bc_parametric(initial_guess, internal_vars, bc)
+    initial_res_norm = np.linalg.norm(initial_res)
+
+    final_state = jax.lax.fori_loop(
+        0, num_iters,
+        newton_iteration,
+        (initial_guess, initial_res_norm),
+    )
+
+    final_sol, final_res_norm = final_state
+    converged = final_res_norm < newton_options.tol
     return final_sol, final_res_norm, converged
 
 

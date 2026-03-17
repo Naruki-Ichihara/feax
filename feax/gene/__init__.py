@@ -48,6 +48,7 @@ Example:
 
 from . import adaptive
 from . import optimizer
+from . import sdf
 from .filters import (
     create_density_filter,
     create_helmholtz_filter,
@@ -57,6 +58,7 @@ from .filters import (
     compute_volume_fraction_threshold,
 )
 from .responses import create_compliance_fn, create_volume_fn
+from .sdf import DensityField, from_opt_result, from_vtk
 
 __all__ = [
     # Response functions
@@ -72,6 +74,12 @@ __all__ = [
     # Projection and threshold
     'heaviside_projection',
     'compute_volume_fraction_threshold',
+
+    # SDF conversion
+    'sdf',
+    'DensityField',
+    'from_opt_result',
+    'from_vtk',
 
     # Adaptive remeshing
     'adaptive',

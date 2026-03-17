@@ -59,6 +59,7 @@ def create_solver(
     internal_vars=None,
     extra_residual_fn: Optional[Callable] = None,
     energy_fn: Optional[Callable] = None,
+    symmetric_bc: bool = True,
 ) -> Callable:
     """Create a differentiable solver with custom VJP for gradient computation.
 
@@ -77,7 +78,10 @@ def create_solver(
         When ``solver="auto"`` (or when ``solver_options`` is ``None``), the
         algorithm is selected automatically by assembling the initial Jacobian
         and calling ``detect_matrix_property``.
-        If not specified, forward options default to iterative auto mode.
+        If not specified, defaults to ``DirectSolverOptions(solver="auto")``,
+        which selects the best available direct solver (cuDSS on GPU,
+        cholmod/umfpack/spsolve on CPU). Use ``IterativeSolverOptions``
+        explicitly when a direct solver is too memory-intensive.
     adjoint_solver_options : AbstractSolverOptions, optional
         Options for the adjoint solve in the backward pass.
         Defaults to same as ``solver_options``.
@@ -101,6 +105,38 @@ def create_solver(
         the bulk Jacobian is assembled (sparse), while the extra contribution's
         Jacobian-vector product is computed via ``jax.jvp`` (forward-mode AD).
         Requires ``IterativeSolverOptions`` and ``iter_num != 1`` (Newton path).
+    symmetric_bc : bool, default True
+        Controls how Dirichlet BCs are applied to the Jacobian matrix.
+
+        - ``True`` (symmetric elimination): Zeros both BC rows **and** columns
+          in the Jacobian, then sets BC diagonal entries to 1. This preserves
+          matrix symmetry (enabling symmetric solvers like CG) but removes the
+          K₁₀ coupling between BC DOFs and interior DOFs. Suitable when BC
+          values are pre-applied to the initial guess and BC DOF increments
+          are zero during Newton iterations (e.g. fixed BCs, linear problems).
+
+        - ``False`` (non-symmetric elimination): Zeros only BC **rows** in the
+          Jacobian, keeping BC columns (K₁₀ coupling) intact. The Newton solver
+          drives BC DOFs to their prescribed values through the modified
+          residual: ``res[bc_dof] = sol[bc_dof] - bc_val``. This is required
+          when the K₁₀ coupling is important for Newton convergence.
+
+        Use ``symmetric_bc=False`` when:
+
+        1. **Incremental loading**: BC values change per load step and the
+           previous solution is reused as initial guess. The K₁₀ coupling
+           ensures that prescribed displacement changes propagate correctly
+           to interior DOFs in the Newton linearization.
+        2. **Soft regions with large stiffness contrast**: e.g. third-medium
+           contact where the medium stiffness is scaled by γ₀ ≈ 1e-6. Without
+           K₁₀ coupling, the first Newton increment overshoots in soft regions,
+           causing divergence.
+        3. **Large-deformation nonlinear problems** where BC DOF displacements
+           are large and strongly coupled to interior DOFs.
+
+        Note that ``symmetric_bc=False`` produces a non-symmetric Jacobian,
+        so symmetric solvers (CG) cannot be used. Use ``spsolve``, ``umfpack``,
+        ``bicgstab``, or ``gmres`` instead.
 
     Returns
     -------
@@ -109,7 +145,13 @@ def create_solver(
             ``solver(internal_vars) -> solution``
             (``initial_guess`` is optional and ignored if provided.)
         When ``IterativeSolverOptions`` is used:
-            ``solver(internal_vars, initial_guess) -> solution``
+            ``solver(internal_vars, initial_guess, bc=None) -> solution``
+
+        The optional ``bc`` parameter accepts a
+        :class:`~feax.DCboundary.DirichletBC` whose ``bc_rows`` match the
+        original BC but ``bc_vals`` may differ.  This avoids rebuilding
+        the solver when only prescribed values change (e.g. incremental
+        loading).  Use :meth:`DirichletBC.replace_vals` for convenience.
 
     Examples
     --------
@@ -127,6 +169,17 @@ def create_solver(
     >>> solver = create_solver(problem, bc, solver_options=IterativeSolverOptions(solver="gmres"),
     ...                        iter_num=1)
     >>> solution = solver(internal_vars, initial_guess)
+    >>>
+    >>> # Incremental loading with non-symmetric BC elimination
+    >>> solver = create_solver(problem, bc,
+    ...                        solver_options=DirectSolverOptions(solver="spsolve"),
+    ...                        newton_options=NewtonOptions(tol=1e-6, max_iter=20),
+    ...                        iter_num=None, symmetric_bc=False,
+    ...                        internal_vars=internal_vars)
+    >>> sol = zero_like_initial_guess(problem, bc)
+    >>> for step in range(1, num_steps + 1):
+    ...     bc_step = bc.replace_vals(new_vals)  # update prescribed values
+    ...     sol = solver(internal_vars, sol, bc=bc_step)
     """
     linear_options = solver_options
     adjoint_linear_options = adjoint_solver_options
@@ -207,9 +260,12 @@ def create_solver(
         )
 
     # Non-reduced paths (Newton / linear): normalize missing options.
+    # Default to DirectSolverOptions (direct solvers are preferred for
+    # small-to-medium problems; COMSOL-style: try direct first, fall back
+    # to iterative only when memory/performance is an issue).
     _linear_options_missing = linear_options is None
     if linear_options is None:
-        linear_options = IterativeSolverOptions()
+        linear_options = DirectSolverOptions()
     if linear_options is not None and adjoint_linear_options is None:
         adjoint_linear_options = linear_options
 
@@ -240,7 +296,7 @@ def create_solver(
             f"Expected DirectSolverOptions, IterativeSolverOptions, or MatrixFreeOptions, got {type(adjoint_linear_options).__name__}."
         )
 
-    J_bc_func = create_J_bc_function(problem, bc)
+    J_bc_func = create_J_bc_function(problem, bc, symmetric=symmetric_bc)
 
     # Assemble sample Jacobian and resolve "auto" only when needed.
     if _needs_auto:
@@ -280,6 +336,7 @@ def create_solver(
             newton_options=newton_options,
             internal_vars=internal_vars,
             extra_residual_fn=extra_residual_fn,
+            symmetric_bc=symmetric_bc,
         )
 
     # 3) Linear path (iter_num == 1)

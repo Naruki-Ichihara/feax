@@ -11,7 +11,7 @@ in finite element analysis.
 
 Key Features:
 - Jacobi (diagonal) preconditioner
-- Solver selection: cg, bicgstab, gmres, spsolve, cudss, lineax
+- Solver selection: cg, bicgstab, gmres, spsolve, umfpack, cholmod, cudss
 - Convergence checking for ill-conditioned problems
 - Adjoint linear solve for gradient computation
 - create_linear_solver: high-level differentiable solver for linear problems

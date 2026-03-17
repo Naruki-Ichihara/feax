@@ -66,6 +66,26 @@ Returns
 np.ndarray
     Gradient at quadrature points, shape (num_quads, vec, dim).
 
+#### hess
+
+```python
+def hess(cell_sol: np.ndarray, cell_shape_hessians: np.ndarray) -> np.ndarray
+```
+
+Compute solution Hessian (second spatial derivatives) at quadrature points.
+
+Parameters
+----------
+- **cell_sol** (*np.ndarray*): Nodal solution values, shape (num_nodes, vec).
+- **cell_shape_hessians** (*np.ndarray*): Shape function second derivatives in physical coordinates, shape (num_quads, num_nodes, dim, dim).
+
+
+Returns
+-------
+np.ndarray
+    Hessian at quadrature points, shape (num_quads, vec, dim, dim).
+    H[q, i, K, L] = sum_a u[a, i] * d²h_a/(dX_K dX_L) at quad point q.
+
 #### interpolate\_var
 
 ```python
@@ -527,7 +547,9 @@ For converged solutions, the residual should be near zero.
 
 ```python
 def create_J_bc_function(
-        problem: 'Problem', bc: 'DirichletBC'
+    problem: 'Problem',
+    bc: 'DirichletBC',
+    symmetric: bool = True
 ) -> Callable[[np.ndarray, InternalVars], sparse.BCOO]
 ```
 
@@ -541,6 +563,7 @@ Parameters
 ----------
 - **problem** (*Problem*): The finite element problem definition.
 - **bc** (*DirichletBC*): Dirichlet boundary condition specifications.
+- **symmetric** (*bool, default True*): If True, use symmetric elimination (zero BC rows and columns). If False, use non-symmetric elimination (zero BC rows only, keep columns). Non-symmetric elimination preserves the K_10 coupling, which is needed for the incremental Newton approach without pre-applied BCs.
 
 
 Returns
@@ -584,4 +607,51 @@ Notes
 -----
 The returned function is used in Newton solvers to find solutions
 that satisfy both the weak form equations and boundary conditions.
+
+#### create\_J\_bc\_parametric
+
+```python
+def create_J_bc_parametric(problem: 'Problem',
+                           symmetric: bool = True) -> Callable
+```
+
+Create a Jacobian function that takes ``bc`` as an explicit argument.
+
+Unlike :func:`create_J_bc_function` which captures ``bc`` in a closure,
+this version accepts ``bc`` as a third argument so that the function
+traces through the BC pytree under ``jax.vmap``.
+
+Parameters
+----------
+- **problem** (*Problem*): The finite element problem definition.
+- **symmetric** (*bool, default True*): If True, use symmetric elimination.
+
+
+Returns
+-------
+Callable
+    Function with signature ``(sol_flat, internal_vars, bc) -&gt; sparse.BCOO``.
+
+#### create\_res\_bc\_parametric
+
+```python
+def create_res_bc_parametric(problem: 'Problem') -> Callable
+```
+
+Create a residual function that takes ``bc`` as an explicit argument.
+
+Unlike :func:`create_res_bc_function` which captures ``bc`` in a closure,
+this version accepts ``bc`` as a third argument.  This enables a single
+JIT-compiled function to be reused across time steps where only the
+prescribed BC values change (same DOF locations, different values).
+
+Parameters
+----------
+- **problem** (*Problem*): The finite element problem definition.
+
+
+Returns
+-------
+Callable
+    Function with signature ``(sol_flat, internal_vars, bc) -&gt; np.ndarray``.
 

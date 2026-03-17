@@ -37,6 +37,29 @@ Boolean mask for BC rows (size: total_dofs)
 
 Boundary condition values for each BC row
 
+#### replace\_vals
+
+```python
+def replace_vals(new_bc_vals: np.ndarray) -> 'DirichletBC'
+```
+
+Return a new DirichletBC with updated prescribed values.
+
+The DOF locations (``bc_rows``, ``bc_mask``) are preserved; only the
+values at those DOFs change.  This is useful for incremental loading
+where the same DOFs are constrained but the prescribed displacement
+increases each step.
+
+Parameters
+----------
+- **new_bc_vals** (*np.ndarray*): New boundary condition values, same shape as ``self.bc_vals``.
+
+
+Returns
+-------
+DirichletBC
+    A new instance with the updated values.
+
 #### from\_specs
 
 ```python
@@ -73,18 +96,19 @@ Examples
 #### apply\_boundary\_to\_J
 
 ```python
-def apply_boundary_to_J(bc: DirichletBC, J: BCOO) -> BCOO
+def apply_boundary_to_J(bc: DirichletBC,
+                        J: BCOO,
+                        symmetric: bool = True) -> BCOO
 ```
 
 Apply Dirichlet boundary conditions to Jacobian matrix J.
 
 This function modifies the Jacobian matrix to enforce Dirichlet boundary conditions
-by zeroing out entries in boundary condition rows and columns, and setting diagonal
-entries to 1.0 for those rows. This preserves symmetry and transforms the system to
-enforce u[bc_dof] = bc_val.
+by zeroing out entries in boundary condition rows (and optionally columns), and setting
+diagonal entries to 1.0 for those rows.
 
 The algorithm:
-1. Zero out all entries in BC rows and columns (symmetric elimination)
+1. Zero out BC row entries (and BC column entries if symmetric=True)
 2. Set diagonal entries to 1.0 for all BC rows
 3. Handle potential duplicates by concatenation (JAX sparse solvers handle this)
 
@@ -92,6 +116,7 @@ Parameters
 ----------
 - **bc** (*DirichletBC*): Pre-computed boundary condition information containing: - bc_rows: DOF indices where BCs are applied - bc_mask: Boolean mask for fast BC row identification - bc_vals: Prescribed values (not used in Jacobian modification) - total_dofs: Total number of DOFs in the system
 - **J** (*jax.experimental.sparse.BCOO*): The sparse Jacobian matrix in BCOO format with shape (total_dofs, total_dofs)
+- **symmetric** (*bool, default True*): If True, zero both BC rows and columns (symmetric elimination). Preserves matrix symmetry, allowing use of symmetric solvers like CG. If False, zero only BC rows (non-symmetric elimination). Keeps the off-diagonal coupling K_10 in BC columns, which is required for the partitioned/incremental Newton approach where BC DOFs are driven to their values through the modified residual rather than being pre-applied to the initial guess.
 
 
 Returns
@@ -104,7 +129,6 @@ Notes
 This function is JAX-JIT compatible and designed for efficient use in Newton solvers.
 The returned matrix may have duplicate entries (original zeros + new diagonal ones),
 but JAX sparse solvers handle this correctly by summing duplicates.
-Symmetric elimination preserves matrix symmetry, allowing use of symmetric solvers like CG.
 
 #### apply\_boundary\_to\_res
 

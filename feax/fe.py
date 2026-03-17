@@ -13,7 +13,7 @@ import jax
 import jax.numpy as np
 from jax import Array
 
-from feax.basis import get_face_shape_vals_and_grads, get_shape_vals_and_grads
+from feax.basis import get_face_shape_vals_and_grads, get_shape_hessians_ref, get_shape_vals_and_grads
 from feax.mesh import Mesh
 
 
@@ -63,6 +63,7 @@ class FiniteElement:
     dim: int
     ele_type: str = 'HEX8'
     gauss_order: Optional[int] = None
+    hess: bool = False
 
     def __post_init__(self) -> None:
         self.points = self.mesh.points
@@ -86,6 +87,11 @@ class FiniteElement:
         # (num_cells, num_quads, num_nodes, 1, dim)
         self.v_grads_JxW = self.shape_grads[:, :, :, None, :] * self.JxW[:, :, None, None, None]
         self.num_face_quads = self.face_quad_weights.shape[1]
+
+        # Optional: second derivatives of shape functions in physical coordinates
+        self.shape_hessians = None
+        if self.hess:
+            self.shape_hessians = self._compute_shape_hessians()
 
     def get_shape_grads(self) -> Tuple[Array, Array]:
         """Compute shape function gradients in physical coordinates.
@@ -121,6 +127,50 @@ class FiniteElement:
                                 @ jacobian_deta_dx)[:, :, :, 0, :]
         JxW = jacobian_det * self.quad_weights[None, :]
         return shape_grads_physical, JxW
+
+    def _compute_shape_hessians(self) -> Array:
+        r"""Compute second derivatives of shape functions in physical coordinates.
+
+        Transforms reference-coordinate second derivatives to physical coordinates:
+
+        .. math::
+            \frac{\partial^2 h_a}{\partial X_K \partial X_L}
+            = \frac{\partial^2 h_a}{\partial r_I \partial r_J}
+              \frac{\partial r_I}{\partial X_K}
+              \frac{\partial r_J}{\partial X_L}
+
+        This neglects the term involving second derivatives of the coordinate
+        mapping (valid for straight-edged elements or isoparametric elements
+        where the mapping Hessian contribution is small).
+
+        Returns
+        -------
+        shape_hessians : np.ndarray
+            Shape: (num_cells, num_quads, num_nodes, dim, dim)
+        """
+        from feax.basis import get_shape_hessians_ref
+        hess_ref = get_shape_hessians_ref(self.ele_type, self.gauss_order)
+        # hess_ref: (num_quads, num_nodes, dim, dim)
+
+        # Recompute drdX (inverse Jacobian) — same as in get_shape_grads
+        physical_coos = np.take(self.points, self.cells, axis=0)
+        jacobian_dx_deta = np.sum(
+            physical_coos[:, None, :, :, None] *
+            self.shape_grads_ref[None, :, :, None, :],
+            axis=2, keepdims=True,
+        )
+        jacobian_deta_dx = np.linalg.inv(jacobian_dx_deta)[:, :, 0, :, :]
+        # jacobian_deta_dx: (num_cells, num_quads, dim, dim)  = dr_I/dX_K
+
+        # d2h/(dX_K dX_L) = d2h/(dr_I dr_J) * (dr_I/dX_K) * (dr_J/dX_L)
+        # einsum: "qnIJ,cqIK,cqJL->cqnKL"
+        shape_hessians = np.einsum(
+            'qnIJ,cqIK,cqJL->cqnKL',
+            hess_ref,
+            jacobian_deta_dx,
+            jacobian_deta_dx,
+        )
+        return shape_hessians
 
     def get_face_shape_grads(self, boundary_inds: Array) -> Tuple[Array, Array]:
         """Compute face shape function gradients and surface integration scaling.

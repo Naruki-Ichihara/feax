@@ -105,6 +105,7 @@ class Mesh():
             'triangle6': 'TRI6',
             'quad': 'QUAD4',
             'quad8': 'QUAD8',
+            'quad9': 'QUAD9',
         }
 
         # Get available cell types in the mesh
@@ -263,6 +264,8 @@ def get_meshio_cell_type(ele_type: str) -> str:
         cell_type = 'quad'
     elif ele_type == 'QUAD8':
         cell_type = 'quad8'
+    elif ele_type == 'QUAD9':
+        cell_type = 'quad9'
     else:
         raise NotImplementedError
     return cell_type
@@ -446,9 +449,10 @@ def rectangle_mesh(
     Ny: int,
     domain_x: float = 1.0,
     domain_y: float = 1.0,
-    origin: Tuple[float, float] = (0.0, 0.0)
+    origin: Tuple[float, float] = (0.0, 0.0),
+    ele_type: str = 'QUAD4',
 ) -> Mesh:
-    """Generate structured 2D rectangular mesh with QUAD4 elements.
+    """Generate structured 2D rectangular mesh with QUAD4 or QUAD8 elements.
 
     Creates a simple structured quadrilateral mesh for rectangular domains.
     This is a lightweight alternative to Gmsh for simple 2D problems.
@@ -465,50 +469,121 @@ def rectangle_mesh(
         Length of domain in y-direction. Default is 1.0
     origin : tuple of 2 floats, optional
         Origin point (x0, y0) of the rectangle. Default is (0, 0)
+    ele_type : str, optional
+        Element type: 'QUAD4' (bilinear) or 'QUAD8' (serendipity quadratic).
+        Default is 'QUAD4'.
 
     Returns
     -------
     mesh : Mesh
-        Mesh with QUAD4 elements
-
-    Examples
-    --------
-    Create 32x32 mesh on unit square:
-    >>> mesh = rectangle_mesh(Nx=32, Ny=32, domain_x=1.0, domain_y=1.0)
-
-    Notes
-    -----
-    - Generates (Nx+1) × (Ny+1) nodes
-    - Generates Nx × Ny QUAD4 elements
-    - Node ordering follows standard QUAD4 convention
+        Mesh with the specified element type.
     """
+    if ele_type not in ('QUAD4', 'QUAD8', 'QUAD9'):
+        raise ValueError(f"rectangle_mesh supports 'QUAD4', 'QUAD8', or 'QUAD9', got '{ele_type}'")
+
     x0, y0 = origin
 
-    # Create structured grid of nodes
-    x = onp.linspace(x0, x0 + domain_x, Nx + 1)
-    y = onp.linspace(y0, y0 + domain_y, Ny + 1)
-    xv, yv = onp.meshgrid(x, y, indexing='ij')
+    if ele_type == 'QUAD4':
+        # Create structured grid of nodes
+        x = onp.linspace(x0, x0 + domain_x, Nx + 1)
+        y = onp.linspace(y0, y0 + domain_y, Ny + 1)
+        xv, yv = onp.meshgrid(x, y, indexing='ij')
+        points = onp.stack([xv.reshape(-1), yv.reshape(-1)], axis=1)
 
-    # Create points array (num_nodes, 2) - embed in 2D space
-    points = onp.stack([xv.reshape(-1), yv.reshape(-1)], axis=1)
+        cells = []
+        for i in range(Nx):
+            for j in range(Ny):
+                n0 = i * (Ny + 1) + j
+                n1 = (i + 1) * (Ny + 1) + j
+                n2 = (i + 1) * (Ny + 1) + (j + 1)
+                n3 = i * (Ny + 1) + (j + 1)
+                cells.append([n0, n1, n2, n3])
 
-    # Create connectivity for QUAD4 elements
-    # Node numbering: 0--1
-    #                 |  |
-    #                 3--2
+        cells = onp.array(cells, dtype=onp.int32)
+        return Mesh(points, cells, ele_type='QUAD4')
+
+    if ele_type == 'QUAD9':
+        return _rectangle_mesh_quad9(Nx, Ny, domain_x, domain_y, x0, y0)
+
+    # ── QUAD8: serendipity (8-node) quadrilateral ──
+    # Fine grid: (2*Nx+1) x (2*Ny+1) nodes, then select the 8-node pattern.
+    # Corner nodes live on even-even grid indices; midside nodes on mixed.
+    nx_fine = 2 * Nx + 1
+    ny_fine = 2 * Ny + 1
+    x_fine = onp.linspace(x0, x0 + domain_x, nx_fine)
+    y_fine = onp.linspace(y0, y0 + domain_y, ny_fine)
+    xv, yv = onp.meshgrid(x_fine, y_fine, indexing='ij')
+    all_points = onp.stack([xv.reshape(-1), yv.reshape(-1)], axis=1)
+
+    def gid(i, j):
+        return i * ny_fine + j
+
+    # Identify which fine-grid nodes are actually used (corners + midsides)
+    used = onp.zeros(nx_fine * ny_fine, dtype=bool)
     cells = []
     for i in range(Nx):
         for j in range(Ny):
-            # Node indices in the grid
-            n0 = i * (Ny + 1) + j
-            n1 = (i + 1) * (Ny + 1) + j
-            n2 = (i + 1) * (Ny + 1) + (j + 1)
-            n3 = i * (Ny + 1) + (j + 1)
-            cells.append([n0, n1, n2, n3])
+            ci, cj = 2 * i, 2 * j  # fine-grid origin of this element
+            # Corners: (ci,cj), (ci+2,cj), (ci+2,cj+2), (ci,cj+2)
+            # Midsides: (ci+1,cj), (ci+2,cj+1), (ci+1,cj+2), (ci,cj+1)
+            # Meshio/Abaqus QUAD8 ordering: 4 corners then 4 midsides
+            nodes = [
+                gid(ci, cj), gid(ci + 2, cj),
+                gid(ci + 2, cj + 2), gid(ci, cj + 2),
+                gid(ci + 1, cj), gid(ci + 2, cj + 1),
+                gid(ci + 1, cj + 2), gid(ci, cj + 1),
+            ]
+            cells.append(nodes)
+            for n in nodes:
+                used[n] = True
 
-    cells = onp.array(cells, dtype=onp.int32)
+    # Compact: renumber used nodes
+    old_to_new = onp.full(nx_fine * ny_fine, -1, dtype=onp.int32)
+    old_to_new[used] = onp.arange(used.sum(), dtype=onp.int32)
+    points = all_points[used]
+    cells = old_to_new[onp.array(cells, dtype=onp.int32)]
 
-    return Mesh(points, cells, ele_type='QUAD4')
+    return Mesh(points, cells, ele_type='QUAD8')
+
+
+def _rectangle_mesh_quad9(
+    Nx: int, Ny: int, domain_x: float, domain_y: float,
+    x0: float, y0: float,
+) -> Mesh:
+    """Generate structured 2D rectangular mesh with QUAD9 (bi-quadratic Lagrange) elements."""
+    nx_fine = 2 * Nx + 1
+    ny_fine = 2 * Ny + 1
+    x_fine = onp.linspace(x0, x0 + domain_x, nx_fine)
+    y_fine = onp.linspace(y0, y0 + domain_y, ny_fine)
+    xv, yv = onp.meshgrid(x_fine, y_fine, indexing='ij')
+    all_points = onp.stack([xv.reshape(-1), yv.reshape(-1)], axis=1)
+
+    def gid(i, j):
+        return i * ny_fine + j
+
+    used = onp.zeros(nx_fine * ny_fine, dtype=bool)
+    cells = []
+    for i in range(Nx):
+        for j in range(Ny):
+            ci, cj = 2 * i, 2 * j
+            # Meshio/Abaqus QUAD9: 4 corners + 4 midsides + 1 center
+            nodes = [
+                gid(ci, cj), gid(ci + 2, cj),
+                gid(ci + 2, cj + 2), gid(ci, cj + 2),
+                gid(ci + 1, cj), gid(ci + 2, cj + 1),
+                gid(ci + 1, cj + 2), gid(ci, cj + 1),
+                gid(ci + 1, cj + 1),
+            ]
+            cells.append(nodes)
+            for n in nodes:
+                used[n] = True
+
+    old_to_new = onp.full(nx_fine * ny_fine, -1, dtype=onp.int32)
+    old_to_new[used] = onp.arange(used.sum(), dtype=onp.int32)
+    points = all_points[used]
+    cells = old_to_new[onp.array(cells, dtype=onp.int32)]
+
+    return Mesh(points, cells, ele_type='QUAD9')
 
 
 def sphere_mesh(

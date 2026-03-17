@@ -70,6 +70,19 @@ Check if JAX&#x27;s experimental spsolve is available.
 
 Only supported on the CPU backend.
 
+#### detect\_available\_solver\_backends
+
+```python
+def detect_available_solver_backends(solver: str = "auto") -> tuple[str, ...]
+```
+
+Detect available direct solvers for the current runtime.
+
+Parameters
+----------
+- **solver** (*str, default &quot;auto&quot;*): - &quot;auto&quot;: return all available direct solvers. - specific solver: return that solver if available, otherwise raise.
+
+
 ## MatrixProperty Objects
 
 ```python
@@ -259,6 +272,25 @@ def mview_id() -> int
 
 Get matrix view as integer ID for cuDSS.
 
+## SKSPARSEOptions Objects
+
+```python
+@dataclass(frozen=True)
+class SKSPARSEOptions()
+```
+
+Options for host-side sparse direct solvers.
+
+These options are shared by the CPU direct solver backends. Some fields
+apply to all host-callback solvers, while others are backend-specific.
+
+Parameters
+----------
+- **vmap_method** (*str, default &quot;broadcast_all&quot;*): JAX ``pure_callback`` vmap behavior. Supported values: ``&quot;expand_dims&quot;``, ``&quot;sequential&quot;``, or ``&quot;broadcast_all&quot;``. Used by ``spsolve``, ``umfpack``, and ``cholmod``.
+- **order** (*str default &quot;amd&quot;*): CHOLMOD ordering strategy. Supported values: ``&quot;default&quot;``, ``&quot;best&quot;``, ``&quot;metis&quot;``, ``&quot;nesdis&quot;``, ``&quot;amd&quot;``, ``&quot;colamd&quot;``, ``&quot;postordered&quot;``, ``&quot;natural&quot;``, or ``None``.
+- **lower** (*bool, default False*): Whether CHOLMOD should use lower-triangular input.
+
+
 ## AbstractSolverOptions Objects
 
 ```python
@@ -331,7 +363,7 @@ Parameters
 - **tol** (*float, default 1e-6*): Absolute tolerance for residual vector (l2 norm)
 - **rel_tol** (*float, default 1e-8*): Relative tolerance for residual vector (l2 norm)
 - **max_iter** (*int, default 100*): Maximum number of Newton iterations
-- **linear_solver** (*str, optional*): Linear solver type. If not specified, automatically selects based on backend: - GPU backend: &quot;cudss&quot; (cuDSS direct solver, requires CUDA) - CPU backend: &quot;cg&quot; (Conjugate Gradient, JAX-native) Manual options: &quot;cg&quot;, &quot;bicgstab&quot;, &quot;gmres&quot;, &quot;spsolve&quot;, &quot;cudss&quot;, &quot;lineax&quot;
+- **linear_solver** (*str, optional*): Linear solver type. If not specified, automatically selects based on backend: - GPU backend: &quot;cudss&quot; (cuDSS direct solver, requires CUDA) - CPU backend: &quot;cg&quot; (Conjugate Gradient, JAX-native) Manual options: &quot;cg&quot;, &quot;bicgstab&quot;, &quot;gmres&quot;, &quot;spsolve&quot;, &quot;cudss&quot;
 - **preconditioner** (*callable, optional*): Preconditioner function for linear solver
 - **use_jacobi_preconditioner** (*bool, default False*): Whether to use Jacobi (diagonal) preconditioner automatically
 - **jacobi_shift** (*float, default 1e-12*): Regularization parameter for Jacobi preconditioner
@@ -368,8 +400,9 @@ Configuration for direct linear solvers.
 
 Parameters
 ----------
-- **solver** (*str, default &quot;auto&quot;*): Direct solver algorithm: - &quot;auto&quot;: Automatically selected based on backend and matrix property   (CUDA -&gt; cudss, CPU -&gt; spsolve). Resolved at create_solver time. - &quot;cudss&quot;: NVIDIA cuDSS direct solver (GPU only) - &quot;spsolve&quot;: JAX experimental sparse solve (CPU only) - &quot;cholesky&quot;: Cholesky decomposition via lineax (SPD matrices) - &quot;lu&quot;: LU decomposition via lineax (general matrices) - &quot;qr&quot;: QR decomposition via lineax (general/rectangular matrices)
+- **solver** (*str, default &quot;auto&quot;*): Direct solver algorithm: - &quot;auto&quot;: Automatically selected based on backend and matrix property   (CUDA -&gt; cudss, CPU SPD -&gt; cholmod, otherwise umfpack).   Resolved at create_solver time. - &quot;cudss&quot;: NVIDIA cuDSS direct solver (GPU only) - &quot;spsolve&quot;: sparse direct solve via SciPy callback (CPU host) - &quot;umfpack&quot;: sparse direct solve via scikit-sparse UMFPACK (CPU host) - &quot;cholmod&quot;: CHOLMOD sparse Cholesky via scikit-sparse (SPD)
 - **cudss_options** (*CUDSSOptions, optional*): cuDSS-specific configuration. Only used when solver=&quot;cudss&quot;. Auto-configured when solver=&quot;auto&quot; and backend is CUDA.
+- **sksparse_options** (*SKSPARSEOptions, optional*): Host-side direct solver configuration shared by ``spsolve``, ``umfpack``, and ``cholmod``.
 
 
 #### uses\_x0
@@ -385,23 +418,39 @@ Direct solvers do not consume an initial iterate.
 ```python
 def resolve_direct_solver(options: DirectSolverOptions,
                           matrix_property: MatrixProperty,
-                          matrix_view=None) -> DirectSolverOptions
+                          matrix_view: MatrixView) -> DirectSolverOptions
 ```
 
 Resolve &quot;auto&quot; to a concrete direct solver based on backend and matrix property.
+
+The selection follows a priority order inspired by COMSOL&#x27;s solver
+guidelines, with cuDSS given highest priority on GPU:
+
+**GPU (CUDA backend)**::
+
+    cuDSS  (always — matrix type adjusted to SPD/SYMMETRIC/GENERAL)
+
+**CPU backend, SPD matrix**::
+
+    cholmod  →  umfpack  →  spsolve
+    (Cholesky)  (LU)        (SciPy LU)
+
+**CPU backend, SYMMETRIC or GENERAL matrix**::
+
+    umfpack  →  spsolve
+    (LU)        (SciPy LU)
 
 Parameters
 ----------
 - **options** (*DirectSolverOptions*): Options with solver possibly set to &quot;auto&quot;.
 - **matrix_property** (*MatrixProperty*): Detected matrix property (SPD, SYMMETRIC, GENERAL).
-- **matrix_view** (*MatrixView, optional*): Problem&#x27;s matrix storage format.  When UPPER or LOWER, the cuDSS solver is automatically configured to match.
+- **matrix_view** (*MatrixView*): Problem&#x27;s matrix storage format. Used to fill backend defaults when corresponding option fields are not explicitly set.
 
 
 Returns
 -------
 DirectSolverOptions
     Options with solver resolved to a concrete algorithm.
-    If solver != &quot;auto&quot;, returns the input unchanged.
 
 ## IterativeSolverOptions Objects
 
@@ -442,6 +491,12 @@ def resolve_iterative_solver(
 ```
 
 Resolve &quot;auto&quot; to a concrete iterative solver based on matrix property.
+
+Selection mapping::
+
+    SPD       →  cg        (Conjugate Gradient — optimal for SPD)
+    SYMMETRIC →  bicgstab  (no symmetry exploitation, but robust)
+    GENERAL   →  gmres     (general-purpose Krylov method)
 
 Parameters
 ----------

@@ -101,12 +101,36 @@ def create_nonlinear_problem_and_bc(simple_mesh, material_params):
 # ============================================================================
 
 @pytest.mark.cpu
-def test_newton_solve_jit(simple_mesh, material_params):
-    """Test that newton_solve (iter_num=None, while_loop) works with JIT."""
+def test_newton_solve_py_no_jit(simple_mesh, material_params):
+    """Test that newton_solve_py (make_jittable=False, default) works without JIT.
+
+    The Python-loop path uses a Python while loop and cannot be wrapped in
+    jax.jit or jax.vmap.  It is the default path, optimised for fast first-call
+    compilation on large problems.
+    """
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
     solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
+    # Default: make_jittable=False → Python-loop path
     solver = fe.create_solver(problem, bc, solver_options=solver_opts)
+    initial = fe.zero_like_initial_guess(problem, bc)
+
+    sol = solver(iv, initial)
+    assert np.linalg.norm(sol) > 0
+    assert np.all(np.isfinite(sol))
+
+
+@pytest.mark.cpu
+def test_newton_solve_jittable_jit(simple_mesh, material_params):
+    """Test that newton_solve with make_jittable=True works with JIT."""
+    problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
+
+    solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
+    newton_opts = fe.NewtonOptions(make_jittable=True)
+    solver = fe.create_solver(
+        problem, bc, solver_options=solver_opts, iter_num=10,
+        newton_options=newton_opts,
+    )
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Without JIT
@@ -122,12 +146,16 @@ def test_newton_solve_jit(simple_mesh, material_params):
 
 
 @pytest.mark.cpu
-def test_newton_solve_jit_multiple_calls(simple_mesh, material_params):
-    """Test that JIT-compiled newton_solve gives consistent results on repeated calls."""
+def test_newton_solve_jittable_jit_multiple_calls(simple_mesh, material_params):
+    """Test that JIT-compiled jittable newton gives consistent results on repeated calls."""
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
     solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts)
+    newton_opts = fe.NewtonOptions(make_jittable=True)
+    solver = fe.create_solver(
+        problem, bc, solver_options=solver_opts, iter_num=10,
+        newton_options=newton_opts,
+    )
     initial = fe.zero_like_initial_guess(problem, bc)
 
     solver_jit = jax.jit(solver)
@@ -148,7 +176,11 @@ def test_newton_solve_fori_jit(simple_mesh, material_params):
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
     solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=10)
+    newton_opts = fe.NewtonOptions(make_jittable=True)
+    solver = fe.create_solver(
+        problem, bc, solver_options=solver_opts, iter_num=10,
+        newton_options=newton_opts,
+    )
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Without JIT
@@ -195,7 +227,11 @@ def test_newton_solve_fori_vmap(simple_mesh, material_params):
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
     solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=10)
+    newton_opts = fe.NewtonOptions(make_jittable=True)
+    solver = fe.create_solver(
+        problem, bc, solver_options=solver_opts, iter_num=10,
+        newton_options=newton_opts,
+    )
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Create batch of surface variables
@@ -223,7 +259,11 @@ def test_newton_solve_fori_vmap_jit(simple_mesh, material_params):
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
     solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=10)
+    newton_opts = fe.NewtonOptions(make_jittable=True)
+    solver = fe.create_solver(
+        problem, bc, solver_options=solver_opts, iter_num=10,
+        newton_options=newton_opts,
+    )
     initial = fe.zero_like_initial_guess(problem, bc)
 
     batch_size = 3
@@ -334,7 +374,11 @@ def test_newton_solve_fori_vmap_grad(simple_mesh, material_params):
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
     solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=10)
+    newton_opts = fe.NewtonOptions(make_jittable=True)
+    solver = fe.create_solver(
+        problem, bc, solver_options=solver_opts, iter_num=10,
+        newton_options=newton_opts,
+    )
     initial = fe.zero_like_initial_guess(problem, bc)
 
     batch_size = 3
@@ -363,7 +407,11 @@ def test_newton_solve_fori_jit_vmap_grad(simple_mesh, material_params):
     problem, bc, iv = create_nonlinear_problem_and_bc(simple_mesh, material_params)
 
     solver_opts = fe.IterativeSolverOptions(solver="cg", maxiter=10, tol=1e-6)
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=10)
+    newton_opts = fe.NewtonOptions(make_jittable=True)
+    solver = fe.create_solver(
+        problem, bc, solver_options=solver_opts, iter_num=10,
+        newton_options=newton_opts,
+    )
     initial = fe.zero_like_initial_guess(problem, bc)
 
     batch_size = 3

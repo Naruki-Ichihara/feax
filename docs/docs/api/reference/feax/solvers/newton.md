@@ -11,9 +11,18 @@ and Newton solve variants used by ``feax.solver``.
 #### create\_newton\_solve\_fn
 
 ```python
-def create_newton_solve_fn(iter_num, J_bc_func, res_bc_func, bc,
-                           newton_options, linear_solver_options,
-                           linear_solve_fn, x0_fn, matrix_view)
+def create_newton_solve_fn(iter_num,
+                           J_bc_func,
+                           res_bc_func,
+                           bc,
+                           newton_options,
+                           linear_solver_options,
+                           linear_solve_fn,
+                           x0_fn,
+                           matrix_view,
+                           J_bc_parametric=None,
+                           res_bc_parametric=None,
+                           x0_fn_parametric=None)
 ```
 
 Create a Newton solve callable for adaptive or fixed-iteration solves.
@@ -28,7 +37,8 @@ def create_newton_solver(problem,
                          iter_num: Optional[int],
                          newton_options: Optional[NewtonOptions] = None,
                          internal_vars=None,
-                         extra_residual_fn=None)
+                         extra_residual_fn=None,
+                         symmetric_bc: bool = True)
 ```
 
 Create a differentiable Newton solver (iter_num is None or &gt;1).
@@ -59,6 +69,17 @@ def create_armijo_line_search_scan(res_bc_applied,
 ```
 
 Create JAX scan-based Armijo line search (vmap-friendly).
+
+#### create\_armijo\_line\_search\_scan\_parametric
+
+```python
+def create_armijo_line_search_scan_parametric(res_bc_parametric,
+                                              c1=1e-4,
+                                              rho=0.5,
+                                              max_backtracks=30)
+```
+
+Create scan-based Armijo line search with bc as explicit argument (vmap-friendly).
 
 #### create\_armijo\_line\_search\_python
 
@@ -109,6 +130,25 @@ def newton_solve_fori(J_bc_applied,
 ```
 
 Newton solver using JAX fori_loop for fixed iterations.
+
+#### newton\_solve\_fori\_parametric
+
+```python
+def newton_solve_fori_parametric(J_bc_parametric,
+                                 res_bc_parametric,
+                                 initial_guess,
+                                 bc,
+                                 newton_options,
+                                 num_iters,
+                                 linear_solver_options,
+                                 internal_vars,
+                                 linear_solve_fn,
+                                 armijo_search_fn,
+                                 x0_fn_parametric,
+                                 matrix_view: MatrixView = MatrixView.FULL)
+```
+
+Newton solver using fori_loop with bc as traced argument (vmap-compatible).
 
 #### newton\_solve\_py
 

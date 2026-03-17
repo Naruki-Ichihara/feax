@@ -15,6 +15,17 @@ def create_x0(bc_rows=None, bc_vals=None, P_mat=None)
 
 Create BC-aware initial guess function for linear increments.
 
+#### create\_x0\_parametric
+
+```python
+def create_x0_parametric(P_mat=None)
+```
+
+Create BC-aware initial guess function that takes bc as an explicit argument.
+
+Unlike :func:`create_x0` which captures ``bc_rows``/``bc_vals`` in a closure,
+this version accepts a :class:`DirichletBC` so it can be traced under ``jax.vmap``.
+
 #### create\_jacobi\_preconditioner
 
 ```python
@@ -26,7 +37,9 @@ Create Jacobi (diagonal) preconditioner from sparse matrix.
 #### create\_direct\_solve\_fn
 
 ```python
-def create_direct_solve_fn(options: DirectSolverOptions)
+def create_direct_solve_fn(options: DirectSolverOptions,
+                           *,
+                           cache_namespace: str = "global")
 ```
 
 Create a direct linear solve function.
@@ -42,7 +55,7 @@ Create an iterative linear solve function.
 #### create\_linear\_solve\_fn
 
 ```python
-def create_linear_solve_fn(solver_options)
+def create_linear_solve_fn(solver_options, *, cache_namespace: str = "global")
 ```
 
 Create a linear solve function based on solver options.
