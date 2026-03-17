@@ -431,7 +431,7 @@ def main():
     result = solve(internal_vars)
     C_hom = result.C_hom
     u_totals = result.u_totals
-    labels = result.labels
+    labels = solve.labels
     n_cases = len(labels)
 
     print(f"\n    Homogenized stiffness matrix C_hom (6x6, Voigt):")

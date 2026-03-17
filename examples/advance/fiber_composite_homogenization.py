@@ -421,7 +421,7 @@ def main():
     result = solve(internal_vars)
     C_hom = result.C_hom
     u_totals = result.u_totals
-    labels = result.labels
+    labels = solve.labels
     print(f"\n    Homogenized stiffness matrix (3x3, Voigt):")
     print(f"    C11 = {C_hom[0, 0]:.1f} MPa")
     print(f"    C22 = {C_hom[1, 1]:.1f} MPa")

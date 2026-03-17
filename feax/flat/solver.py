@@ -175,21 +175,15 @@ class HomogenizationResult(NamedTuple):
     ----------
     C_hom : ndarray, shape (3, 3) or (6, 6)
         Homogenized stiffness matrix in Voigt notation.
-    u_totals : tuple of ndarray
+    u_totals : ndarray, shape (n_cases, num_dofs)
         Total displacement fields for each unit strain case.
         ``u_totals[k]`` has shape ``(num_dofs,)``.
-    u_macros : tuple of ndarray
+    u_macros : ndarray, shape (n_cases, num_dofs)
         Macroscopic (affine) displacement fields for each unit strain case.
-    unit_strains : ndarray
-        The unit strain tensors used, shape ``(n_cases, 3, 3)``.
-    labels : tuple of str
-        Labels for each strain case (e.g. ``('eps11', 'eps22', ...)``)
     """
     C_hom: np.ndarray
-    u_totals: Tuple[np.ndarray, ...]
-    u_macros: Tuple[np.ndarray, ...]
-    unit_strains: np.ndarray
-    labels: Tuple[str, ...]
+    u_totals: np.ndarray
+    u_macros: np.ndarray
 
 
 # ---------------------------------------------------------------------------
@@ -258,27 +252,26 @@ def create_homogenization_solver(
 
     fluctuation_solver = create_solver(problem, bc, solver_options, P=P)
 
+    def _single_case(unit_strain, internal_vars):
+        u_macro = macro_displacement(mesh, unit_strain)
+        u_fluct = fluctuation_solver(internal_vars, u_macro)
+        u_total = u_fluct + u_macro
+        sigma_voigt = average_stress(problem, u_total, internal_vars, dim)
+        return sigma_voigt, u_total, u_macro
+
     def solve(internal_vars) -> HomogenizationResult:
-        columns = []
-        u_totals = []
-        u_macros = []
-        for k in range(n_cases):
-            if _verbose:
-                print(f"  [homogenization] strain case {k + 1}/{n_cases}: {labels[k]}")
-            u_macro = macro_displacement(mesh, unit_strains_arr[k])
-            u_fluct = fluctuation_solver(internal_vars, u_macro)
-            u_total = u_fluct + u_macro
-            sigma_voigt = average_stress(problem, u_total, internal_vars, dim)
-            columns.append(sigma_voigt)
-            u_totals.append(u_total)
-            u_macros.append(u_macro)
-        C_hom = np.stack(columns, axis=1)
+        columns, u_totals, u_macros = jax.vmap(
+            _single_case, in_axes=(0, None)
+        )(unit_strains_arr, internal_vars)
+        # columns: (n_cases, voigt_dim), need transpose for C_hom
+        C_hom = columns.T
         return HomogenizationResult(
             C_hom=C_hom,
-            u_totals=tuple(u_totals),
-            u_macros=tuple(u_macros),
-            unit_strains=unit_strains_arr,
-            labels=labels,
+            u_totals=u_totals,
+            u_macros=u_macros,
         )
+
+    solve.labels = labels
+    solve.unit_strains = unit_strains_arr
 
     return solve

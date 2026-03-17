@@ -119,7 +119,9 @@ Examples
 ```python
 >>> solve = create_homogenization_solver(problem, bc, P, mesh, dim=3)
 >>> result = solve(internal_vars)
->>> result.C_hom   # ndarray, shape (6, 6)
+>>> result.C_hom        # ndarray, shape (6, 6)
 >>> result.u_totals[0]  # displacement field for first strain case
+>>> solve.labels         # strain case labels (e.g. ('eps11', ...))
+>>> solve.unit_strains   # unit strain tensors, shape (6, 3, 3)
 ```
 

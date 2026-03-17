@@ -5,7 +5,9 @@ using periodic boundary conditions and visualizes the stiffness distribution.
 """
 
 import os
+import time
 
+import jax
 import jax.numpy as np
 
 import feax as fe
@@ -32,7 +34,7 @@ class BCCUnitCell(flat.unitcell.UnitCell):
 
 # Create unit cell and BCC graph structure
 print("Creating BCC lattice unit cell...")
-unitcell = BCCUnitCell(mesh_size=0.05)
+unitcell = BCCUnitCell(mesh_size=0.0)
 mesh = unitcell.mesh
 print(f"Mesh: {len(mesh.points)} nodes, {len(mesh.cells)} elements")
 
@@ -76,10 +78,36 @@ compute_C_hom = flat.solver.create_homogenization_solver(
     problem, bc, P, mesh, solver_options=solver_options, dim=3
 )
 
-# Compute homogenized stiffness
-print("Computing homogenized stiffness tensor...")
-C_hom = compute_C_hom(internal_vars)
-print(f"Homogenized stiffness matrix shape: {C_hom.shape}")
+# ── Benchmark: without JIT ─────────────────────────────────────────────────
+print("\n--- Without JIT ---")
+t0 = time.time()
+result = compute_C_hom(internal_vars)
+jax.block_until_ready(result)
+t_no_jit = time.time() - t0
+print(f"  Time: {t_no_jit:.4f}s")
+
+# ── Benchmark: with JIT (includes compilation) ────────────────────────────
+print("\n--- With JIT (1st call = compile + run) ---")
+compute_C_hom_jit = jax.jit(compute_C_hom)
+
+t0 = time.time()
+result = compute_C_hom_jit(internal_vars)
+jax.block_until_ready(result)
+t_jit_compile = time.time() - t0
+print(f"  Time: {t_jit_compile:.4f}s")
+
+# ── Benchmark: with JIT (cached) ──────────────────────────────────────────
+print("\n--- With JIT (2nd call = cached) ---")
+t0 = time.time()
+result = compute_C_hom_jit(internal_vars)
+jax.block_until_ready(result)
+t_jit_cached = time.time() - t0
+print(f"  Time: {t_jit_cached:.4f}s")
+
+print(f"\n  Speedup (no JIT / JIT cached): {t_no_jit / t_jit_cached:.1f}x")
+
+C_hom = result.C_hom
+print(f"\nHomogenized stiffness matrix shape: {C_hom.shape}")
 
 # Extract engineering constants
 # For isotropic/cubic material: C11, C12, C44
