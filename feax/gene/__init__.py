@@ -57,12 +57,13 @@ from .filters import (
     heaviside_projection,
     compute_volume_fraction_threshold,
 )
-from .responses import create_compliance_fn, create_volume_fn
+from .responses import create_compliance_fn, create_dynamic_compliance_fn, create_volume_fn
 from .sdf import DensityField, from_opt_result, from_vtk
 
 __all__ = [
     # Response functions
     'create_compliance_fn',
+    'create_dynamic_compliance_fn',
     'create_volume_fn',
 
     # Filtering and transformations
