@@ -6,10 +6,7 @@ ARG INSTALL_DOCS=false
 RUN apt update
 RUN apt upgrade -y
 
-# X11 libraries and libglu for gmsh (headless mode)
-RUN apt -y install libglu1-mesa libglu1-mesa-dev \
-    libxcursor1 libxinerama1 libxrandr2 libxi6 libxrender1 libxext6 libxft2
-RUN apt install python-scipy libsuitesparse-dev
+RUN apt -y install gmsh libsuitesparse-dev swig libnlopt-dev
 RUN pip install --upgrade pip
 
 # Copy feax source code
@@ -20,6 +17,7 @@ WORKDIR /workspace
 # JAX is intentionally not reinstalled here: the NVCR base image already ships
 # JAX compiled for CUDA 13.1.1. Use pip install .[cuda13,jax] outside containers.
 RUN pip install .[cuda13]
+RUN pip install --no-build-isolation nlopt
 RUN pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
 
 # Optional: Node.js 20 + pydoc-markdown + Docusaurus dependencies

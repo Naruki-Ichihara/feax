@@ -28,6 +28,7 @@ nu = 0.3
 E_eps = E0 * 1e-6
 penalty = 3
 traction_mag = 1.0
+mesh_size = 0.5
 
 # ── Geometry & BCs ───────────────────────────────────────────────────────────
 
@@ -106,7 +107,7 @@ class CantileverPipeline(Pipeline):
 # ── Initial mesh ─────────────────────────────────────────────────────────────
 
 print("Generating initial TET4 mesh ...")
-mesh = gene.adaptive.adaptive_mesh(cantilever_geometry, h_max=1.)
+mesh = gene.adaptive.adaptive_mesh(cantilever_geometry, h_max=mesh_size)
 print(f"  {mesh.points.shape[0]} nodes, {mesh.cells.shape[0]} elements")
 
 # ── Run ──────────────────────────────────────────────────────────────────────
@@ -126,7 +127,7 @@ result = run(
             cantilever_geometry,
             refinement_field=gene.adaptive.gradient_refinement(rho, m),
             old_mesh=m,
-            h_min=0.2, h_max=1.0,
+            h_min=0.1, h_max=mesh_size,
         ),
         adapt_every=epoch,
         n_adapts_max=2,
