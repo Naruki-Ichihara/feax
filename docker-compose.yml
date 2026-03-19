@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        INSTALL_CLAUDE: "false"
+        INSTALL_DOCS: "false"
     image: fealax:latest
     container_name: feax
     restart: always
@@ -15,6 +15,9 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /mnt/wslg:/mnt/wslg
     shm_size: 4gb
+    mem_limit: 64g
+    memswap_limit: 64g
+    ipc: private
     environment:
       - DISPLAY=$DISPLAY
       - WAYLAND_DISPLAY=$WAYLAND_DISPLAY
@@ -27,4 +30,3 @@ services:
         reservations:
           devices:
             - capabilities: [gpu]
-    ipc: host

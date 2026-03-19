@@ -1,8 +1,5 @@
 FROM nvcr.io/nvidia/jax:25.10-py3
 
-# Set to "true" to install Node.js 20 + docs dependencies (for Docusaurus)
-ARG INSTALL_DOCS=false
-
 RUN apt update
 RUN apt upgrade -y
 
