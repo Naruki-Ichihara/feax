@@ -68,10 +68,8 @@ def create_compliance_fn(problem, surface_load_params=None):
         })
 
     # Get solution shape info for unflattening
-    num_nodes_per_var = [fe.num_total_nodes for fe in problem.fes]
-    vec_per_var = [fe.vec for fe in problem.fes]
-    total_nodes_var0 = num_nodes_per_var[0]
-    vec_var0 = vec_per_var[0]
+    total_nodes_var0 = problem.fes[0].num_total_nodes
+    vec_var0 = problem.fes[0].vec
 
     @jax.jit
     def compliance_fn(sol):
@@ -91,8 +89,99 @@ def create_compliance_fn(problem, surface_load_params=None):
 
             # Apply surface map to get traction vector
             # Note: negative sign follows the convention that external work is positive
-            traction = -jax.vmap(jax.vmap(lambda u, x: surface['surface_fn'](u, x, surface['load_param'])))(
-                u_face, surface['subset_quad_points'])
+            traction = -jax.vmap(
+                jax.vmap(
+                    lambda u, x: surface['surface_fn'](
+                        u, x, surface['load_param']
+                    )
+                )
+            )(u_face, surface['subset_quad_points'])
+
+            # Compute compliance contribution from this surface
+            surface_compliance = np.sum(traction * u_face * surface['nanson_scale'][:, :, None])
+            total_compliance += surface_compliance
+
+        return total_compliance
+
+    return compliance_fn
+
+
+def create_dynamic_compliance_fn(problem):
+    """
+    Creates a universal JIT-compiled compliance function for a given problem.
+    Computes compliance (strain energy) = sum over all surfaces of integral u*f dGamma
+    where u is displacement and f is traction on each loaded boundary.
+
+    Unlike ``create_compliance_fn``, the surface load parameters are not fixed when
+    the function is created. They are inferred from ``surface_vars`` at runtime and
+    passed into each surface map when evaluating the traction field.
+
+    Args:
+        problem: FEAX Problem instance
+
+    Returns:
+        compliance_fn: JIT-compiled function that takes ``sol`` and
+            ``surface_vars`` and returns the compliance value.
+    """
+    surface_maps = problem.get_surface_maps()
+    num_surfaces = len(problem.boundary_inds_list)
+
+    if num_surfaces == 0:
+        @jax.jit
+        def compliance_fn(sol, surface_vars):
+            return 0.0
+        return compliance_fn
+
+    # Pre-compute data for all surfaces
+    surface_data = []
+    for i in range(num_surfaces):
+        boundary_inds = problem.boundary_inds_list[i]
+        _, nanson_scale = problem.fes[0].get_face_shape_grads(boundary_inds)
+        subset_quad_points = problem.physical_surface_quad_points[i]
+        surface_fn = surface_maps[i] if i < len(surface_maps) else lambda u, x, *p: np.zeros_like(u)
+
+
+        cells = problem.fes[0].cells
+        face_shape_vals = problem.fes[0].face_shape_vals
+        cell_indices = cells[boundary_inds[:, 0]]
+        face_indices = boundary_inds[:, 1]
+        selected_face_shape_vals = face_shape_vals[face_indices]
+
+        surface_data.append({
+            'cell_indices': cell_indices,
+            'selected_face_shape_vals': selected_face_shape_vals,
+            'nanson_scale': nanson_scale,
+            'subset_quad_points': subset_quad_points,
+            'surface_fn': surface_fn,
+        })
+
+    total_nodes_var0 = problem.fes[0].num_total_nodes
+    vec_var0 = problem.fes[0].vec
+
+    @jax.jit
+    def compliance_fn(sol, surface_vars):
+        """Compute compliance for the given solution over all surfaces."""
+        # Manually unflatten just the first variable (displacement)
+
+        displacement = sol[:total_nodes_var0 * vec_var0].reshape((total_nodes_var0, vec_var0))
+
+        total_compliance = 0.0
+
+        # Loop over all surfaces
+        for surface, surface_vars_i in zip(surface_data, surface_vars):
+            # Extract displacements on the boundary faces
+            u_face_nodes = displacement[surface['cell_indices']]  # (num_selected_faces, num_nodes, vec)
+            # Apply shape functions
+            u_face = np.sum(surface['selected_face_shape_vals'][:, :, :, None] * u_face_nodes[:, None, :, :], axis=2)
+
+            # Apply surface map to get traction vector
+            # Note: negative sign follows the convention that external work is positive
+            traction = -jax.vmap(
+                jax.vmap(
+                    lambda u, x, sv: surface['surface_fn'](u, x, *sv),
+                    in_axes=(0, 0, 0),
+                )
+            )(u_face, surface['subset_quad_points'], surface_vars_i)
 
             # Compute compliance contribution from this surface
             surface_compliance = np.sum(traction * u_face * surface['nanson_scale'][:, :, None])
