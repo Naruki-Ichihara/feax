@@ -72,10 +72,8 @@ Result of a computational homogenization analysis.
 Attributes
 ----------
 - **C_hom** (*ndarray, shape (3, 3) or (6, 6)*): Homogenized stiffness matrix in Voigt notation.
-- **u_totals** (*tuple of ndarray*): Total displacement fields for each unit strain case. ``u_totals[k]`` has shape ``(num_dofs,)``.
-- **u_macros** (*tuple of ndarray*): Macroscopic (affine) displacement fields for each unit strain case.
-- **unit_strains** (*ndarray*): The unit strain tensors used, shape ``(n_cases, 3, 3)``.
-- **labels** (*tuple of str*): Labels for each strain case (e.g. ``(&#x27;eps11&#x27;, &#x27;eps22&#x27;, ...)``)
+- **u_totals** (*ndarray, shape (n_cases, num_dofs)*): Total displacement fields for each unit strain case. ``u_totals[k]`` has shape ``(num_dofs,)``.
+- **u_macros** (*ndarray, shape (n_cases, num_dofs)*): Macroscopic (affine) displacement fields for each unit strain case.
 
 
 #### create\_homogenization\_solver
@@ -119,9 +117,7 @@ Examples
 ```python
 >>> solve = create_homogenization_solver(problem, bc, P, mesh, dim=3)
 >>> result = solve(internal_vars)
->>> result.C_hom        # ndarray, shape (6, 6)
+>>> result.C_hom   # ndarray, shape (6, 6)
 >>> result.u_totals[0]  # displacement field for first strain case
->>> solve.labels         # strain case labels (e.g. ('eps11', ...))
->>> solve.unit_strains   # unit strain tensors, shape (6, 3, 3)
 ```
 

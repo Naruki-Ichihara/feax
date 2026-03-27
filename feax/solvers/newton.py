@@ -529,6 +529,21 @@ def create_newton_solver(
                 "Python-loop Newton: JIT-compiling res_bc_func, J_bc_func, "
                 "and linear_solve_fn individually."
             )
+            # Prewarm cuDSS BEFORE JIT-wrapping so that _warmup() runs with
+            # concrete (non-traced) matrix indices. Without this, the first
+            # call to jax.jit(linear_solve_fn) would trace through _warmup()
+            # and hit TracerArrayConversionError on onp.asarray(A.indices).
+            from .common import prewarm_cudss_solvers
+            prewarm_cudss_solvers(
+                problem=problem,
+                bc=bc,
+                internal_vars=internal_vars,
+                J_bc_func=J_bc_func,
+                forward_options=linear_options,
+                adjoint_options=adjoint_linear_options,
+                forward_solve_fn=linear_solve_fn,
+                adjoint_solve_fn=adjoint_linear_solve_fn,
+            )
             J_bc_func = jax.jit(J_bc_func)
             res_bc_func = jax.jit(res_bc_func)
             _res_bc_parametric = jax.jit(_res_bc_parametric)

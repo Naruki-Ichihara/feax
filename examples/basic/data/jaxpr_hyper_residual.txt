@@ -1,0 +1,808 @@
+let jaxpr = { [34;1mlambda [39;22m; a[35m:f64[][39m b[35m:f64[][39m. [34;1mlet[39;22m c[35m:f64[][39m = add a b [34;1min [39;22m(c,) } in
+{ [34;1mlambda [39;22md[35m:i32[5000,8][39m e[35m:f64[5000,8,3][39m f[35m:f64[5000,8,8,3][39m g[35m:f64[5000,1,8][39m h[35m:f64[5000,8,8,1,3][39m
+    i[35m:i64[100,2][39m j[35m:f64[100,1,4][39m k[35m:f64[100,4,8][39m l[35m:f64[100,4,3][39m m[35m:i32[40000][39m n[35m:i32[800][39m
+    o[35m:i64[363][39m p[35m:f64[363][39m; q[35m:f64[18513][39m r[35m:f64[100,4][39m. [34;1mlet
+    [39;22ms[35m:f64[18513][39m = split[axis=0 sizes=(18513,)] q
+    t[35m:f64[6171,3][39m = reshape[dimensions=None new_sizes=(6171, 3) sharding=None] s
+    u[35m:i32[5000,8][39m = device_put[
+      copy_semantics=(ArrayCopySemantics.REUSE_INPUT,)
+      devices=(None,)
+      srcs=(None,)
+    ] d
+    v[35m:bool[5000,8][39m = lt u 0:i32[]
+    w[35m:i32[5000,8][39m = add u 6171:i32[]
+    x[35m:i32[5000,8][39m = select_n v u w
+    y[35m:i32[5000,8,1][39m = broadcast_in_dim[
+      broadcast_dimensions=(0, 1)
+      shape=(5000, 8, 1)
+      sharding=None
+    ] x
+    z[35m:f64[5000,8,3][39m = gather[
+      dimension_numbers=GatherDimensionNumbers(offset_dims=(2,), collapsed_slice_dims=(0,), start_index_map=(0,), operand_batching_dims=(), start_indices_batching_dims=())
+      fill_value=None
+      indices_are_sorted=False
+      mode=GatherScatterMode.PROMISE_IN_BOUNDS
+      slice_sizes=(1, 3)
+      unique_indices=False
+    ] t y
+    ba[35m:f64[5000,24][39m = reshape[
+      dimensions=None
+      new_sizes=(5000, 24)
+      sharding=None
+    ] z
+    bb[35m:f64[50,100,24][39m = reshape[
+      dimensions=None
+      new_sizes=(50, 100, 24)
+      sharding=None
+    ] ba
+    bc[35m:f64[50,100,8,3][39m = reshape[
+      dimensions=None
+      new_sizes=(50, 100, 8, 3)
+      sharding=None
+    ] e
+    bd[35m:f64[50,100,8,8,3][39m = reshape[
+      dimensions=None
+      new_sizes=(50, 100, 8, 8, 3)
+      sharding=None
+    ] f
+    be[35m:f64[50,100,1,8][39m = reshape[
+      dimensions=None
+      new_sizes=(50, 100, 1, 8)
+      sharding=None
+    ] g
+    bf[35m:f64[50,100,8,8,1,3][39m = reshape[
+      dimensions=None
+      new_sizes=(50, 100, 8, 8, 1, 3)
+      sharding=None
+    ] h
+    bg[35m:f64[50,100,24][39m = scan[
+      _split_transpose=False
+      jaxpr={ [34;1mlambda [39;22m; bh[35m:f64[100,24][39m bi[35m:f64[100,8,3][39m bj[35m:f64[100,8,8,3][39m bk[35m:f64[100,1,8][39m
+          bl[35m:f64[100,8,8,1,3][39m. [34;1mlet
+          [39;22mbm[35m:f64[100,24][39m = split[axis=1 sizes=(24,)] bh
+          bn[35m:f64[100,8,3][39m = reshape[
+            dimensions=None
+            new_sizes=(100, 8, 3)
+            sharding=None
+          ] bm
+          bo[35m:f64[100,1,8,3,1][39m = broadcast_in_dim[
+            broadcast_dimensions=(0, np.int64(2), np.int64(3))
+            shape=(100, 1, 8, 3, 1)
+            sharding=None
+          ] bn
+          bp[35m:f64[100,8,8,1,3][39m = broadcast_in_dim[
+            broadcast_dimensions=(0, np.int64(1), np.int64(2), np.int64(4))
+            shape=(100, 8, 8, 1, 3)
+            sharding=None
+          ] bj
+          bq[35m:f64[100,8,8,3,3][39m = mul bo bp
+          br[35m:f64[100,8,3,3][39m = reduce_sum[axes=(np.int64(2),)] bq
+          bs[35m:i64[3,3][39m = iota[dimension=0 dtype=int64 shape=(3, 3) sharding=None] 
+          bt[35m:i64[3,3][39m = iota[dimension=1 dtype=int64 shape=(3, 3) sharding=None] 
+          bu[35m:i64[3,3][39m = add bs 0:i64[]
+          bv[35m:bool[3,3][39m = eq bu bt
+          bw[35m:f64[3,3][39m = convert_element_type[new_dtype=float64 weak_type=False] bv
+          bx[35m:f64[1,3,3][39m = broadcast_in_dim[
+            broadcast_dimensions=(np.int64(1), np.int64(2))
+            shape=(1, 3, 3)
+            sharding=None
+          ] bw
+          by[35m:f64[1,1,3,3][39m = broadcast_in_dim[
+            broadcast_dimensions=(np.int64(1), np.int64(2), np.int64(3))
+            shape=(1, 1, 3, 3)
+            sharding=None
+          ] bx
+          bz[35m:f64[100,8,3,3][39m = add br by
+          ca[35m:f64[100,8][39m cb[35m:f64[100,8][39m cc[35m:f64[100,8][39m cd[35m:f64[100,8][39m ce[35m:f64[100,8][39m cf[35m:f64[100,8][39m
+            cg[35m:f64[100,8][39m ch[35m:f64[100,8][39m ci[35m:f64[100,8][39m cj[35m:f64[100,8][39m ck[35m:f64[100,8][39m
+            cl[35m:f64[100,8][39m cm[35m:f64[100,8][39m cn[35m:f64[100,8][39m co[35m:f64[100,8][39m cp[35m:f64[100,8][39m
+            cq[35m:f64[100,8][39m cr[35m:f64[100,8][39m cs[35m:f64[100,8][39m ct[35m:f64[100,8][39m cu[35m:f64[100,8][39m
+            cv[35m:f64[100,8][39m cw[35m:f64[100,8][39m cx[35m:f64[100,8][39m cy[35m:f64[100,8][39m = jit[
+            name=det
+            jaxpr={ [34;1mlambda [39;22m; bz[35m:f64[100,8,3,3][39m. [34;1mlet
+                [39;22mcz[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 1, 1)
+                  start_indices=(0, 0, 0, 0)
+                  strides=None
+                ] bz
+                cc[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] cz
+                da[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 2, 2)
+                  start_indices=(0, 0, 1, 1)
+                  strides=None
+                ] bz
+                cb[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] da
+                ce[35m:f64[100,8][39m = mul cc cb
+                db[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 3, 3)
+                  start_indices=(0, 0, 2, 2)
+                  strides=None
+                ] bz
+                cd[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] db
+                dc[35m:f64[100,8][39m = mul ce cd
+                dd[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 1, 2)
+                  start_indices=(0, 0, 0, 1)
+                  strides=None
+                ] bz
+                cg[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] dd
+                de[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 2, 3)
+                  start_indices=(0, 0, 1, 2)
+                  strides=None
+                ] bz
+                cf[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] de
+                ci[35m:f64[100,8][39m = mul cg cf
+                df[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 3, 1)
+                  start_indices=(0, 0, 2, 0)
+                  strides=None
+                ] bz
+                ch[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] df
+                dg[35m:f64[100,8][39m = mul ci ch
+                dh[35m:f64[100,8][39m = add dc dg
+                di[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 1, 3)
+                  start_indices=(0, 0, 0, 2)
+                  strides=None
+                ] bz
+                ck[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] di
+                dj[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 2, 1)
+                  start_indices=(0, 0, 1, 0)
+                  strides=None
+                ] bz
+                cj[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] dj
+                cm[35m:f64[100,8][39m = mul ck cj
+                dk[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 3, 2)
+                  start_indices=(0, 0, 2, 1)
+                  strides=None
+                ] bz
+                cl[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] dk
+                dl[35m:f64[100,8][39m = mul cm cl
+                dm[35m:f64[100,8][39m = add dh dl
+                dn[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 1, 3)
+                  start_indices=(0, 0, 0, 2)
+                  strides=None
+                ] bz
+                co[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] dn
+                do[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 2, 2)
+                  start_indices=(0, 0, 1, 1)
+                  strides=None
+                ] bz
+                cn[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] do
+                cq[35m:f64[100,8][39m = mul co cn
+                dp[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 3, 1)
+                  start_indices=(0, 0, 2, 0)
+                  strides=None
+                ] bz
+                cp[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] dp
+                dq[35m:f64[100,8][39m = mul cq cp
+                dr[35m:f64[100,8][39m = sub dm dq
+                ds[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 1, 1)
+                  start_indices=(0, 0, 0, 0)
+                  strides=None
+                ] bz
+                cs[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] ds
+                dt[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 2, 3)
+                  start_indices=(0, 0, 1, 2)
+                  strides=None
+                ] bz
+                cr[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] dt
+                cu[35m:f64[100,8][39m = mul cs cr
+                du[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 3, 2)
+                  start_indices=(0, 0, 2, 1)
+                  strides=None
+                ] bz
+                ct[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] du
+                dv[35m:f64[100,8][39m = mul cu ct
+                dw[35m:f64[100,8][39m = sub dr dv
+                dx[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 1, 2)
+                  start_indices=(0, 0, 0, 1)
+                  strides=None
+                ] bz
+                cw[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] dx
+                dy[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 2, 1)
+                  start_indices=(0, 0, 1, 0)
+                  strides=None
+                ] bz
+                cv[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] dy
+                cy[35m:f64[100,8][39m = mul cw cv
+                dz[35m:f64[100,8,1,1][39m = slice[
+                  limit_indices=(100, 8, 3, 3)
+                  start_indices=(0, 0, 2, 2)
+                  strides=None
+                ] bz
+                cx[35m:f64[100,8][39m = squeeze[dimensions=(2, 3)] dz
+                ea[35m:f64[100,8][39m = mul cy cx
+                ca[35m:f64[100,8][39m = sub dw ea
+              [34;1min [39;22m(ca, cb, cc, cd, ce, cf, cg, ch, ci, cj, ck, cl, cm, cn, co, cp,
+                cq, cr, cs, ct, cu, cv, cw, cx, cy) }
+          ] bz
+          eb[35m:f64[100,8][39m = pow ca -0.6666666666666666:f64[]
+          ec[35m:f64[][39m = sub -0.6666666666666666:f64[] 1.0:f64[]
+          ed[35m:f64[100,8][39m = pow ca ec
+          ee[35m:f64[100,8][39m = mul -0.6666666666666666:f64[] ed
+          ef[35m:f64[100,8,3,3][39m = transpose[permutation=(0, 1, 3, 2)] bz
+          eg[35m:f64[100,8,3,3][39m = dot_general[
+            dimension_numbers=(([3], [2]), ([0, 1], [0, 1]))
+            preferred_element_type=float64
+          ] ef bz
+          eh[35m:f64[100,8][39m ei[35m:bool[3,3][39m ej[35m:f64[3,3][39m = jit[
+            name=trace
+            jaxpr={ [34;1mlambda [39;22m; eg[35m:f64[100,8,3,3][39m. [34;1mlet
+                [39;22mek[35m:i64[3,3][39m = iota[
+                  dimension=0
+                  dtype=int64
+                  shape=(3, 3)
+                  sharding=None
+                ] 
+                el[35m:i64[3,3][39m = iota[
+                  dimension=1
+                  dtype=int64
+                  shape=(3, 3)
+                  sharding=None
+                ] 
+                em[35m:i64[3,3][39m = add ek 0:i64[]
+                ei[35m:bool[3,3][39m = eq em el
+                en[35m:f64[3,3][39m = broadcast_in_dim[
+                  broadcast_dimensions=()
+                  shape=(3, 3)
+                  sharding=None
+                ] 0.0:f64[]
+                eo[35m:f64[100,8,3,3][39m ej[35m:f64[3,3][39m = jit[
+                  name=_where
+                  jaxpr={ [34;1mlambda [39;22m; ei[35m:bool[3,3][39m eg[35m:f64[100,8,3,3][39m en[35m:f64[3,3][39m. [34;1mlet
+                      [39;22mep[35m:bool[8,3,3][39m = broadcast_in_dim[
+                        broadcast_dimensions=(np.int64(1), np.int64(2))
+                        shape=(8, 3, 3)
+                        sharding=None
+                      ] ei
+                      eq[35m:f64[8,3,3][39m = broadcast_in_dim[
+                        broadcast_dimensions=(np.int64(1), np.int64(2))
+                        shape=(8, 3, 3)
+                        sharding=None
+                      ] en
+                      er[35m:bool[100,8,3,3][39m = broadcast_in_dim[
+                        broadcast_dimensions=(np.int64(1), np.int64(2), np.int64(3))
+                        shape=(100, 8, 3, 3)
+                        sharding=None
+                      ] ep
+                      es[35m:f64[100,8,3,3][39m = broadcast_in_dim[
+                        broadcast_dimensions=(np.int64(1), np.int64(2), np.int64(3))
+                        shape=(100, 8, 3, 3)
+                        sharding=None
+                      ] eq
+                      eo[35m:f64[100,8,3,3][39m = select_n er es eg
+                      ej[35m:f64[3,3][39m = broadcast_in_dim[
+                        broadcast_dimensions=()
+                        shape=(3, 3)
+                        sharding=None
+                      ] 0.0:f64[]
+                    [34;1min [39;22m(eo, ej) }
+                ] ei eg en
+                eh[35m:f64[100,8][39m = reduce_sum[axes=(np.int64(2), np.int64(3))] eo
+              [34;1min [39;22m(eh, ei, ej) }
+          ] eg
+          et[35m:f64[100,8][39m = mul eb eh
+          eu[35m:f64[100,8][39m = sub et 3.0:f64[]
+          ev[35m:f64[100,8][39m = mul 19.23076923076923:f64[] eu
+          ew[35m:f64[100,8][39m = sub ca 1.0:f64[]
+          ex[35m:f64[100,8][39m = pow ew 2.0:f64[]
+          ey[35m:f64[][39m = sub 2.0:f64[] 1.0:f64[]
+          ez[35m:f64[100,8][39m = pow ew ey
+          fa[35m:f64[100,8][39m = mul 2.0:f64[] ez
+          fb[35m:f64[100,8][39m = mul 41.66666666666666:f64[] ex
+          _[35m:f64[100,8][39m = add ev fb
+          fc[35m:f64[][39m = mul 41.66666666666666:f64[] 1.0:f64[]
+          fd[35m:f64[100,8][39m = mul fc fa
+          fe[35m:f64[][39m = mul 19.23076923076923:f64[] 1.0:f64[]
+          ff[35m:f64[100,8][39m = mul eb fe
+          fg[35m:f64[100,8][39m = mul fe eh
+          fh[35m:f64[100,8,3,3][39m = jit[
+            name=trace
+            jaxpr={ [34;1mlambda [39;22m; ei[35m:bool[3,3][39m ej[35m:f64[3,3][39m ff[35m:f64[100,8][39m. [34;1mlet
+                [39;22mfi[35m:f64[100,8,3,3][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 3, 3)
+                  sharding=None
+                ] ff
+                fh[35m:f64[100,8,3,3][39m = jit[
+                  name=_where
+                  jaxpr={ [34;1mlambda [39;22m; ei[35m:bool[3,3][39m ej[35m:f64[3,3][39m fi[35m:f64[100,8,3,3][39m. [34;1mlet
+                      [39;22mfj[35m:f64[3,3][39m = broadcast_in_dim[
+                        broadcast_dimensions=()
+                        shape=(3, 3)
+                        sharding=None
+                      ] 0.0:f64[]
+                      fk[35m:bool[8,3,3][39m = broadcast_in_dim[
+                        broadcast_dimensions=(np.int64(1), np.int64(2))
+                        shape=(8, 3, 3)
+                        sharding=None
+                      ] ei
+                      fl[35m:f64[8,3,3][39m = broadcast_in_dim[
+                        broadcast_dimensions=(np.int64(1), np.int64(2))
+                        shape=(8, 3, 3)
+                        sharding=None
+                      ] fj
+                      fm[35m:bool[100,8,3,3][39m = broadcast_in_dim[
+                        broadcast_dimensions=(np.int64(1), np.int64(2), np.int64(3))
+                        shape=(100, 8, 3, 3)
+                        sharding=None
+                      ] fk
+                      fn[35m:f64[100,8,3,3][39m = broadcast_in_dim[
+                        broadcast_dimensions=(np.int64(1), np.int64(2), np.int64(3))
+                        shape=(100, 8, 3, 3)
+                        sharding=None
+                      ] fl
+                      fh[35m:f64[100,8,3,3][39m = select_n fm fn fi
+                    [34;1min [39;22m(fh,) }
+                ] ei ej fi
+              [34;1min [39;22m(fh,) }
+          ] ei ej ff
+          fo[35m:f64[100,8,3,3][39m = dot_general[
+            dimension_numbers=(([2], [2]), ([0, 1], [0, 1]))
+            preferred_element_type=float64
+          ] fh ef
+          fp[35m:f64[100,8,3,3][39m = transpose[permutation=(0, 1, 3, 2)] fo
+          fq[35m:f64[100,8,3,3][39m = dot_general[
+            dimension_numbers=(([3], [3]), ([0, 1], [0, 1]))
+            preferred_element_type=float64
+          ] fh bz
+          fr[35m:f64[100,8,3,3][39m = transpose[permutation=(0, 1, 3, 2)] fq
+          fs[35m:f64[100,8,3,3][39m = add_any fp fr
+          ft[35m:f64[100,8][39m = mul fg ee
+          fu[35m:f64[100,8][39m = add_any fd ft
+          fv[35m:f64[100,8,3,3][39m = jit[
+            name=det
+            jaxpr={ [34;1mlambda [39;22m; cb[35m:f64[100,8][39m cc[35m:f64[100,8][39m cd[35m:f64[100,8][39m ce[35m:f64[100,8][39m
+                cf[35m:f64[100,8][39m cg[35m:f64[100,8][39m ch[35m:f64[100,8][39m ci[35m:f64[100,8][39m cj[35m:f64[100,8][39m
+                ck[35m:f64[100,8][39m cl[35m:f64[100,8][39m cm[35m:f64[100,8][39m cn[35m:f64[100,8][39m co[35m:f64[100,8][39m
+                cp[35m:f64[100,8][39m cq[35m:f64[100,8][39m cr[35m:f64[100,8][39m cs[35m:f64[100,8][39m ct[35m:f64[100,8][39m
+                cu[35m:f64[100,8][39m cv[35m:f64[100,8][39m cw[35m:f64[100,8][39m cx[35m:f64[100,8][39m cy[35m:f64[100,8][39m
+                fu[35m:f64[100,8][39m. [34;1mlet
+                [39;22mfw[35m:f64[100,8][39m = neg fu
+                fx[35m:f64[100,8][39m = mul cy fw
+                fy[35m:f64[100,8][39m = mul fw cx
+                fz[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] fx
+                ga[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (2, np.int64(0), 0), (2, np.int64(0), 0))
+                ] fz 0.0:f64[]
+                gb[35m:f64[100,8][39m = mul cw fy
+                gc[35m:f64[100,8][39m = mul fy cv
+                gd[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] gb
+                ge[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (1, np.int64(1), 0), (0, np.int64(2), 0))
+                ] gd 0.0:f64[]
+                gf[35m:f64[100,8,3,3][39m = add_any ga ge
+                gg[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] gc
+                gh[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (0, np.int64(2), 0), (1, np.int64(1), 0))
+                ] gg 0.0:f64[]
+                gi[35m:f64[100,8,3,3][39m = add_any gf gh
+                gj[35m:f64[100,8][39m = neg fu
+                gk[35m:f64[100,8][39m = mul cu gj
+                gl[35m:f64[100,8][39m = mul gj ct
+                gm[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] gk
+                gn[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (2, np.int64(0), 0), (1, np.int64(1), 0))
+                ] gm 0.0:f64[]
+                go[35m:f64[100,8,3,3][39m = add_any gi gn
+                gp[35m:f64[100,8][39m = mul cs gl
+                gq[35m:f64[100,8][39m = mul gl cr
+                gr[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] gp
+                gs[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (1, np.int64(1), 0), (2, np.int64(0), 0))
+                ] gr 0.0:f64[]
+                gt[35m:f64[100,8,3,3][39m = add_any go gs
+                gu[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] gq
+                gv[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (0, np.int64(2), 0), (0, np.int64(2), 0))
+                ] gu 0.0:f64[]
+                gw[35m:f64[100,8,3,3][39m = add_any gt gv
+                gx[35m:f64[100,8][39m = neg fu
+                gy[35m:f64[100,8][39m = mul cq gx
+                gz[35m:f64[100,8][39m = mul gx cp
+                ha[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] gy
+                hb[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (2, np.int64(0), 0), (0, np.int64(2), 0))
+                ] ha 0.0:f64[]
+                hc[35m:f64[100,8,3,3][39m = add_any gw hb
+                hd[35m:f64[100,8][39m = mul co gz
+                he[35m:f64[100,8][39m = mul gz cn
+                hf[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] hd
+                hg[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (1, np.int64(1), 0), (1, np.int64(1), 0))
+                ] hf 0.0:f64[]
+                hh[35m:f64[100,8,3,3][39m = add_any hc hg
+                hi[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] he
+                hj[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (0, np.int64(2), 0), (2, np.int64(0), 0))
+                ] hi 0.0:f64[]
+                hk[35m:f64[100,8,3,3][39m = add_any hh hj
+                hl[35m:f64[100,8][39m = mul cm fu
+                hm[35m:f64[100,8][39m = mul fu cl
+                hn[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] hl
+                ho[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (2, np.int64(0), 0), (1, np.int64(1), 0))
+                ] hn 0.0:f64[]
+                hp[35m:f64[100,8,3,3][39m = add_any hk ho
+                hq[35m:f64[100,8][39m = mul ck hm
+                hr[35m:f64[100,8][39m = mul hm cj
+                hs[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] hq
+                ht[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (1, np.int64(1), 0), (0, np.int64(2), 0))
+                ] hs 0.0:f64[]
+                hu[35m:f64[100,8,3,3][39m = add_any hp ht
+                hv[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] hr
+                hw[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (0, np.int64(2), 0), (2, np.int64(0), 0))
+                ] hv 0.0:f64[]
+                hx[35m:f64[100,8,3,3][39m = add_any hu hw
+                hy[35m:f64[100,8][39m = mul ci fu
+                hz[35m:f64[100,8][39m = mul fu ch
+                ia[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] hy
+                ib[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (2, np.int64(0), 0), (0, np.int64(2), 0))
+                ] ia 0.0:f64[]
+                ic[35m:f64[100,8,3,3][39m = add_any hx ib
+                id[35m:f64[100,8][39m = mul cg hz
+                ie[35m:f64[100,8][39m = mul hz cf
+                if[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] id
+                ig[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (1, np.int64(1), 0), (2, np.int64(0), 0))
+                ] if 0.0:f64[]
+                ih[35m:f64[100,8,3,3][39m = add_any ic ig
+                ii[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] ie
+                ij[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (0, np.int64(2), 0), (1, np.int64(1), 0))
+                ] ii 0.0:f64[]
+                ik[35m:f64[100,8,3,3][39m = add_any ih ij
+                il[35m:f64[100,8][39m = mul ce fu
+                im[35m:f64[100,8][39m = mul fu cd
+                in[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] il
+                io[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (2, np.int64(0), 0), (2, np.int64(0), 0))
+                ] in 0.0:f64[]
+                ip[35m:f64[100,8,3,3][39m = add_any ik io
+                iq[35m:f64[100,8][39m = mul cc im
+                ir[35m:f64[100,8][39m = mul im cb
+                is[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] iq
+                it[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (1, np.int64(1), 0), (1, np.int64(1), 0))
+                ] is 0.0:f64[]
+                iu[35m:f64[100,8,3,3][39m = add_any ip it
+                iv[35m:f64[100,8,1,1][39m = broadcast_in_dim[
+                  broadcast_dimensions=(0, np.int64(1))
+                  shape=(100, 8, 1, 1)
+                  sharding=None
+                ] ir
+                iw[35m:f64[100,8,3,3][39m = pad[
+                  padding_config=((0, 0, 0), (0, 0, 0), (0, np.int64(2), 0), (0, np.int64(2), 0))
+                ] iv 0.0:f64[]
+                fv[35m:f64[100,8,3,3][39m = add_any iu iw
+              [34;1min [39;22m(fv,) }
+          ] cb cc cd ce cf cg ch ci cj ck cl cm cn co cp cq cr cs ct cu cv cw cx
+            cy fu
+          ix[35m:f64[100,8,3,3][39m = add_any fs fv
+          iy[35m:f64[100,8,1,3,3][39m = broadcast_in_dim[
+            broadcast_dimensions=(0, np.int64(1), np.int64(3), np.int64(4))
+            shape=(100, 8, 1, 3, 3)
+            sharding=None
+          ] ix
+          iz[35m:f64[100,8,8,3,3][39m = mul iy bl
+          ja[35m:f64[100,8,3][39m = reduce_sum[axes=(np.int64(1), np.int64(4))] iz
+          jb[35m:f64[100,24][39m = reshape[
+            dimensions=None
+            new_sizes=(100, 24)
+            sharding=None
+          ] ja
+          jc[35m:f64[100,24][39m = add jb 0.0:f64[]
+          jd[35m:f64[100,24][39m = add jc 0.0:f64[]
+        [34;1min [39;22m(jd,) }
+      length=50
+      linear=(False, False, False, False, False)
+      num_carry=0
+      num_consts=0
+      reverse=False
+      unroll=1
+    ] bb bc bd be bf
+    je[35m:f64[5000,24][39m = reshape[
+      dimensions=None
+      new_sizes=(5000, 24)
+      sharding=None
+    ] bg
+    jf[35m:i64[100,1][39m = slice[
+      limit_indices=(100, 1)
+      start_indices=(0, 0)
+      strides=None
+    ] i
+    jg[35m:i64[100][39m = squeeze[dimensions=(1,)] jf
+    jh[35m:bool[100][39m = lt jg 0:i64[]
+    ji[35m:i64[100][39m = add jg 5000:i64[]
+    jj[35m:i64[100][39m = select_n jh jg ji
+    jk[35m:i32[100][39m = convert_element_type[new_dtype=int32 weak_type=False] jj
+    jl[35m:i32[100,1][39m = broadcast_in_dim[
+      broadcast_dimensions=(0,)
+      shape=(100, 1)
+      sharding=None
+    ] jk
+    jm[35m:f64[100,24][39m = gather[
+      dimension_numbers=GatherDimensionNumbers(offset_dims=(1,), collapsed_slice_dims=(0,), start_index_map=(0,), operand_batching_dims=(), start_indices_batching_dims=())
+      fill_value=None
+      indices_are_sorted=False
+      mode=GatherScatterMode.PROMISE_IN_BOUNDS
+      slice_sizes=(1, 24)
+      unique_indices=False
+    ] ba jl
+    jn[35m:f64[100,24][39m = split[axis=1 sizes=(24,)] jm
+    jo[35m:f64[100,8,3][39m = reshape[
+      dimensions=None
+      new_sizes=(100, 8, 3)
+      sharding=None
+    ] jn
+    jp[35m:f64[100,1,4][39m = slice[
+      limit_indices=(100, 1, 4)
+      start_indices=(0, 0, 0)
+      strides=None
+    ] j
+    jq[35m:f64[100,4][39m = squeeze[dimensions=(1,)] jp
+    jr[35m:f64[100,1,8,3][39m = broadcast_in_dim[
+      broadcast_dimensions=(0, np.int64(2), np.int64(3))
+      shape=(100, 1, 8, 3)
+      sharding=None
+    ] jo
+    js[35m:f64[100,4,8,1][39m = broadcast_in_dim[
+      broadcast_dimensions=(0, np.int64(1), np.int64(2))
+      shape=(100, 4, 8, 1)
+      sharding=None
+    ] k
+    jt[35m:f64[100,4,8,3][39m = mul jr js
+    _[35m:f64[100,4,3][39m = reduce_sum[axes=(np.int64(2),)] jt
+    ju[35m:f64[100,4,1][39m = slice[
+      limit_indices=(100, 4, 2)
+      start_indices=(0, 0, 1)
+      strides=None
+    ] l
+    jv[35m:f64[100,4][39m = squeeze[dimensions=(2,)] ju
+    jw[35m:f64[100,4,1][39m = slice[
+      limit_indices=(100, 4, 3)
+      start_indices=(0, 0, 2)
+      strides=None
+    ] l
+    jx[35m:f64[100,4][39m = squeeze[dimensions=(2,)] jw
+    jy[35m:f64[100,4][39m = neg r
+    jz[35m:f64[100,4][39m = sub jx 0.5:f64[]
+    ka[35m:f64[100,4][39m = convert_element_type[new_dtype=float64 weak_type=False] jy
+    kb[35m:f64[100,4][39m = mul ka jz
+    kc[35m:f64[100,4][39m = sub jv 0.5:f64[]
+    kd[35m:f64[100,4][39m = convert_element_type[new_dtype=float64 weak_type=False] r
+    ke[35m:f64[100,4][39m = mul kd kc
+    kf[35m:f64[1][39m = broadcast_in_dim[
+      broadcast_dimensions=()
+      shape=(1,)
+      sharding=None
+    ] 0.0:f64[]
+    kg[35m:f64[100,4,1][39m = broadcast_in_dim[
+      broadcast_dimensions=(0, np.int64(1))
+      shape=(100, 4, 1)
+      sharding=None
+    ] kb
+    kh[35m:f64[100,4,1][39m = broadcast_in_dim[
+      broadcast_dimensions=(0, np.int64(1))
+      shape=(100, 4, 1)
+      sharding=None
+    ] ke
+    ki[35m:f64[4,1][39m = broadcast_in_dim[
+      broadcast_dimensions=(1,)
+      shape=(4, 1)
+      sharding=None
+    ] kf
+    kj[35m:f64[100,4,1][39m = broadcast_in_dim[
+      broadcast_dimensions=(1, 2)
+      shape=(100, 4, 1)
+      sharding=None
+    ] ki
+    kk[35m:f64[100,4,3][39m = concatenate[dimension=2] kj kg kh
+    kl[35m:f64[100,4,1,3][39m = broadcast_in_dim[
+      broadcast_dimensions=(0, np.int64(1), np.int64(3))
+      shape=(100, 4, 1, 3)
+      sharding=None
+    ] kk
+    km[35m:f64[100,4,8,1][39m = broadcast_in_dim[
+      broadcast_dimensions=(0, np.int64(1), np.int64(2))
+      shape=(100, 4, 8, 1)
+      sharding=None
+    ] k
+    kn[35m:f64[100,4,8,3][39m = mul kl km
+    ko[35m:f64[100,4,1,1][39m = broadcast_in_dim[
+      broadcast_dimensions=(0, np.int64(1))
+      shape=(100, 4, 1, 1)
+      sharding=None
+    ] jq
+    kp[35m:f64[100,4,8,3][39m = mul kn ko
+    kq[35m:f64[100,8,3][39m = reduce_sum[axes=(np.int64(1),)] kp
+    kr[35m:f64[100,24][39m = reshape[dimensions=None new_sizes=(100, 24) sharding=None] kq
+    ks[35m:f64[100,24][39m = add kr 0.0:f64[]
+    kt[35m:f64[6171,3][39m = broadcast_in_dim[
+      broadcast_dimensions=()
+      shape=(6171, 3)
+      sharding=None
+    ] 0.0:f64[]
+    ku[35m:f64[5000,24][39m = split[axis=1 sizes=(24,)] je
+    kv[35m:f64[5000,8,3][39m = reshape[
+      dimensions=None
+      new_sizes=(5000, 8, 3)
+      sharding=None
+    ] ku
+    kw[35m:f64[40000,3][39m = reshape[
+      dimensions=None
+      new_sizes=(40000, 3)
+      sharding=None
+    ] kv
+    kx[35m:i32[40000][39m = device_put[
+      copy_semantics=(ArrayCopySemantics.REUSE_INPUT,)
+      devices=(None,)
+      srcs=(None,)
+    ] m
+    ky[35m:bool[40000][39m = lt kx 0:i32[]
+    kz[35m:i32[40000][39m = add kx 6171:i32[]
+    la[35m:i32[40000][39m = select_n ky kx kz
+    lb[35m:i32[40000,1][39m = broadcast_in_dim[
+      broadcast_dimensions=(0,)
+      shape=(40000, 1)
+      sharding=None
+    ] la
+    lc[35m:f64[6171,3][39m = scatter-add[
+      dimension_numbers=ScatterDimensionNumbers(update_window_dims=(1,), inserted_window_dims=(0,), scatter_dims_to_operand_dims=(0,), operand_batching_dims=(), scatter_indices_batching_dims=())
+      indices_are_sorted=False
+      mode=GatherScatterMode.FILL_OR_DROP
+      unique_indices=False
+      update_consts=()
+      update_jaxpr=jaxpr
+    ] kt lb kw
+    ld[35m:f64[100,24][39m = split[axis=1 sizes=(24,)] ks
+    le[35m:f64[100,8,3][39m = reshape[
+      dimensions=None
+      new_sizes=(100, 8, 3)
+      sharding=None
+    ] ld
+    lf[35m:f64[800,3][39m = reshape[dimensions=None new_sizes=(800, 3) sharding=None] le
+    lg[35m:i32[800][39m = device_put[
+      copy_semantics=(ArrayCopySemantics.REUSE_INPUT,)
+      devices=(None,)
+      srcs=(None,)
+    ] n
+    lh[35m:bool[800][39m = lt lg 0:i32[]
+    li[35m:i32[800][39m = add lg 6171:i32[]
+    lj[35m:i32[800][39m = select_n lh lg li
+    lk[35m:i32[800,1][39m = broadcast_in_dim[
+      broadcast_dimensions=(0,)
+      shape=(800, 1)
+      sharding=None
+    ] lj
+    ll[35m:f64[6171,3][39m = scatter-add[
+      dimension_numbers=ScatterDimensionNumbers(update_window_dims=(1,), inserted_window_dims=(0,), scatter_dims_to_operand_dims=(0,), operand_batching_dims=(), scatter_indices_batching_dims=())
+      indices_are_sorted=False
+      mode=GatherScatterMode.FILL_OR_DROP
+      unique_indices=False
+      update_consts=()
+      update_jaxpr=jaxpr
+    ] lc lk lf
+    lm[35m:f64[18513][39m = reshape[dimensions=None new_sizes=(18513,) sharding=None] ll
+    ln[35m:f64[18513][39m = copy lm
+    lo[35m:bool[363][39m = lt o 0:i64[]
+    lp[35m:i64[363][39m = add o 18513:i64[]
+    lq[35m:i64[363][39m = select_n lo o lp
+    lr[35m:i32[363][39m = convert_element_type[new_dtype=int32 weak_type=False] lq
+    ls[35m:i32[363,1][39m = broadcast_in_dim[
+      broadcast_dimensions=(0,)
+      shape=(363, 1)
+      sharding=None
+    ] lr
+    lt[35m:f64[363][39m = gather[
+      dimension_numbers=GatherDimensionNumbers(offset_dims=(), collapsed_slice_dims=(0,), start_index_map=(0,), operand_batching_dims=(), start_indices_batching_dims=())
+      fill_value=None
+      indices_are_sorted=False
+      mode=GatherScatterMode.PROMISE_IN_BOUNDS
+      slice_sizes=(1,)
+      unique_indices=False
+    ] q ls
+    lu[35m:f64[363][39m = mul p 1.0:f64[]
+    lv[35m:f64[363][39m = convert_element_type[new_dtype=float64 weak_type=False] lu
+    lw[35m:f64[363][39m = sub lt lv
+    lx[35m:bool[363][39m = lt o 0:i64[]
+    ly[35m:i64[363][39m = add o 18513:i64[]
+    lz[35m:i64[363][39m = select_n lx o ly
+    ma[35m:i32[363][39m = convert_element_type[new_dtype=int32 weak_type=False] lz
+    mb[35m:i32[363,1][39m = broadcast_in_dim[
+      broadcast_dimensions=(0,)
+      shape=(363, 1)
+      sharding=None
+    ] ma
+    mc[35m:f64[18513][39m = scatter[
+      dimension_numbers=ScatterDimensionNumbers(update_window_dims=(), inserted_window_dims=(0,), scatter_dims_to_operand_dims=(0,), operand_batching_dims=(), scatter_indices_batching_dims=())
+      indices_are_sorted=False
+      mode=GatherScatterMode.FILL_OR_DROP
+      unique_indices=False
+      update_consts=()
+      update_jaxpr=None
+    ] ln mb lw
+  [34;1min [39;22m(mc,) }

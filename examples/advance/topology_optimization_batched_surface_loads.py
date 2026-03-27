@@ -1,9 +1,9 @@
 """
 Standalone 2D topology optimization example with batched surface loads.
 
-The script optimizes two cantilever problems in parallel on the same mesh:
-  - a downward surface traction applied at the middle of the right edge
-  - a downward surface traction applied at the lower-right corner patch
+The script optimizes ten cantilever problems in parallel on the same mesh,
+each with a downward surface traction applied at a different patch along the
+right edge (evenly spaced from bottom to top).
 
 Each load case is parameterized by its own SIREN density field, while the
 finite-element solve, compliance evaluation, and optimizer step are batched
@@ -64,18 +64,23 @@ OUTPUT_DIR = Path(__file__).with_name("output_batched_surface_loads")
 # Boundary conditions
 # -----------------------------------------------------------------------------
 
+NUM_CASES = 10
 X_TOL = 1e-5 * max(1.0, LX)
 Y_TOL = 1e-5 * max(1.0, LY)
-MIDDLE_BAND = max(0.05 * LY + Y_TOL, 0.5)
-CORNER_BAND = max(0.1 * LY + Y_TOL, 0.5)
+PATCH_HALF_BAND = 0.5 * LY / NUM_CASES + Y_TOL
 
-CASE_NAMES = ("cantilever_middle", "cantilever_corner")
+CASE_NAMES = tuple(f"cantilever_{i}" for i in range(NUM_CASES))
 LEFT = lambda pt: jnp.isclose(pt[0], 0.0, atol=X_TOL)
-RIGHT_MIDDLE = lambda pt: jnp.isclose(pt[0], LX, atol=X_TOL) & (
-    jnp.abs(pt[1] - 0.5 * LY) <= MIDDLE_BAND
-)
-RIGHT_CORNER = lambda pt: jnp.isclose(pt[0], LX, atol=X_TOL) & (pt[1] <= CORNER_BAND)
-LOAD_LOCATIONS = (RIGHT_MIDDLE, RIGHT_CORNER)
+
+# 10 load patches evenly spaced along the right edge
+PATCH_CENTERS = [LY * (i + 0.5) / NUM_CASES for i in range(NUM_CASES)]
+
+def _make_right_patch(center):
+    def loc_fn(pt):
+        return jnp.isclose(pt[0], LX, atol=X_TOL) & (jnp.abs(pt[1] - center) <= PATCH_HALF_BAND)
+    return loc_fn
+
+LOAD_LOCATIONS = tuple(_make_right_patch(c) for c in PATCH_CENTERS)
 
 
 # -----------------------------------------------------------------------------
@@ -240,7 +245,27 @@ def main():
     ).create_bc(problem)
 
     solver_options = fe.DirectSolverOptions(
-        solver="cholmod",
+        solver="cudss",
+    )
+
+    initial_guess = fe.zero_like_initial_guess(problem, bc)
+    compliance_fn = gene.create_dynamic_compliance_fn(problem)
+    volume_fraction_fn = gene.create_volume_fn(problem)
+
+    # Create traction variable for each load patch
+    tractions = [
+        fe.InternalVars.create_uniform_surface_var(
+            problem, TRACTION_MAG, surface_index=i,
+        )
+        for i in range(NUM_CASES)
+    ]
+
+    # Create sample internal_vars for cuDSS pre-warming (must happen before vmap)
+    sample_rho = jnp.full(problem.num_cells, TARGET_VOLUME_FRACTION)
+    sample_surface_vars = tuple((t,) for t in tractions)
+    sample_internal_vars = fe.InternalVars(
+        volume_vars=(sample_rho,),
+        surface_vars=sample_surface_vars,
     )
     solver = fe.create_solver(
         problem,
@@ -248,26 +273,20 @@ def main():
         solver_options=solver_options,
         adjoint_solver_options=solver_options,
         iter_num=1,
+        internal_vars=sample_internal_vars,
     )
 
-    initial_guess = fe.zero_like_initial_guess(problem, bc)
-    compliance_fn = gene.create_dynamic_compliance_fn(problem)
-    volume_fraction_fn = gene.create_volume_fn(problem)
-
-    middle_traction = fe.InternalVars.create_uniform_surface_var(
-        problem,
-        TRACTION_MAG,
-        surface_index=0,
-    )
-    corner_traction = fe.InternalVars.create_uniform_surface_var(
-        problem,
-        TRACTION_MAG,
-        surface_index=1,
-    )
+    # For each case, activate only its own load patch (zero out others)
+    per_case_surface_vars = []
+    for case_idx in range(NUM_CASES):
+        sv = tuple(
+            (tractions[i],) if i == case_idx else (jnp.zeros_like(tractions[i]),)
+            for i in range(NUM_CASES)
+        )
+        per_case_surface_vars.append(sv)
     batched_surface_vars = jax.tree_util.tree_map(
         lambda *xs: jnp.stack(xs, axis=0),
-        ((middle_traction,), (jnp.zeros_like(corner_traction),)),
-        ((jnp.zeros_like(middle_traction),), (corner_traction,)),
+        *per_case_surface_vars,
     )
 
 

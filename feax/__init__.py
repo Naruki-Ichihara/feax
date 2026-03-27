@@ -75,3 +75,18 @@ from .solvers.options import (
     resolve_iterative_solver,
 )
 from .utils import zero_like_initial_guess
+from .profiler import (
+    JaxprInfo,
+    MemorySnapshot,
+    SolverProfile,
+    TimingResult,
+    format_cost_analysis,
+    get_cost_analysis,
+    get_hlo,
+    memory_snapshot,
+    profile,
+    profile_solver,
+    profile_solver_py,
+    time_fn,
+    trace_jaxpr,
+)

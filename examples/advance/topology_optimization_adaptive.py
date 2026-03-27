@@ -117,7 +117,7 @@ epoch = 100  # continuation update & remesh interval
 result = run(
     pipeline=CantileverPipeline(),
     mesh=mesh,
-    max_iter=500,
+    max_iter=300,
     continuations={
         "beta": Continuation(initial=1.0, final=16.0, update_every=20,
                              multiply_by=2.0),

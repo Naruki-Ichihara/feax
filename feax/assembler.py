@@ -761,35 +761,47 @@ def split_and_compute_cell(problem: 'Problem',
     input_collection = [cells_sol_flat, problem.physical_quad_points, problem.shape_grads,
                        problem.JxW, problem.v_grads_JxW, *internal_vars_per_cell]
 
+    # Split into main (uniform) batches for scan + remainder for a single vmap call.
+    n_main = batch_size * num_cuts
+    remainder = problem.num_cells - n_main
+
+    if batch_size == 0:
+        # Fewer cells than num_cuts — just vmap the whole thing, no scan.
+        if jac_flag:
+            return vmap_fn(*input_collection)
+        else:
+            return vmap_fn(*input_collection)
+
+    # Main batches via scan
+    main_input = jax.tree_util.tree_map(lambda x: x[:n_main], input_collection)
+    main_batched = jax.tree_util.tree_map(
+        lambda x: x.reshape(num_cuts, batch_size, *x.shape[1:]), main_input)
+
     if jac_flag:
-        values = []
-        jacs = []
-        for i in range(num_cuts):
-            if i < num_cuts - 1:
-                input_col = jax.tree_util.tree_map(lambda x: x[i * batch_size:(i + 1) * batch_size], input_collection)
-            else:
-                input_col = jax.tree_util.tree_map(lambda x: x[i * batch_size:], input_collection)
+        def scan_body(carry, batch):
+            val, jac = vmap_fn(*batch)
+            return carry, (val, jac)
+        _, (main_vals, main_jacs) = jax.lax.scan(scan_body, None, main_batched)
+        main_vals = main_vals.reshape(n_main, *main_vals.shape[2:])
+        main_jacs = main_jacs.reshape(n_main, *main_jacs.shape[2:])
 
-            val, jac = vmap_fn(*input_col)
-            values.append(val)
-            jacs.append(jac)
-        # Use concatenate instead of vstack to avoid memory overhead
-        values = np.concatenate(values, axis=0) if len(values) > 1 else values[0]
-        jacs = np.concatenate(jacs, axis=0) if len(jacs) > 1 else jacs[0]
-        return values, jacs
+        if remainder > 0:
+            rem_input = jax.tree_util.tree_map(lambda x: x[n_main:], input_collection)
+            rem_vals, rem_jacs = vmap_fn(*rem_input)
+            return np.concatenate([main_vals, rem_vals]), np.concatenate([main_jacs, rem_jacs])
+        return main_vals, main_jacs
     else:
-        values = []
-        for i in range(num_cuts):
-            if i < num_cuts - 1:
-                input_col = jax.tree_util.tree_map(lambda x: x[i * batch_size:(i + 1) * batch_size], input_collection)
-            else:
-                input_col = jax.tree_util.tree_map(lambda x: x[i * batch_size:], input_collection)
+        def scan_body(carry, batch):
+            val = vmap_fn(*batch)
+            return carry, val
+        _, main_vals = jax.lax.scan(scan_body, None, main_batched)
+        main_vals = main_vals.reshape(n_main, *main_vals.shape[2:])
 
-            val = vmap_fn(*input_col)
-            values.append(val)
-        # Use concatenate instead of vstack to avoid memory overhead
-        values = np.concatenate(values, axis=0) if len(values) > 1 else values[0]
-        return values
+        if remainder > 0:
+            rem_input = jax.tree_util.tree_map(lambda x: x[n_main:], input_collection)
+            rem_vals = vmap_fn(*rem_input)
+            return np.concatenate([main_vals, rem_vals])
+        return main_vals
 
 
 def compute_face(problem: 'Problem',

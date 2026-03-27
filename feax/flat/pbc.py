@@ -269,3 +269,66 @@ def periodic_bc_3D(
                 )
             )
     return corner_pairs + edge_pairs + face_pairs
+
+
+def periodic_bc_2D(
+    unitcell: UnitCell, vec: int = 1, dim: int = 2
+) -> List[PeriodicPairing]:
+    """Generate periodic boundary condition pairings for a 2D unit cell.
+
+    Creates a complete set of periodic pairings for all edges and corners of a
+    2D unit cell. This ensures full periodicity where opposite boundaries are
+    constrained to have compatible displacements.
+
+    The function systematically pairs:
+    - Opposite edges (2 edge pairs, excluding corners)
+    - Corresponding corners (3 corner pairs, excluding origin)
+
+    Args:
+        unitcell (UnitCell): The unit cell object providing boundary identification
+            functions and geometric mapping capabilities.
+        vec (int): Number of degrees of freedom per node. Defaults to 1.
+        dim (int): Spatial dimension of the problem. Defaults to 2.
+
+    Returns:
+        List[PeriodicPairing]: Complete list of periodic pairings ordered as:
+            1. Corner pairings (excluding origin as master)
+            2. Edge pairings (excluding corners)
+    """
+
+    L = unitcell.ub - unitcell.lb
+
+    # Edge pairs: pair opposite edges, excluding corners
+    edge_pairs = []
+    for axis in range(dim):
+        master_fn = unitcell.face_function(axis, unitcell.lb[axis],
+                                           excluding_corner=True)
+        slave_fn = unitcell.face_function(axis, unitcell.lb[axis] + L[axis],
+                                          excluding_corner=True)
+        for i in range(vec):
+            edge_pairs.append(
+                PeriodicPairing(
+                    master_fn, slave_fn,
+                    unitcell.mapping(master_fn, slave_fn), i
+                )
+            )
+
+    # Corner pairs: origin to all other corners
+    corner_origin = unitcell.lb
+    corner_pairs = []
+    for corner in itertools.product(
+        *[[corner_origin[i], corner_origin[i] + L[i]] for i in range(dim)]
+    ):
+        if np.allclose(np.array(corner), corner_origin):
+            continue
+        master_fn = unitcell.corner_function(corner_origin)
+        slave_fn = unitcell.corner_function(corner)
+        for i in range(vec):
+            corner_pairs.append(
+                PeriodicPairing(
+                    master_fn, slave_fn,
+                    unitcell.mapping(master_fn, slave_fn), i
+                )
+            )
+
+    return corner_pairs + edge_pairs

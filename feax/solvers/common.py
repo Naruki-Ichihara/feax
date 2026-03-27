@@ -11,6 +11,89 @@ from ..problem import MatrixView
 from .options import DirectSolverOptions, IterativeSolverOptions, SolverOptions
 
 
+# ---------------------------------------------------------------------------
+# Cached BCOO → CSR converter
+# ---------------------------------------------------------------------------
+# The sparsity *pattern* (indices) of the assembled Jacobian never changes
+# across solves — only the *values* change.  The default JAX path
+# ``BCSR.from_bcoo(A.sum_duplicates(nse=A.nse))`` performs a full
+# lexicographic sort + unique-detection every call, which shows up as a
+# ``sort`` + ``scatter`` + ``reduce_window`` chain in the XLA HLO.
+#
+# ``CachedBCOOToCSR`` caches the sort permutation, duplicate-summing
+# mapping, and the resulting CSR indptr/indices on the *first* call,
+# then re-uses them on subsequent calls — reducing the per-solve cost
+# from O(nnz·log nnz) to O(nnz).
+# ---------------------------------------------------------------------------
+
+class CachedBCOOToCSR:
+    """One-shot index analysis, repeated value-only conversion.
+
+    On the first call the full ``sum_duplicates`` + ``BCSR.from_bcoo``
+    path is executed with concrete arrays.  From that result we extract
+    a scatter mapping (``_target_indices``) that maps each raw BCOO data
+    entry to the correct position in the deduplicated CSR ``data`` array.
+
+    Subsequent calls only perform ``zeros().at[mapping].add(data)`` —
+    an O(nnz) operation with no sort.
+    """
+
+    def __init__(self):
+        self._target_indices = None   # raw BCOO data pos → CSR data pos
+        self._csr_indptr = None
+        self._csr_indices = None
+        self._nse_out = None
+
+    def _warmup(self, A: BCOO):
+        """Compute index mapping from raw BCOO entries to deduplicated CSR positions.
+
+        Uses JAX operations (searchsorted) instead of Python loops / numpy
+        so that this method is JIT-compatible and works when A.indices is a
+        traced array.
+        """
+        # 1. Deduplicate and convert to CSR to obtain the sparsity structure.
+        A_dedup = A.sum_duplicates(nse=A.nse)   # sorted unique (row, col) indices
+        bcsr = jax.experimental.sparse.BCSR.from_bcoo(A_dedup)
+        self._csr_indptr = bcsr.indptr
+        self._csr_indices = bcsr.indices
+        self._nse_out = int(bcsr.data.shape[0])  # static shape, always concrete
+
+        # 2. Build a mapping: for each raw entry k in A.data, find which
+        #    position in the deduplicated data array it maps to.
+        #
+        #    Encode each (row, col) pair as a single integer key so that
+        #    jnp.searchsorted can locate every raw entry in the sorted
+        #    dedup index array — no Python loops or onp.asarray needed.
+        n_cols = A.shape[1]
+        raw_keys  = A.indices[:, 0] * n_cols + A.indices[:, 1]   # (nnz_raw,)
+        dedup_keys = A_dedup.indices[:, 0] * n_cols + A_dedup.indices[:, 1]  # (nnz_dedup,), sorted
+
+        target = np.searchsorted(dedup_keys, raw_keys)  # (nnz_raw,)
+
+        # Validate: padding / out-of-range entries won't match any dedup key.
+        # Clamp first to avoid out-of-bounds indexing, then check equality.
+        safe = np.minimum(target, self._nse_out - 1)
+        matches = dedup_keys[safe] == raw_keys
+        self._target_indices = np.where(matches, target, self._nse_out)
+
+    def convert(self, A: BCOO):
+        """Return (csr_data, csr_indptr, csr_indices).
+
+        First call: full analysis (concrete).
+        Subsequent calls: value-only scatter (JIT-friendly).
+        """
+        if self._target_indices is None:
+            self._warmup(A)
+
+        # Scatter-add raw data into deduplicated positions.
+        # Extra slot at nse_out catches padding entries and is discarded.
+        data_out = np.zeros(self._nse_out + 1, dtype=A.data.dtype)
+        data_out = data_out.at[self._target_indices].add(A.data)
+        data_out = data_out[:self._nse_out]
+
+        return data_out, self._csr_indptr, self._csr_indices
+
+
 def _safe_negate(x):
     """Negate array, handling JAX's float0 type for zero gradients."""
     if hasattr(x, 'dtype'):
@@ -109,14 +192,15 @@ def create_direct_solve_fn(
 
     if solver == "spsolve":
         from .direct.spsolve import spsolve
+        _cache = CachedBCOOToCSR()
 
         def solve(A, b, x0=None):
-            A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A.sum_duplicates(nse=A.nse))
+            csr_data, csr_offsets, csr_columns = _cache.convert(A)
             x = spsolve(
                 b_values=b,
-                csr_values=A_bcsr.data,
-                csr_offsets=A_bcsr.indptr,
-                csr_columns=A_bcsr.indices,
+                csr_values=csr_data,
+                csr_offsets=csr_offsets,
+                csr_columns=csr_columns,
                 reorder=1,
                 vmap_method=options.sksparse_options.vmap_method,
             )
@@ -125,14 +209,15 @@ def create_direct_solve_fn(
 
     if solver == "umfpack":
         from .direct.umfpack import umfpack_solve
+        _cache = CachedBCOOToCSR()
 
         def solve(A, b, x0=None):
-            A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A.sum_duplicates(nse=A.nse))
+            csr_data, csr_offsets, csr_columns = _cache.convert(A)
             x = umfpack_solve(
                 b_values=b,
-                csr_values=A_bcsr.data,
-                csr_offsets=A_bcsr.indptr,
-                csr_columns=A_bcsr.indices,
+                csr_values=csr_data,
+                csr_offsets=csr_offsets,
+                csr_columns=csr_columns,
                 trans="N",
                 cache_namespace=cache_namespace,
                 vmap_method=options.sksparse_options.vmap_method,
@@ -142,14 +227,15 @@ def create_direct_solve_fn(
 
     if solver == "cholmod":
         from .direct.cholmod import cholmod_solve
+        _cache = CachedBCOOToCSR()
 
         def solve(A, b, x0=None):
-            A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A.sum_duplicates(nse=A.nse))
+            csr_data, csr_offsets, csr_columns = _cache.convert(A)
             x = cholmod_solve(
                 b_values=b,
-                csr_values=A_bcsr.data,
-                csr_offsets=A_bcsr.indptr,
-                csr_columns=A_bcsr.indices,
+                csr_values=csr_data,
+                csr_offsets=csr_offsets,
+                csr_columns=csr_columns,
                 lower=options.sksparse_options.lower,
                 order=options.sksparse_options.order,
                 cache_namespace=cache_namespace,
@@ -160,21 +246,21 @@ def create_direct_solve_fn(
 
     if solver == "cudss":
         from spineax.cudss.solver import CuDSSSolver
+        _cache = CachedBCOOToCSR()
         cudss_solver = None
-
         _actual_nnz = None
 
         def solve(A, b, x0=None):
             nonlocal cudss_solver, _actual_nnz
-            A_bcsr = jax.experimental.sparse.BCSR.from_bcoo(A.sum_duplicates(nse=A.nse))
+            csr_data, csr_offsets, csr_columns = _cache.convert(A)
 
             if cudss_solver is None:
-                csr_offsets = A_bcsr.indptr.astype(np.int32)
+                csr_offsets = csr_offsets.astype(np.int32)
                 # BCSR from padded BCOO may contain trailing entries with
                 # out-of-bounds column indices beyond offsets[-1].  Trim to
                 # the actual nnz so cuDSS never sees invalid columns.
                 _actual_nnz = int(csr_offsets[-1])
-                csr_columns = A_bcsr.indices[:_actual_nnz].astype(np.int32)
+                csr_columns = csr_columns[:_actual_nnz].astype(np.int32)
                 import warnings
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
@@ -185,7 +271,7 @@ def create_direct_solve_fn(
                         mtype_id=options.cudss_options.mtype_id,
                         mview_id=options.cudss_options.mview_id,
                     )
-            csr_values = A_bcsr.data[:_actual_nnz]
+            csr_values = csr_data[:_actual_nnz]
             x, _ = cudss_solver(b, csr_values)
             return x
         return solve

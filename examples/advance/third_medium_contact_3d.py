@@ -10,7 +10,7 @@ Two material regions on a single HEX20 mesh:
 
 Boundary conditions:
   - Fixed at x = 0
-  - Prescribed vertical displacement at point (L, H, 0) only (one end)
+  - Prescribed uniform vertical displacement on top edge (x = L, y = H)
   - z = 0 face constrained in z (symmetry plane)
   - z = D face free
 
@@ -211,12 +211,11 @@ bc_fixed = fe.DirichletBCSpec(
     value=0.0,
 )
 
-# Move: y-displacement at point (L, H, 0) only — one end push
+# Move: uniform y-displacement on the top edge at x = L, y = H
 bc_move = fe.DirichletBCSpec(
     location=lambda p: (
         np.isclose(p[0], L, atol=1e-6)
         & np.isclose(p[1], H, atol=1e-6)
-        & np.isclose(p[2], 0.0, atol=1e-6)
     ),
     component='y',
     value=0.0,
@@ -248,22 +247,21 @@ solver = fe.create_solver(
 num_steps = 20
 max_disp = -0.62 * L
 
-# Find BC row index for prescribed y-DOF at (L, H, 0) — single node
-move_dof_node = None
-for i, pt in enumerate(points_np):
-    if abs(pt[0] - L) < 1e-6 and abs(pt[1] - H) < 1e-6 and abs(pt[2]) < 1e-6:
-        move_dof_node = i
-        break
+# Find BC row indices for prescribed y-DOFs on the face x = L
+move_dof_nodes = [i for i, pt in enumerate(points_np)
+                  if abs(pt[0] - L) < 1e-6 and abs(pt[1] - H) < 1e-6]
+assert len(move_dof_nodes) > 0, f"No nodes found at x = {L}, y = {H}"
+move_dof_indices = [n * 3 + 1 for n in move_dof_nodes]  # y-component (vec=3, component 1)
+print(f"Prescribed DOFs: {len(move_dof_nodes)} nodes on edge x = {L}, y = {H}")
 
-assert move_dof_node is not None, f"Could not find node at ({L}, {H}, 0)"
-move_dof_index = move_dof_node * 3 + 1   # y-component (vec=3, component 1)
-print(f"Prescribed DOF: node {move_dof_node} at ({L}, {H}, 0)")
-
-# Identify position in bc_rows
+# Identify positions in bc_rows
 bc_rows_np = onp.array(bc.bc_rows)
-move_bc_pos = onp.where(bc_rows_np == move_dof_index)[0]
-assert len(move_bc_pos) == 1, f"Expected 1 match for DOF {move_dof_index}, got {len(move_bc_pos)}"
-move_bc_pos = int(move_bc_pos[0])
+move_bc_positions = []
+for dof_idx in move_dof_indices:
+    pos = onp.where(bc_rows_np == dof_idx)[0]
+    assert len(pos) == 1, f"Expected 1 match for DOF {dof_idx}, got {len(pos)}"
+    move_bc_positions.append(int(pos[0]))
+move_bc_positions = onp.array(move_bc_positions)
 
 sol = fe.zero_like_initial_guess(problem, bc)
 
@@ -293,7 +291,7 @@ for step in range(1, num_steps + 1):
     disp = max_disp * step / num_steps
 
     # Update BC value for the single prescribed node
-    new_bc_vals = bc.bc_vals.at[move_bc_pos].set(disp)
+    new_bc_vals = bc.bc_vals.at[move_bc_positions].set(disp)
     bc_step = bc.replace_vals(new_bc_vals)
 
     # Solve
