@@ -31,7 +31,7 @@ from .common import (
     _safe_negate,
     check_convergence,
     create_linear_solve_fn,
-    prewarm_cudss_solvers,
+    prewarm_direct_solvers,
     create_x0,
 )
 from .options import (
@@ -291,7 +291,7 @@ def create_linear_solver(
         )
     x0_fn = solver_options.x0_fn if isinstance(solver_options, IterativeSolverOptions) else None
 
-    prewarm_cudss_solvers(
+    prewarm_direct_solvers(
         problem=problem,
         bc=bc,
         internal_vars=internal_vars,

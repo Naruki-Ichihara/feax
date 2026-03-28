@@ -1,6 +1,6 @@
 # Batched Topology Optimization with Surface Loads
 
-This tutorial demonstrates how to optimize **multiple load cases in parallel** on a single mesh using `jax.vmap`. Each case has its own SIREN neural density field and a different surface traction, while the FE solve, compliance evaluation, and gradient-based update are all batched.
+This tutorial demonstrates how to optimize **multiple load cases in parallel** on a single mesh using `jax.vmap`. Each case has its own SIREN neural density field and its own spatially varying surface traction on the same boundary, while the FE solve, compliance evaluation, and gradient-based update are all batched.
 
 ## Overview
 
@@ -44,25 +44,26 @@ TRACTION_MAG = 1e2  # Applied traction magnitude
 
 ### Load Patch Locations
 
-Ten patches are distributed evenly along the right edge. Each patch is defined by a `location_fn` that tests whether a point lies within the patch band:
+The mesh uses a single Neumann boundary on the full right edge. The 10 load cases are defined by 10 spatial traction profiles on that same boundary, each centered at a different height:
 
 ```python
 NUM_CASES = 10
 PATCH_HALF_BAND = 0.5 * LY / NUM_CASES + Y_TOL
 PATCH_CENTERS = [LY * (i + 0.5) / NUM_CASES for i in range(NUM_CASES)]
+RIGHT_EDGE = lambda pt: jnp.isclose(pt[0], LX, atol=X_TOL)
 
-def _make_right_patch(center):
-    def loc_fn(pt):
-        return jnp.isclose(pt[0], LX, atol=X_TOL) & (
-            jnp.abs(pt[1] - center) <= PATCH_HALF_BAND
-        )
-    return loc_fn
+def make_right_edge_load_fn(center: float):
+    def load_fn(pt):
+        on_patch = jnp.abs(pt[1] - center) <= PATCH_HALF_BAND
+        return jnp.where(on_patch, TRACTION_MAG, 0.0)
 
-LOAD_LOCATIONS = tuple(_make_right_patch(c) for c in PATCH_CENTERS)
+    return load_fn
 ```
 
-!!! warning "location_fn must be single-argument"
-    FEAX inspects `co_argcount` to distinguish 1-argument (`point`) from 2-argument (`point, node_index`) location functions. Using `lambda pt, _c=center: ...` yields `co_argcount=2`, causing FEAX to misinterpret the default parameter as a node index. Always use a closure instead.
+:::warning
+`location_fn` must be single-argument
+FEAX inspects `co_argcount` to distinguish 1-argument (`point`) from 2-argument (`point, node_index`) location functions. Using `lambda pt, _c=center: ...` yields `co_argcount=2`, causing FEAX to misinterpret the default parameter as a node index. Always use a closure instead.
+:::
 
 ### Linear Elasticity with SIMP
 
@@ -86,10 +87,10 @@ class LinearElasticityProblem(fe.Problem):
         def surface_map(u, x, load):
             traction = jnp.zeros(self.dim)
             return traction.at[-1].set(load)
-        return [surface_map for _ in range(max(1, len(self.location_fns)))]
+        return [surface_map]
 ```
 
-All 10 surface maps share the same physics — the per-case loading is controlled entirely by which surface variables are nonzero.
+The problem has one Neumann boundary, so it exposes one surface map. The 10 load cases differ through the spatial values stored in their surface variables.
 
 ## Density Parameterization with SIREN
 
@@ -126,40 +127,39 @@ After stacking, each leaf array has an extra leading batch dimension of size `NU
 
 ## Batched Surface Variables
 
-The central data-engineering step is assembling `batched_surface_vars` — a PyTree where each leaf has shape `(NUM_CASES, ...)`. For case $k$, only the $k$-th surface patch carries the traction; all other patches are zeroed out:
+The central data-engineering step is assembling `batched_surface_vars` from 10 spatially varying traction fields. Each case contributes one surface variable on the right-edge boundary:
 
 ```python
-tractions = [
-    fe.InternalVars.create_uniform_surface_var(problem, TRACTION_MAG, surface_index=i)
-    for i in range(NUM_CASES)
-]
-
-per_case_surface_vars = []
-for case_idx in range(NUM_CASES):
-    sv = tuple(
-        (tractions[i],) if i == case_idx else (jnp.zeros_like(tractions[i]),)
-        for i in range(NUM_CASES)
+case_surface_vars = [
+    (
+        (
+            fe.InternalVars.create_spatially_varying_surface_var(
+                problem,
+                make_right_edge_load_fn(center),
+                surface_index=0,
+            ),
+        ),
     )
-    per_case_surface_vars.append(sv)
+    for center in PATCH_CENTERS
+]
 
 batched_surface_vars = jax.tree_util.tree_map(
     lambda *xs: jnp.stack(xs, axis=0),
-    *per_case_surface_vars,
+    *case_surface_vars,
 )
 ```
 
-This produces a structure where `batched_surface_vars[case_idx]` activates only the traction at patch `case_idx`.
+This produces a PyTree where each leaf has a leading batch dimension of size `NUM_CASES`, and `batched_surface_vars[case_idx]` contains the traction field for load case `case_idx`.
 
-## cuDSS Pre-warming
+## Solver Pre-warming
 
-When using the `cudss` direct solver, the solver must be initialized with a concrete sparse matrix **before** any `jax.vmap` tracing occurs. Pass a sample `internal_vars` to `create_solver`:
+The example passes a concrete `internal_vars` sample to `create_solver` before any `jax.vmap` tracing occurs. This lets FEAX initialize the direct solver and establish the sparse structure once up front:
 
 ```python
 sample_rho = jnp.full(problem.num_cells, TARGET_VOLUME_FRACTION)
-sample_surface_vars = tuple((t,) for t in tractions)
 sample_internal_vars = fe.InternalVars(
     volume_vars=(sample_rho,),
-    surface_vars=sample_surface_vars,
+    surface_vars=case_surface_vars[0],
 )
 
 solver = fe.create_solver(
@@ -171,8 +171,10 @@ solver = fe.create_solver(
 )
 ```
 
-!!! warning "ConcretizationTypeError without pre-warming"
-    If `internal_vars` is omitted, cuDSS initialization is deferred to the first solve call. When that first call happens inside `jax.vmap`, JAX tracer values are passed where concrete values are required, resulting in a `ConcretizationTypeError`. Always provide `internal_vars` when combining cuDSS with `vmap`.
+:::warning
+ConcretizationTypeError without pre-warming
+If `internal_vars` is omitted, direct solver initialization is deferred to the first solve call. When that first call happens inside `jax.vmap`, JAX tracer values are passed where concrete values are required, resulting in a `ConcretizationTypeError`. Always provide `internal_vars` when combining direct solvers with `vmap`.
+:::
 
 ## Batched Loss and Optimization
 
@@ -253,13 +255,13 @@ for case_index, case_name in enumerate(CASE_NAMES):
 
 | Concept | How it is used |
 |---|---|
-| `location_fns` | Define multiple surface load regions on one `Problem` |
-| `InternalVars.surface_vars` | Per-surface-patch traction arrays, zeroed selectively per case |
+| `location_fns` | Define the single right-edge Neumann boundary on the `Problem` |
+| `InternalVars.surface_vars` | Store one spatially varying traction field per load case |
 | `jax.tree_util.tree_map` + `jnp.stack` | Stack per-case PyTrees into batched arrays |
 | `jax.vmap(solve_forward)` | Vectorize the FE solve + compliance over all load cases |
 | `eqx.filter_jit` / `eqx.filter_value_and_grad` | JIT-compile and differentiate through Equinox models |
 | `jax.vmap(optimizer.update)` | Independent optimizer state per case |
-| cuDSS pre-warming | Pass `internal_vars` to `create_solver` to avoid tracer errors under `vmap` |
+| Solver pre-warming | Pass `internal_vars` to `create_solver` so direct-solver setup happens before the batched loop |
 
 ## Complete Code
 

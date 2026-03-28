@@ -70,22 +70,25 @@ Y_TOL = 1e-5 * max(1.0, LY)
 PATCH_HALF_BAND = 0.5 * LY / NUM_CASES + Y_TOL
 
 CASE_NAMES = tuple(f"cantilever_{i}" for i in range(NUM_CASES))
-LEFT = lambda pt: jnp.isclose(pt[0], 0.0, atol=X_TOL)
+LEFT_EDGE = lambda pt: jnp.isclose(pt[0], 0.0, atol=X_TOL)
+RIGHT_EDGE = lambda pt: jnp.isclose(pt[0], LX, atol=X_TOL)
 
 # 10 load patches evenly spaced along the right edge
 PATCH_CENTERS = [LY * (i + 0.5) / NUM_CASES for i in range(NUM_CASES)]
 
-def _make_right_patch(center):
-    def loc_fn(pt):
-        return jnp.isclose(pt[0], LX, atol=X_TOL) & (jnp.abs(pt[1] - center) <= PATCH_HALF_BAND)
-    return loc_fn
 
-LOAD_LOCATIONS = tuple(_make_right_patch(c) for c in PATCH_CENTERS)
+def make_right_edge_load_fn(center: float):
+    def load_fn(pt):
+        on_patch = jnp.abs(pt[1] - center) <= PATCH_HALF_BAND
+        return jnp.where(on_patch, TRACTION_MAG, 0.0)
+
+    return load_fn
 
 
 # -----------------------------------------------------------------------------
 # SIREN model https://www.vincentsitzmann.com/siren/
 # -----------------------------------------------------------------------------
+
 
 def siren_weight_init(key, shape, omega: float, *, first_layer: bool):
     fan_in = shape[-2]
@@ -148,6 +151,7 @@ class SIREN(eqx.Module):
             x = jnp.sin(self.omega * (x @ weight + bias))
         return x @ self.weights[-1] + self.biases[-1]
 
+
 def predict_densities(models, coords):
     logits = jax.vmap(lambda model: model(coords))(models)
     return jax.nn.sigmoid(jnp.squeeze(logits, axis=-1))
@@ -156,6 +160,7 @@ def predict_densities(models, coords):
 # -----------------------------------------------------------------------------
 # FE problem setup
 # -----------------------------------------------------------------------------
+
 
 class LinearElasticityProblem(fe.Problem):
     def custom_init(self, E0: float, E_eps: float, nu: float, p: float):
@@ -179,12 +184,13 @@ class LinearElasticityProblem(fe.Problem):
             traction = jnp.zeros(self.dim)
             return traction.at[-1].set(load)
 
-        return [surface_map for _ in range(max(1, len(self.location_fns)))]
+        return [surface_map]
 
 
 # -----------------------------------------------------------------------------
 # Optimization
 # -----------------------------------------------------------------------------
+
 
 def create_model_batch():
     keys = jax.random.split(jax.random.PRNGKey(MODEL_RNG_SEED), len(CASE_NAMES))
@@ -222,6 +228,7 @@ def print_iteration(iteration, total_loss, aux):
 # Main
 # -----------------------------------------------------------------------------
 
+
 def main():
     mesh = fe.mesh.rectangle_mesh(
         Nx=NX,
@@ -236,12 +243,12 @@ def main():
         vec=2,
         dim=2,
         ele_type="QUAD4",
-        location_fns=LOAD_LOCATIONS,
+        location_fns=(RIGHT_EDGE,),
         additional_info=(E0, E_EPS, NU, SIMP_PENALTY),
     )
 
     bc = fe.DirichletBCConfig(
-        [fe.DirichletBCSpec(location=LEFT, component="all", value=0.0)]
+        [fe.DirichletBCSpec(location=LEFT_EDGE, component="all", value=0.0)]
     ).create_bc(problem)
 
     solver_options = fe.DirectSolverOptions(
@@ -252,20 +259,25 @@ def main():
     compliance_fn = gene.create_dynamic_compliance_fn(problem)
     volume_fraction_fn = gene.create_volume_fn(problem)
 
-    # Create traction variable for each load patch
-    tractions = [
-        fe.InternalVars.create_uniform_surface_var(
-            problem, TRACTION_MAG, surface_index=i,
+    # Create spatially varying traction variables for each patch center
+    case_surface_vars = [
+        (
+            (
+                fe.InternalVars.create_spatially_varying_surface_var(
+                    problem,
+                    make_right_edge_load_fn(center),
+                    surface_index=0,
+                ),
+            ),
         )
-        for i in range(NUM_CASES)
+        for center in PATCH_CENTERS
     ]
 
-    # Create sample internal_vars for cuDSS pre-warming (must happen before vmap)
+    # Create sample internal_vars for direct solver pre-warming (must happen before vmap)
     sample_rho = jnp.full(problem.num_cells, TARGET_VOLUME_FRACTION)
-    sample_surface_vars = tuple((t,) for t in tractions)
     sample_internal_vars = fe.InternalVars(
         volume_vars=(sample_rho,),
-        surface_vars=sample_surface_vars,
+        surface_vars=case_surface_vars[0],
     )
     solver = fe.create_solver(
         problem,
@@ -276,19 +288,10 @@ def main():
         internal_vars=sample_internal_vars,
     )
 
-    # For each case, activate only its own load patch (zero out others)
-    per_case_surface_vars = []
-    for case_idx in range(NUM_CASES):
-        sv = tuple(
-            (tractions[i],) if i == case_idx else (jnp.zeros_like(tractions[i]),)
-            for i in range(NUM_CASES)
-        )
-        per_case_surface_vars.append(sv)
     batched_surface_vars = jax.tree_util.tree_map(
         lambda *xs: jnp.stack(xs, axis=0),
-        *per_case_surface_vars,
+        *case_surface_vars,
     )
-
 
     # Normalize centroids to [-1, 1] before feeding them to the SIREN.
     # The SIREN paper analyzes the initialization for inputs in this range and
@@ -308,7 +311,9 @@ def main():
 
     @eqx.filter_jit
     @eqx.filter_value_and_grad(has_aux=True)
-    def batched_loss(models, coords, target_volume_fractions, lams, penalties, batched_surface_vars):
+    def batched_loss(
+        models, coords, target_volume_fractions, lams, penalties, batched_surface_vars
+    ):
         densities = predict_densities(models, coords)
         compliances = jax.vmap(solve_forward)(densities, batched_surface_vars)
         volume_fractions = jax.vmap(volume_fraction_fn)(densities)
@@ -331,9 +336,7 @@ def main():
         optax.clip_by_global_norm(GRAD_CLIP_NORM),
         optax.adabelief(LEARNING_RATE),
     )
-    opt_states = jax.vmap(lambda model: optimizer.init(eqx.filter(model, eqx.is_array)))(
-        models
-    )
+    opt_states = jax.vmap(lambda model: optimizer.init(eqx.filter(model, eqx.is_array)))(models)
 
     target_volume_fractions = jnp.full((len(CASE_NAMES),), TARGET_VOLUME_FRACTION)
     penalties = jnp.full((len(CASE_NAMES),), CONSTRAINT_PENALTY)
