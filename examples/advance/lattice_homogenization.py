@@ -16,6 +16,7 @@ import feax.flat as flat
 # Material properties
 E_base = 210e9  # Pa (steel)
 nu = 0.3
+mesh_size = 0.1
 
 class LinearElasticity(fe.problem.Problem):
     def get_tensor_map(self):
@@ -34,7 +35,7 @@ class BCCUnitCell(flat.unitcell.UnitCell):
 
 # Create unit cell and BCC graph structure
 print("Creating BCC lattice unit cell...")
-unitcell = BCCUnitCell(mesh_size=0.0)
+unitcell = BCCUnitCell(mesh_size=mesh_size)
 mesh = unitcell.mesh
 print(f"Mesh: {len(mesh.points)} nodes, {len(mesh.cells)} elements")
 
@@ -66,7 +67,7 @@ bc = bc_config.create_bc(problem)
 
 # Internal variables with density-based Young's modulus
 print("Setting up material properties...")
-E_field = fe.internal_vars.InternalVars.create_cell_var(problem, E_base * rho)
+E_field = E_base * rho  # rho is already per-cell from create_lattice_density_field
 nu_field = fe.internal_vars.InternalVars.create_cell_var(problem, nu)
 internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
 

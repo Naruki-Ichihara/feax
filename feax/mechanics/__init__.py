@@ -11,6 +11,10 @@ from .cohesive import (
     compute_trapezoidal_weights,
     compute_lumped_area_weights,
 )
+from .tmc import (
+    ThirdMediumContact,
+    classify_medium_cells,
+)
 
 __all__ = [
     "CohesiveInterface",
@@ -18,4 +22,6 @@ __all__ = [
     "bilinear_potential",
     "compute_trapezoidal_weights",
     "compute_lumped_area_weights",
+    "ThirdMediumContact",
+    "classify_medium_cells",
 ]

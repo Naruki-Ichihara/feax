@@ -5,6 +5,8 @@ CLAUDE.md
 *.vtk
 *.h5
 *.xdmf
+*.trace.json.gz
+*.xplane.pb
 examples/private/
 output_adaptive/
 

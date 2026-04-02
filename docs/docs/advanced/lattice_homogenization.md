@@ -40,6 +40,7 @@ import jax.numpy as np
 
 E_base = 210e9  # Pa (steel)
 nu = 0.3
+mesh_size = 0.1
 ```
 
 ### Linear Elasticity Problem
@@ -67,7 +68,7 @@ class BCCUnitCell(flat.unitcell.UnitCell):
         return fe.mesh.box_mesh(size=1.0, mesh_size=mesh_size, element_type='HEX8')
 
 # Create unit cell
-unitcell = BCCUnitCell(mesh_size=0.05)
+unitcell = BCCUnitCell(mesh_size=mesh_size)
 mesh = unitcell.mesh
 ```
 
@@ -94,7 +95,7 @@ edges = np.array([[i, 8] for i in range(8)])
 problem = LinearElasticity(mesh=mesh, vec=3, dim=3, ele_type='HEX8', location_fns=[])
 
 # Create lattice density field using graph
-lattice_func = flat.graph.create_lattice_function(nodes, edges, radius=0.05)
+lattice_func = flat.graph.create_lattice_function(nodes, edges, radius=0.1)
 rho = flat.graph.create_lattice_density_field(problem, lattice_func,
                                                density_solid=1.0, density_void=0.01)
 ```
@@ -140,10 +141,10 @@ Use element-based variables for density-dependent properties:
 bc_config = fe.DCboundary.DirichletBCConfig([])
 bc = bc_config.create_bc(problem)
 
-# Density-based Young's modulus
-E_field = fe.InternalVars.create_cell_var(problem, E_base * rho)
-nu_field = fe.InternalVars.create_cell_var(problem, nu)
-internal_vars = fe.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
+# Density-based Young's modulus (rho is already per-cell from create_lattice_density_field)
+E_field = E_base * rho
+nu_field = fe.internal_vars.InternalVars.create_cell_var(problem, nu)
+internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
 ```
 
 **Why cell-based variables?**
@@ -151,18 +152,24 @@ internal_vars = fe.InternalVars(volume_vars=(E_field, nu_field), surface_vars=()
 - More efficient than quad-point based for homogenization
 - Natural for topology optimization
 
+!!! note
+    `E_field` is computed directly as `E_base * rho` since `rho` is already a per-cell array from `create_lattice_density_field`. The `create_cell_var` helper is only for uniform scalar values.
+
 ## Homogenization Solver
 
 Use `flat.solver.create_homogenization_solver()` to compute $\mathbf{C}_{\text{hom}}$:
 
 ```python
-solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-8, verbose=False)
-
-compute_C_hom = flat.solver.create_homogenization_solver(
-    problem, bc, P, solver_options, mesh, dim=3
+solver_options = fe.IterativeSolverOptions(
+    solver="cg", tol=1e-10, atol=1e-10, maxiter=10000, verbose=True
 )
 
-C_hom = compute_C_hom(internal_vars)
+compute_C_hom = flat.solver.create_homogenization_solver(
+    problem, bc, P, mesh, solver_options=solver_options, dim=3
+)
+
+result = compute_C_hom(internal_vars)
+C_hom = result.C_hom
 ```
 
 **How it works:**
@@ -178,6 +185,40 @@ For 3D, the solver:
 - Uses affine displacement method for efficiency
 - Automatically handles periodic constraints via $\mathbf{P}$ matrix
 
+## JIT Compilation Benchmark
+
+The homogenization solver supports JAX JIT compilation for significant speedups:
+
+```python
+import jax
+import time
+
+# Without JIT
+t0 = time.time()
+result = compute_C_hom(internal_vars)
+jax.block_until_ready(result)
+t_no_jit = time.time() - t0
+
+# With JIT (1st call = compile + run)
+compute_C_hom_jit = jax.jit(compute_C_hom)
+
+t0 = time.time()
+result = compute_C_hom_jit(internal_vars)
+jax.block_until_ready(result)
+t_jit_compile = time.time() - t0
+
+# With JIT (2nd call = cached)
+t0 = time.time()
+result = compute_C_hom_jit(internal_vars)
+jax.block_until_ready(result)
+t_jit_cached = time.time() - t0
+
+C_hom = result.C_hom
+```
+
+!!! tip
+    After the first JIT-compiled call (which includes compilation overhead), subsequent calls use the cached compiled version and run significantly faster.
+
 ## Extract Engineering Constants
 
 For cubic symmetry materials:
@@ -187,6 +228,7 @@ C11 = C_hom[0, 0]
 C12 = C_hom[0, 1]
 C44 = C_hom[3, 3]
 
+# Effective Young's modulus (assuming cubic symmetry)
 E_eff = (C11 - C12) * (C11 + 2*C12) / (C11 + C12)
 nu_eff = C12 / (C11 + C12)
 G_eff = C44
@@ -194,7 +236,7 @@ G_eff = C44
 print(f"Effective Young's modulus: {E_eff/1e9:.2f} GPa")
 print(f"Effective Poisson's ratio: {nu_eff:.3f}")
 print(f"Effective shear modulus: {G_eff/1e9:.2f} GPa")
-print(f"Relative stiffness: {E_eff/E_base:.3f}")
+print(f"Relative stiffness (E_eff/E_base): {E_eff/E_base:.3f}")
 ```
 
 ## Visualization
@@ -242,13 +284,18 @@ $$
 
 ```python
 import os
+import time
+
+import jax
+import jax.numpy as np
+
 import feax as fe
 import feax.flat as flat
-import jax.numpy as np
 
 # Material properties
 E_base = 210e9  # Pa (steel)
 nu = 0.3
+mesh_size = 0.1
 
 class LinearElasticity(fe.problem.Problem):
     def get_tensor_map(self):
@@ -260,11 +307,13 @@ class LinearElasticity(fe.problem.Problem):
         return stress
 
 class BCCUnitCell(flat.unitcell.UnitCell):
+    """BCC lattice unit cell."""
+
     def mesh_build(self, mesh_size):
         return fe.mesh.box_mesh(size=1.0, mesh_size=mesh_size, element_type='HEX8')
 
 # Create unit cell
-unitcell = BCCUnitCell(mesh_size=0.05)
+unitcell = BCCUnitCell(mesh_size=mesh_size)
 mesh = unitcell.mesh
 
 # Define BCC lattice structure
@@ -275,7 +324,7 @@ edges = np.array([[i, 8] for i in range(8)])
 
 # Create problem and density field
 problem = LinearElasticity(mesh=mesh, vec=3, dim=3, ele_type='HEX8', location_fns=[])
-lattice_func = flat.graph.create_lattice_function(nodes, edges, radius=0.05)
+lattice_func = flat.graph.create_lattice_function(nodes, edges, radius=0.1)
 rho = flat.graph.create_lattice_density_field(problem, lattice_func, density_solid=1.0, density_void=0.01)
 
 # Periodic boundary conditions
@@ -284,28 +333,54 @@ P = flat.pbc.prolongation_matrix(pairings, mesh, vec=3)
 
 # Boundary conditions and internal variables
 bc = fe.DCboundary.DirichletBCConfig([]).create_bc(problem)
-E_field = fe.InternalVars.create_cell_var(problem, E_base * rho)
-nu_field = fe.InternalVars.create_cell_var(problem, nu)
-internal_vars = fe.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
+E_field = E_base * rho  # rho is already per-cell from create_lattice_density_field
+nu_field = fe.internal_vars.InternalVars.create_cell_var(problem, nu)
+internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
 
 # Homogenization
-solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-8)
-compute_C_hom = flat.solver.create_homogenization_solver(problem, bc, P, solver_options, mesh, dim=3)
-C_hom = compute_C_hom(internal_vars)
+solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-10, atol=1e-10, maxiter=10000, verbose=True)
+compute_C_hom = flat.solver.create_homogenization_solver(
+    problem, bc, P, mesh, solver_options=solver_options, dim=3
+)
+
+# Benchmark: without JIT
+t0 = time.time()
+result = compute_C_hom(internal_vars)
+jax.block_until_ready(result)
+t_no_jit = time.time() - t0
+
+# Benchmark: with JIT (1st call = compile + run)
+compute_C_hom_jit = jax.jit(compute_C_hom)
+t0 = time.time()
+result = compute_C_hom_jit(internal_vars)
+jax.block_until_ready(result)
+t_jit_compile = time.time() - t0
+
+# Benchmark: with JIT (2nd call = cached)
+t0 = time.time()
+result = compute_C_hom_jit(internal_vars)
+jax.block_until_ready(result)
+t_jit_cached = time.time() - t0
+
+C_hom = result.C_hom
 
 # Extract properties
 C11, C12, C44 = C_hom[0, 0], C_hom[0, 1], C_hom[3, 3]
 E_eff = (C11 - C12) * (C11 + 2*C12) / (C11 + C12)
 nu_eff = C12 / (C11 + C12)
+G_eff = C44
 
 print(f"Effective Young's modulus: {E_eff/1e9:.2f} GPa")
-print(f"Relative stiffness: {E_eff/E_base:.3f}")
+print(f"Effective Poisson's ratio: {nu_eff:.3f}")
+print(f"Effective shear modulus: {G_eff/1e9:.2f} GPa")
+print(f"Relative stiffness (E_eff/E_base): {E_eff/E_base:.3f}")
 
 # Save results
 output_dir = os.path.join(os.path.dirname(__file__), "data", "vtk")
 os.makedirs(output_dir, exist_ok=True)
-fe.utils.save_sol(mesh, os.path.join(output_dir, "bcc_lattice.vtu"), cell_infos=[("density", rho)])
-flat.utils.visualize_stiffness_sphere(C_hom, output_file=os.path.join(output_dir, "stiffness_sphere.vtk"))
+fe.utils.save_sol(mesh=mesh, sol_file=os.path.join(output_dir, "bcc_lattice_structure.vtu"),
+                  cell_infos=[("density", rho)])
+flat.utils.visualize_stiffness_sphere(C_hom, output_file=os.path.join(output_dir, "bcc_stiffness_sphere.vtk"))
 ```
 
 ## Advanced Topics
@@ -326,7 +401,7 @@ edges = np.array([
     [4, 8], [5, 8], [6, 8], [7, 8],  # Top to center
 ])
 
-lattice_func = flat.graph.create_lattice_function(nodes, edges, radius=0.05)
+lattice_func = flat.graph.create_lattice_function(nodes, edges, radius=0.1)
 ```
 
 ### 2D Homogenization
@@ -339,7 +414,7 @@ unitcell = MyUnitCell2D()  # Implement mesh_build() for 2D
 
 # 2D periodic BCs (only x, y directions)
 compute_C_hom = flat.solver.create_homogenization_solver(
-    problem, bc, P, solver_options, mesh, dim=2
+    problem, bc, P, mesh, solver_options=solver_options, dim=2
 )
 # Returns 3×3 stiffness matrix (ε11, ε22, γ12)
 ```
