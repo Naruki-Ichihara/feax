@@ -17,7 +17,7 @@ from .common import (
     check_convergence,
     create_jacobi_preconditioner,
     create_linear_solve_fn,
-    prewarm_cudss_solvers,
+    prewarm_direct_solvers,
     create_x0,
 )
 from .linear import linear_solve_adjoint
@@ -533,8 +533,8 @@ def create_newton_solver(
             # concrete (non-traced) matrix indices. Without this, the first
             # call to jax.jit(linear_solve_fn) would trace through _warmup()
             # and hit TracerArrayConversionError on onp.asarray(A.indices).
-            from .common import prewarm_cudss_solvers
-            prewarm_cudss_solvers(
+            from .common import prewarm_direct_solvers
+            prewarm_direct_solvers(
                 problem=problem,
                 bc=bc,
                 internal_vars=internal_vars,
@@ -612,7 +612,7 @@ def create_newton_solver(
             "make_jittable=False (default) to use the Python-loop path."
         )
 
-    prewarm_cudss_solvers(
+    prewarm_direct_solvers(
         problem=problem,
         bc=bc,
         internal_vars=internal_vars,

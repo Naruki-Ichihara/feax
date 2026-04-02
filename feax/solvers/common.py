@@ -367,7 +367,7 @@ def create_linear_solve_fn(
     )
 
 
-def prewarm_cudss_solvers(
+def prewarm_direct_solvers(
     problem,
     bc,
     internal_vars,
@@ -377,19 +377,19 @@ def prewarm_cudss_solvers(
     forward_solve_fn,
     adjoint_solve_fn,
 ):
-    """Pre-warm cuDSS solve closures with concrete CSR structure.
+    """Pre-warm direct solve closures with concrete CSR structure.
 
-    This must run outside JAX tracing so the first-call cuDSS initialization
+    This must run outside JAX tracing so the first-call direct initialization
     does not capture tracers in closure state.
     """
 
-    def _is_cudss(opts):
-        return isinstance(opts, DirectSolverOptions) and opts.solver == "cudss"
+    def _is_direct_solver(opts):
+        return isinstance(opts, DirectSolverOptions)
 
     if internal_vars is None:
         return
 
-    if not (_is_cudss(forward_options) or _is_cudss(adjoint_options)):
+    if not (_is_direct_solver(forward_options) or _is_direct_solver(adjoint_options)):
         return
 
     from ..utils import zero_like_initial_guess
@@ -398,14 +398,14 @@ def prewarm_cudss_solvers(
     sample_J = J_bc_func(initial_tmp, internal_vars)
     b_tmp = np.zeros(sample_J.shape[0])
 
-    if _is_cudss(forward_options):
-        print("[feax] Pre-warming cuDSS solver (forward) with sample Jacobian...")
+    if _is_direct_solver(forward_options):
+        print("[feax] Pre-warming direct solver (forward) with sample Jacobian...")
         forward_solve_fn(sample_J, b_tmp, b_tmp)
-        print("[feax] cuDSS solver (forward) initialized.")
-    if _is_cudss(adjoint_options) and adjoint_solve_fn is not forward_solve_fn:
-        print("[feax] Pre-warming cuDSS solver (adjoint) with sample Jacobian...")
+        print("[feax] direct solver (forward) initialized.")
+    if _is_direct_solver(adjoint_options) and adjoint_solve_fn is not forward_solve_fn:
+        print("[feax] Pre-warming direct solver (adjoint) with sample Jacobian...")
         adjoint_solve_fn(sample_J, b_tmp, b_tmp)
-        print("[feax] cuDSS solver (adjoint) initialized.")
+        print("[feax] direct solver (adjoint) initialized.")
 
 
 def _extract_sparse_diagonal(A):
