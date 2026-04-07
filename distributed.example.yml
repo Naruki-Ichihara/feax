@@ -1,0 +1,11 @@
+# Distributed cluster configuration for FEAX
+# Copy to distributed.yml and adjust for your environment.
+# distributed.yml is gitignored.
+
+coordinator: 192.168.100.XX
+port: 1234
+
+nodes:
+  - host: 192.168.100.XX
+    ssh_key: /root/.ssh/id_ed25519
+    container: feax

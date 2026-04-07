@@ -75,6 +75,7 @@ from .solvers.options import (
     resolve_iterative_solver,
 )
 from .utils import zero_like_initial_guess
+from . import distributed
 from .profiler import (
     JaxprInfo,
     MemorySnapshot,

@@ -16,7 +16,7 @@ import feax.flat as flat
 # Material properties
 E_base = 210e9  # Pa (steel)
 nu = 0.3
-mesh_size = 0.1
+mesh_size = 0.05
 
 class LinearElasticity(fe.problem.Problem):
     def get_tensor_map(self):

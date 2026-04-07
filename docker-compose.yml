@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
       args:
         INSTALL_DOCS: "false"
-    image: fealax:latest
+    image: feax:latest
     container_name: feax
     restart: always
     tty: true

@@ -1,5 +1,8 @@
 jax-fem/
 CLAUDE.md
+docker-compose.override.yml
+jax-distributed-run.sh
+distributed.yml
 
 *.vtu
 *.vtk
