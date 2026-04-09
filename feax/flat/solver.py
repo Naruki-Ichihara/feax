@@ -254,8 +254,7 @@ def create_homogenization_solver(
 
     def _single_case(unit_strain, internal_vars):
         u_macro = macro_displacement(mesh, unit_strain)
-        u_fluct = fluctuation_solver(internal_vars, u_macro)
-        u_total = u_fluct + u_macro
+        u_total = fluctuation_solver(internal_vars, u_macro)
         sigma_voigt = average_stress(problem, u_total, internal_vars, dim)
         return sigma_voigt, u_total, u_macro
 

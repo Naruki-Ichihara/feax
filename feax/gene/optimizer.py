@@ -45,7 +45,7 @@ from feax.mesh import Mesh
 # @constraint decorator
 # ---------------------------------------------------------------------------
 
-def constraint(target: float, type: str = 'le'):
+def constraint(target: float, type: str = 'le', tol: float = 0.0):
     """Mark a ``Pipeline`` method as an optimisation constraint.
 
     Parameters
@@ -54,7 +54,11 @@ def constraint(target: float, type: str = 'le'):
         Constraint bound value.
     type : str
         ``'le'`` for *f(rho) <= target* (inequality, default),
-        ``'eq'`` for *f(rho) == target* (equality).
+        ``'eq'`` for *f(rho) == target* (equality, implemented as
+        two inequality constraints: ``target - tol <= f <= target + tol``).
+    tol : float
+        Tolerance band for equality constraints. Only used when
+        ``type='eq'``. Default ``0.0`` gives a tight equality.
 
     Examples:
 
@@ -63,16 +67,16 @@ def constraint(target: float, type: str = 'le'):
     def volume(self, rho, beta=1.0):
         return volume_fn(rho)
 
-    @constraint(target=100.0, type='eq')
-    def mass(self, rho):
-        return mass_fn(rho)
+    @constraint(target=0.3, type='eq', tol=0.001)
+    def volume(self, rho, beta=1.0):
+        return volume_fn(rho)
     ```
     """
     if type not in ('le', 'eq'):
         raise ValueError(f"constraint type must be 'le' or 'eq', got {type!r}")
 
     def decorator(fn):
-        fn._constraint_meta = {'target': target, 'type': type}
+        fn._constraint_meta = {'target': target, 'type': type, 'tol': tol}
         return fn
     return decorator
 
@@ -225,14 +229,27 @@ class OptResult:
 # ---------------------------------------------------------------------------
 
 def _collect_constraints(pipeline: Pipeline):
-    """Discover methods decorated with @constraint."""
+    """Discover methods decorated with @constraint.
+
+    Equality constraints (``type='eq'``) are expanded into two
+    inequality constraints: ``f <= target + tol`` and ``-f <= -target + tol``.
+    """
     constraints = []
     for name in dir(type(pipeline)):
         attr = getattr(type(pipeline), name, None)
         if callable(attr) and hasattr(attr, '_constraint_meta'):
             meta = attr._constraint_meta
             bound_method = getattr(pipeline, name)
-            constraints.append((name, bound_method, meta['target'], meta['type']))
+            if meta['type'] == 'eq':
+                eq_tol = meta.get('tol', 0.0)
+                # f <= target + tol
+                constraints.append((name, bound_method,
+                                    meta['target'] + eq_tol, 'le'))
+                # -f <= -target + tol  i.e.  f >= target - tol
+                constraints.append((f'{name}_lb', bound_method,
+                                    meta['target'] - eq_tol, 'ge'))
+            else:
+                constraints.append((name, bound_method, meta['target'], meta['type']))
     return constraints
 
 
@@ -350,7 +367,7 @@ def run(
     print(f"  Max iter     : {max_iter}")
     if constraints:
         for name, _, _, target, ctype in compiled_constraints:
-            op = '<=' if ctype == 'le' else '=='
+            op = '<=' if ctype == 'le' else ('>=' if ctype == 'ge' else '==')
             print(f"  Constraint   : {name} {op} {target}")
     else:
         print("  Constraints  : none")
@@ -426,11 +443,19 @@ def run(
                     return float(fn(rho, **params)) - tgt
                 return _con
 
-            con_fn = _make_constraint(fn_jit, grad_fn, target)
             if ctype == 'le':
+                con_fn = _make_constraint(fn_jit, grad_fn, target)
                 opt.add_inequality_constraint(con_fn, 1e-8)
-            else:
-                opt.add_equality_constraint(con_fn, 1e-8)
+            elif ctype == 'ge':
+                # f >= target  →  target - f <= 0
+                def _make_ge_constraint(fn, gfn, tgt):
+                    def _con(xx, grad):
+                        rho = np.array(xx)
+                        grad[:] = -onp.array(gfn(rho, **params))
+                        return -(float(fn(rho, **params)) - tgt)
+                    return _con
+                con_fn = _make_ge_constraint(fn_jit, grad_fn, target)
+                opt.add_inequality_constraint(con_fn, 1e-8)
 
         return opt
 

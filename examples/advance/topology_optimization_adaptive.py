@@ -28,7 +28,7 @@ nu = 0.3
 E_eps = E0 * 1e-6
 penalty = 3
 traction_mag = 1.0
-mesh_size = 0.5
+mesh_size = 1
 
 # ── Geometry & BCs ───────────────────────────────────────────────────────────
 

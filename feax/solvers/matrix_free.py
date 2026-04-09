@@ -351,7 +351,7 @@ def create_energy_fn(problem) -> Callable:
     integrating the problem's energy density over the domain:
 
     ```python
-    E(u) = ∫ ψ(∇u) dΩ
+    E(u) = ∫ ψ(∇u, *internal_vars) dΩ
     ```
 
     The energy density is obtained from ``problem.get_energy_density()``.
@@ -365,8 +365,16 @@ def create_energy_fn(problem) -> Callable:
     Returns
     -------
     energy : callable
-        Function ``energy(u_flat) -> scalar`` that computes
-        the total energy ∫ ψ(∇u) dΩ.
+        ``energy(u_flat)`` or ``energy(u_flat, internal_vars)``
+        returning a scalar total energy.
+
+        When called **without** ``internal_vars``, the energy density
+        receives only the displacement gradient: ``ψ(∇u)``.
+
+        When called **with** ``internal_vars``, each volume variable is
+        interpolated to quadrature points (node-based via shape functions,
+        cell-based by broadcast) and passed as extra arguments:
+        ``ψ(∇u, var0_q, var1_q, …)``.
 
     Raises
     ------
@@ -384,20 +392,57 @@ def create_energy_fn(problem) -> Callable:
     cells = problem.cells_list[0]
     sg = fe0.shape_grads      # (num_cells, num_quads, num_nodes, dim)
     jxw = fe0.JxW              # (num_cells, num_quads)
+    sv = fe0.shape_vals        # (num_quads, num_nodes_per_cell)
     vec = fe0.vec
+    num_nodes = fe0.num_total_nodes
+    num_cells = fe0.num_cells
+    num_quads = fe0.num_quads
 
-    def energy(u_flat):
+    def _interpolate_volume_vars(internal_vars):
+        """Interpolate volume variables to quadrature points.
+
+        Returns a list of arrays each with shape ``(num_cells, num_quads)``.
+        """
+        result = []
+        for var in internal_vars.volume_vars:
+            if var.ndim == 1:
+                if var.shape[0] == num_cells:
+                    result.append(np.tile(var[:, None], (1, num_quads)))
+                else:
+                    var_cell = var[cells]
+                    result.append(np.einsum('qn,cn->cq', sv, var_cell))
+            else:
+                result.append(var)
+        return result
+
+    def energy(u_flat, internal_vars=None):
         u = u_flat.reshape(-1, vec)
         cell_u = u[cells]  # (num_cells, num_nodes_per_cell, vec)
 
-        def cell_energy(cell_sol, cell_sg, cell_jxw):
-            u_grads = np.sum(
-                cell_sol[None, :, :, None] * cell_sg[:, :, None, :],
-                axis=1,
-            )  # (num_quads, vec, dim)
-            return np.sum(jax.vmap(lambda ug, w: psi_fn(ug) * w)(u_grads, cell_jxw))
+        if internal_vars is None:
+            def cell_energy(cell_sol, cell_sg, cell_jxw):
+                u_grads = np.sum(
+                    cell_sol[None, :, :, None] * cell_sg[:, :, None, :],
+                    axis=1,
+                )  # (num_quads, vec, dim)
+                return np.sum(jax.vmap(lambda ug, w: psi_fn(ug) * w)(u_grads, cell_jxw))
 
-        return np.sum(jax.vmap(cell_energy)(cell_u, sg, jxw))
+            return np.sum(jax.vmap(cell_energy)(cell_u, sg, jxw))
+        else:
+            vol_vars_q = _interpolate_volume_vars(internal_vars)
+
+            def cell_energy_iv(cell_sol, cell_sg, cell_jxw, *vars_c):
+                u_grads = np.sum(
+                    cell_sol[None, :, :, None] * cell_sg[:, :, None, :],
+                    axis=1,
+                )  # (num_quads, vec, dim)
+
+                def quad_fn(ug, w, *vq):
+                    return psi_fn(ug, *vq) * w
+
+                return np.sum(jax.vmap(quad_fn)(u_grads, cell_jxw, *vars_c))
+
+            return np.sum(jax.vmap(cell_energy_iv)(cell_u, sg, jxw, *vol_vars_q))
 
     return energy
 

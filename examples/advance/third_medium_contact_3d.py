@@ -152,7 +152,7 @@ bc = fe.DirichletBCConfig([bc_fixed, bc_move, bc_z0]).create_bc(problem)
 # ── Solver setup ─────────────────────────────────────────────────────
 solver = fe.create_solver(
     problem, bc,
-    solver_options=fe.DirectSolverOptions(solver='umfpack', verbose=True),
+    solver_options=fe.DirectSolverOptions(solver='spsolve', verbose=True),
     newton_options=fe.NewtonOptions(tol=1e-6, rel_tol=1e-8, max_iter=30, internal_jit=True),
     iter_num=None,
     internal_vars=iv,

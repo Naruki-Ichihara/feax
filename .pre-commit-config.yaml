@@ -1,0 +1,16 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+
+  - repo: local
+    hooks:
+      - id: no-pypi-tokens
+        name: Check for PyPI API tokens
+        entry: '(?i)(pypi-[A-Za-z0-9_]{10,})'
+        language: pygrep
+        types: [text]
+        exclude: '\.pre-commit-config\.yaml$'

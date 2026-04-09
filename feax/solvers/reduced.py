@@ -72,7 +72,7 @@ def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options
 
         x0 = np.zeros(P.shape[1])
         sol_reduced = fwd_linear_solve_fn(J_reduced_matvec, -res_reduced, x0)
-        sol_full = P @ sol_reduced
+        sol_full = initial_guess_full + P @ sol_reduced
         return sol_full, None
 
     @jax.custom_vjp
@@ -86,8 +86,8 @@ def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options
     def f_bwd(res, v):
         internal_vars, sol, initial_guess, effective_bc = res
 
-        u_total = sol + initial_guess
-        J_full = J_bc_parametric(u_total, internal_vars, effective_bc)
+        # sol already includes initial_guess (total solution)
+        J_full = J_bc_parametric(sol, internal_vars, effective_bc)
         rhs_reduced = P.T @ v
 
         def adjoint_matvec(adjoint_reduced):
@@ -101,7 +101,7 @@ def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options
         adjoint_full = P @ adjoint_reduced
 
         # VJP of residual w.r.t. internal_vars and bc
-        u_total_list = problem.unflatten_fn_sol_list(u_total)
+        u_total_list = problem.unflatten_fn_sol_list(sol)
         adjoint_list = problem.unflatten_fn_sol_list(adjoint_full)
 
         def res_fn(iv, bc_arg):

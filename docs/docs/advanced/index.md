@@ -11,4 +11,5 @@ This section covers advanced topics in FEAX for specialized applications.
 - **[Third Medium Contact](third_medium_contact.md)** - Frictionless contact via the third-medium method with HuHu-LuLu biharmonic regularization, incremental loading, and non-symmetric BC elimination.
 - **[Cahn-Hilliard Phase Separation](cahn_hilliard.md)** - Transient spinodal decomposition using mixed formulation, backward Euler time integration, and the `ImplicitPipeline` time-stepping interface.
 - **[Batched Topology Optimization with Surface Loads](batched_topology_optimization.md)** - Multi-load topology optimization using `jax.vmap` to vectorize FE solves, SIREN density fields, and gradient-based updates across 10 load cases in parallel.
+- **[Thermomechanical Topology Optimization](thermomechanical_topology_optimization.md)** - Multi-physics topology optimization coupling thermal and mechanical solvers via `InternalVars`. Demonstrates passing a solved temperature field as thermal strain input to the mechanical problem, with full gradient propagation through both solver VJPs.
 
