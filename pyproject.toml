@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "feax"
-version = "0.5.0"
+version = "0.5.1"
 description = "A GPU-accelerated finite element analysis framework with JAX."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -40,7 +40,10 @@ dependencies = [
     "fenics-basix",
     "equinox",
     "optax",
-    "scikit-sparse"
+    "scikit-sparse",
+    "scikit-image",
+    "trimesh",
+    "pyvista",
 ]
 
 [project.optional-dependencies]

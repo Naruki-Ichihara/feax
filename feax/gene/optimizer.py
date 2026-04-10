@@ -137,36 +137,32 @@ class Pipeline(ABC):
 class Continuation:
     """Parameter that updates periodically during optimization.
 
-    At every ``update_every`` iterations the value is multiplied by
-    ``multiply_by`` (or incremented by ``add``), clamped between
-    ``initial`` and ``final``.
+    At every ``update_every`` iterations the value changes by ``step``:
 
-    Continuation values are passed as traced (not static) JAX
-    arguments, so updates do **not** trigger recompilation.
+    - ``step > 0``: additive, ``value = initial + step * n``
+    - ``step < 0``: additive (decreasing), ``value = initial + step * n``
+
+    The value is always clamped between ``initial`` and ``final``.
 
     Examples:
 
     ```python
-    # Heaviside beta: 1 -> 16, doubled every 40 iterations
-    Continuation(initial=1.0, final=16.0, update_every=40, multiply_by=2.0)
+    # Heaviside beta: 1 -> 8, +1 every 50 iterations
+    Continuation(initial=1.0, final=8.0, update_every=50, step=1.0)
 
     # SIMP penalty: 1 -> 3, +0.5 every 30 iterations
-    Continuation(initial=1.0, final=3.0, update_every=30, multiply_by=1.0, add=0.5)
+    Continuation(initial=1.0, final=3.0, update_every=30, step=0.5)
     ```
     """
     initial: float
     final: float
     update_every: int
-    multiply_by: float = 2.0
-    add: float = 0.0
+    step: float = 1.0
 
     def value_at(self, iteration: int) -> float:
         """Compute parameter value at a given iteration."""
-        n = iteration // self.update_every
-        if self.add != 0.0:
-            v = self.initial + self.add * n
-        else:
-            v = self.initial * (self.multiply_by ** n)
+        n = max(0, iteration // self.update_every)
+        v = self.initial + self.step * n
         if self.final >= self.initial:
             return min(v, self.final)
         return max(v, self.final)
@@ -372,8 +368,7 @@ def run(
     else:
         print("  Constraints  : none")
     for k, c in continuations.items():
-        label = (f"x{c.multiply_by}" if c.add == 0.0
-                 else f"+{c.add}")
+        label = f"+{c.step}"
         print(f"  Continuation : {k} ({c.initial} -> {c.final}, "
               f"{label} every {c.update_every} iter)")
     if adaptive:
@@ -393,7 +388,9 @@ def run(
             nonlocal iter_count
             rho = np.array(xx)
 
-            val, g = obj_and_grad(rho, **params)
+            # Convert params to JAX arrays to avoid JIT recompilation
+            jax_params = {k: np.float64(v) for k, v in params.items()}
+            val, g = obj_and_grad(rho, **jax_params)
             grad[:] = onp.array(g)
 
             iter_count += 1
@@ -401,7 +398,7 @@ def run(
             # Evaluate constraints for logging
             con_vals = {}
             for name, fn_jit, _, _, _ in compiled_constraints:
-                con_vals[name] = float(fn_jit(rho, **params))
+                con_vals[name] = float(fn_jit(rho, **jax_params))
 
             history['iteration'].append(iter_count)
             history['objective'].append(float(val))
@@ -439,8 +436,9 @@ def run(
             def _make_constraint(fn, gfn, tgt):
                 def _con(xx, grad):
                     rho = np.array(xx)
-                    grad[:] = onp.array(gfn(rho, **params))
-                    return float(fn(rho, **params)) - tgt
+                    jax_p = {k: np.float64(v) for k, v in params.items()}
+                    grad[:] = onp.array(gfn(rho, **jax_p))
+                    return float(fn(rho, **jax_p)) - tgt
                 return _con
 
             if ctype == 'le':
@@ -451,8 +449,9 @@ def run(
                 def _make_ge_constraint(fn, gfn, tgt):
                     def _con(xx, grad):
                         rho = np.array(xx)
-                        grad[:] = -onp.array(gfn(rho, **params))
-                        return -(float(fn(rho, **params)) - tgt)
+                        jax_p = {k: np.float64(v) for k, v in params.items()}
+                        grad[:] = -onp.array(gfn(rho, **jax_p))
+                        return -(float(fn(rho, **jax_p)) - tgt)
                     return _con
                 con_fn = _make_ge_constraint(fn_jit, grad_fn, target)
                 opt.add_inequality_constraint(con_fn, 1e-8)

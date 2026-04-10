@@ -74,6 +74,7 @@ class SDF(ABC):
         level: float = 0.0,
         padding: float = 0.0,
         watertight: bool = False,
+        smooth_iterations: int = 10,
     ) -> Tuple[onp.ndarray, onp.ndarray]:
         """Extract a triangle surface mesh via marching cubes.
 
@@ -93,6 +94,9 @@ class SDF(ABC):
             guarantee a watertight (manifold, closed) surface.
             Merges duplicate vertices, removes degenerate faces,
             fills holes, and fixes normals.  Requires ``trimesh``.
+        smooth_iterations : int
+            Number of Laplacian smoothing passes when ``watertight=True``
+            (default 10).  Set to 0 to disable smoothing.
 
         Returns
         -------
@@ -127,7 +131,7 @@ class SDF(ABC):
         faces = faces.astype(onp.int32)
 
         if watertight:
-            verts, faces = _repair_watertight(verts, faces)
+            verts, faces = _repair_watertight(verts, faces, smooth_iterations)
 
         return verts, faces
 
@@ -139,6 +143,7 @@ class SDF(ABC):
         level: float = 0.0,
         padding: float = 0.0,
         watertight: bool = False,
+        smooth_iterations: int = 10,
     ) -> None:
         """Export the iso-surface as an STL file.
 
@@ -147,10 +152,134 @@ class SDF(ABC):
         verts, faces = self.to_mesh(
             resolution=resolution, bounds=bounds, level=level,
             padding=padding, watertight=watertight,
+            smooth_iterations=smooth_iterations,
         )
         mesh = meshio.Mesh(points=verts, cells=[("triangle", faces)])
         mesh.write(path)
         print(f"Saved STL: {path}  ({len(verts)} vertices, {len(faces)} faces)")
+
+    def to_volume_mesh(
+        self,
+        resolution: int = 80,
+        mesh_size: Optional[float] = None,
+        bounds: Optional[Tuple[onp.ndarray, onp.ndarray]] = None,
+        padding: float = 0.0,
+        element_type: str = 'TET4',
+    ) -> 'Mesh':
+        """Extract a volumetric FE mesh via marching cubes + Gmsh remeshing.
+
+        Pipeline: SDF → marching cubes surface → STL → Gmsh volume mesh.
+
+        Parameters
+        ----------
+        resolution : int
+            Grid resolution for marching cubes surface extraction.
+        mesh_size : float, optional
+            Target element size for Gmsh. Defaults to
+            ``diagonal / resolution``.
+        bounds : (lower, upper), optional
+            Bounding box. Defaults to the SDF's own bounds.
+        padding : float
+            Extra padding around bounds for marching cubes.
+        element_type : str
+            Target element type: ``'TET4'`` (default) or ``'TET10'``.
+
+        Returns
+        -------
+        feax.Mesh
+            Volumetric finite element mesh.
+
+        Raises
+        ------
+        ImportError
+            If ``gmsh`` is not available.
+        RuntimeError
+            If Gmsh fails to generate the volume mesh.
+        """
+        import tempfile
+
+        try:
+            import gmsh
+        except ImportError:
+            raise ImportError(
+                "to_volume_mesh() requires gmsh. "
+                "Install with: pip install gmsh"
+            )
+        from feax.mesh import Mesh
+
+        # Step 1: extract watertight surface
+        verts, faces = self.to_mesh(
+            resolution=resolution, bounds=bounds,
+            padding=padding, watertight=True,
+        )
+
+        # Step 2: write temporary STL
+        with tempfile.NamedTemporaryFile(suffix='.stl', delete=False) as f:
+            stl_path = f.name
+        stl_mesh = meshio.Mesh(points=verts, cells=[("triangle", faces)])
+        stl_mesh.write(stl_path)
+
+        # Step 3: Gmsh remesh
+        if bounds is None:
+            bounds = self._default_bounds()
+        lo = onp.asarray(bounds[0])
+        hi = onp.asarray(bounds[1])
+        diag = float(onp.linalg.norm(hi - lo))
+        if mesh_size is None:
+            mesh_size = diag / resolution * 2.0
+
+        gmsh.initialize()
+        gmsh.option.setNumber("General.Verbosity", 1)
+        gmsh.merge(stl_path)
+
+        gmsh.model.mesh.createTopology()
+        gmsh.model.mesh.classifySurfaces(
+            angle=40 * 3.14159265 / 180,
+            boundary=True,
+            forceParametrizablePatches=True,
+        )
+        gmsh.model.mesh.createGeometry()
+
+        surfaces = gmsh.model.getEntities(2)
+        if not surfaces:
+            gmsh.finalize()
+            import os
+            os.unlink(stl_path)
+            raise RuntimeError(
+                "Gmsh could not create surfaces from STL. "
+                "Try increasing resolution or enabling watertight repair."
+            )
+
+        loop = gmsh.model.geo.addSurfaceLoop([s[1] for s in surfaces])
+        gmsh.model.geo.addVolume([loop])
+        gmsh.model.geo.synchronize()
+
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", mesh_size * 0.5)
+        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size)
+
+        if element_type == 'TET10':
+            gmsh.option.setNumber("Mesh.ElementOrder", 2)
+
+        gmsh.model.mesh.generate(3)
+
+        with tempfile.NamedTemporaryFile(suffix='.msh', delete=False) as f:
+            msh_path = f.name
+        gmsh.write(msh_path)
+        gmsh.finalize()
+
+        # Step 4: read back as feax Mesh
+        msh_data = meshio.read(msh_path)
+        result_mesh = Mesh.from_gmsh(msh_data, element_type=element_type)
+
+        # Cleanup temp files
+        import os
+        os.unlink(stl_path)
+        os.unlink(msh_path)
+
+        print(f"Volume mesh: {result_mesh.points.shape[0]} nodes, "
+              f"{result_mesh.cells.shape[0]} elements ({element_type})")
+
+        return result_mesh
 
     # -- Internal helpers ----------------------------------------------------
 
@@ -164,7 +293,7 @@ class SDF(ABC):
 # Watertight mesh repair
 # ---------------------------------------------------------------------------
 
-def _repair_watertight(verts, faces):
+def _repair_watertight(verts, faces, smooth_iterations=10):
     """Post-process a triangle mesh to guarantee watertight (manifold) output.
 
     Pipeline:
@@ -173,8 +302,17 @@ def _repair_watertight(verts, faces):
     3. Fill holes
     4. Fix face winding for consistent outward normals
     5. Split into connected components and keep only the largest
+    6. Laplacian smoothing to remove marching-cubes staircase artefacts
 
     Requires the ``trimesh`` package.
+
+    Parameters
+    ----------
+    verts : ndarray (V, 3)
+    faces : ndarray (F, 3)
+    smooth_iterations : int
+        Number of Laplacian smoothing passes (default 10).
+        Set to 0 to disable.
 
     Returns
     -------
@@ -207,10 +345,13 @@ def _repair_watertight(verts, faces):
     components = mesh.split(only_watertight=False)
     if len(components) > 1:
         largest = max(components, key=lambda c: c.area)
-        # Re-apply hole filling on the largest component
         trimesh.repair.fill_holes(largest)
         trimesh.repair.fix_normals(largest)
         mesh = largest
+
+    # 5. Laplacian smoothing
+    if smooth_iterations > 0:
+        trimesh.smoothing.filter_laplacian(mesh, iterations=smooth_iterations)
 
     if mesh.is_watertight:
         print(f"  Watertight: OK  (Euler χ={mesh.euler_number})")
@@ -419,17 +560,37 @@ class DensityField(SDF):
         if self._n_candidates == 1:
             cands = [cands]
 
+        best_xi = None
+        best_ei = None
+        best_dist = onp.inf  # distance from ref element interior
+
         for ei in cands:
             xi = self._inverse_map_single(p, ei)
-            if xi is not None and _inside_ref_element(xi, self._basix_ele):
-                # Shape functions in basix order, density in basix order
+            if xi is None:
+                continue
+            if _inside_ref_element(xi, self._basix_ele):
                 N = self._shape_vals_at(xi)
                 node_vals = self._rho[self._cells[ei][self._re_order]]
                 return float(N @ node_vals)
+            # Track the closest near-miss for fallback interpolation
+            dist = self._ref_element_distance(xi)
+            if dist < best_dist:
+                best_dist = dist
+                best_xi = xi
+                best_ei = ei
 
-        # Point is outside the mesh
+        # No exact hit — use the closest element if Newton converged nearby
+        if best_xi is not None and best_dist < 0.5:
+            xi_clamped = self._clamp_to_ref(best_xi)
+            N = self._shape_vals_at(xi_clamped)
+            node_vals = self._rho[self._cells[best_ei][self._re_order]]
+            return float(N @ node_vals)
+
+        # Truly outside the mesh
         if self._close_boundary:
-            return 0.0  # void → SDF = threshold > 0 → surface closes
+            margin = (self._hi - self._lo) * 0.01
+            if onp.any(p < self._lo - margin) or onp.any(p > self._hi + margin):
+                return 0.0
         _, ni = self._node_tree.query(p)
         return float(self._rho[ni])
 
@@ -484,6 +645,25 @@ class DensityField(SDF):
         tab = self._element.tabulate(0, xi.reshape(1, -1))
         return tab[0, 0, :, 0]  # basix order
 
+    def _ref_element_distance(self, xi):
+        """Distance of reference coords from the interior of the ref element."""
+        if self._basix_ele in _SIMPLEX_TYPES:
+            d = max(0.0, -xi.min(), xi.sum() - 1.0)
+        else:
+            d = max(0.0, -xi.min(), (xi - 1.0).max())
+        return float(d)
+
+    def _clamp_to_ref(self, xi):
+        """Clamp reference coordinates to the ref element boundary."""
+        if self._basix_ele in _SIMPLEX_TYPES:
+            xi = onp.clip(xi, 0.0, None)
+            s = xi.sum()
+            if s > 1.0:
+                xi = xi / s
+        else:
+            xi = onp.clip(xi, 0.0, 1.0)
+        return xi
+
     # -- Vectorised evaluation -----------------------------------------------
 
     def evaluate(self, points: onp.ndarray) -> onp.ndarray:
@@ -504,6 +684,10 @@ class DensityField(SDF):
             cand_all = cand_all[:, None]
 
         densities = onp.full(n_query, onp.nan)
+        # Track best near-miss per point for fallback interpolation
+        best_dist = onp.full(n_query, onp.inf)
+        best_xi = onp.zeros((n_query, dim))
+        best_ei = onp.zeros(n_query, dtype=onp.intp)
 
         for k in range(self._n_candidates):
             mask = onp.isnan(densities)
@@ -524,23 +708,62 @@ class DensityField(SDF):
             hit_ei = ei[inside]
             hit_xi = xi_batch[inside]
 
-            if len(hit) == 0:
-                continue
+            if len(hit) > 0:
+                N_batch = self._shape_vals_batch(hit_xi)
+                node_vals = self._rho[self._cells[hit_ei][:, self._re_order]]
+                densities[hit] = onp.einsum('hj,hj->h', N_batch, node_vals)
 
-            # --- Batch shape function evaluation & interpolation ---
-            N_batch = self._shape_vals_batch(hit_xi)  # (H, nodes) basix order
-            # Gather density values in basix order: (H, nodes)
-            node_vals = self._rho[self._cells[hit_ei][:, self._re_order]]
-            densities[hit] = onp.einsum('hj,hj->h', N_batch, node_vals)
+            # Update best near-miss for points that didn't hit
+            miss = idx[~inside]
+            if len(miss) > 0:
+                miss_xi = xi_batch[~inside]
+                miss_ei = ei[~inside]
+                if self._basix_ele in _SIMPLEX_TYPES:
+                    d = onp.maximum(0.0, onp.maximum(-miss_xi.min(axis=1),
+                                                      miss_xi.sum(axis=1) - 1.0))
+                else:
+                    d = onp.maximum(0.0, onp.maximum(-miss_xi.min(axis=1),
+                                                      (miss_xi - 1.0).max(axis=1)))
+                better = d < best_dist[miss]
+                upd = miss[better]
+                best_dist[upd] = d[better]
+                best_xi[upd] = miss_xi[better]
+                best_ei[upd] = miss_ei[better]
 
-        # Points outside the mesh
+        # Fallback: use clamped shape-function interpolation for near-misses
         remaining = onp.isnan(densities)
         if remaining.any():
-            if self._close_boundary:
-                densities[remaining] = 0.0  # void → surface closes
-            else:
-                _, ni = self._node_tree.query(points[remaining])
-                densities[remaining] = self._rho[ni]
+            rem_idx = onp.where(remaining)[0]
+            close = best_dist[rem_idx] < 0.5
+            close_idx = rem_idx[close]
+            far_idx = rem_idx[~close]
+
+            if len(close_idx) > 0:
+                xi_cl = best_xi[close_idx]
+                ei_cl = best_ei[close_idx]
+                if self._basix_ele in _SIMPLEX_TYPES:
+                    xi_cl = onp.clip(xi_cl, 0.0, None)
+                    s = xi_cl.sum(axis=1, keepdims=True)
+                    xi_cl = onp.where(s > 1.0, xi_cl / s, xi_cl)
+                else:
+                    xi_cl = onp.clip(xi_cl, 0.0, 1.0)
+                N_batch = self._shape_vals_batch(xi_cl)
+                node_vals = self._rho[self._cells[ei_cl][:, self._re_order]]
+                densities[close_idx] = onp.einsum('hj,hj->h', N_batch, node_vals)
+
+            if len(far_idx) > 0:
+                far_pts = points[far_idx]
+                if self._close_boundary:
+                    margin = (self._hi - self._lo) * 0.01
+                    outside = (onp.any(far_pts < self._lo - margin, axis=1)
+                               | onp.any(far_pts > self._hi + margin, axis=1))
+                    _, ni = self._node_tree.query(far_pts)
+                    vals = self._rho[ni]
+                    vals[outside] = 0.0
+                    densities[far_idx] = vals
+                else:
+                    _, ni = self._node_tree.query(far_pts)
+                    densities[far_idx] = self._rho[ni]
 
         return self._threshold - densities
 

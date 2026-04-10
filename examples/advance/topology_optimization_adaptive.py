@@ -120,7 +120,7 @@ result = run(
     max_iter=300,
     continuations={
         "beta": Continuation(initial=1.0, final=16.0, update_every=20,
-                             multiply_by=2.0),
+                             step=3.0),
     },
     adaptive=AdaptiveConfig(
         remesh=lambda m, rho: gene.adaptive.adaptive_mesh(

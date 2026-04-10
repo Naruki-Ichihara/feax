@@ -45,13 +45,13 @@ T_ref = 293.            # reference (stress-free) temperature [K]
 T_cold = 20.            # bottom plate: liquid hydrogen, 20 K (-253 C)
 T_hot = 293.            # top plate: room temperature, 293 K (20 C)
 
-traction_z = 0.1        # tensile traction on top face (inner wall pulls outward)
+traction_z = 0.001        # tensile traction on top face (inner wall pulls outward)
 
 w_mech = 1.0
 w_therm = 1.0
 
 vol_frac = 0.3
-mesh_n = 20
+mesh_n = 30
 filter_radius = 0.15
 tol = 1e-6
 
@@ -98,8 +98,18 @@ class ThermomechOpt(Pipeline):
             mesh=mesh, vec=1, dim=3, ele_type='HEX8', location_fns=[])
 
         # ── Dirichlet BCs ──────────────────────────────────────────────
+        # Bottom: z-fixed (free in-plane), corner pins for rigid body
+        origin = lambda pt: (np.isclose(pt[0], 0., atol=tol)
+                             & np.isclose(pt[1], 0., atol=tol)
+                             & np.isclose(pt[2], 0., atol=tol))
+        corner_x = lambda pt: (np.isclose(pt[0], L, atol=tol)
+                               & np.isclose(pt[1], 0., atol=tol)
+                               & np.isclose(pt[2], 0., atol=tol))
         bc_mech = fe.DCboundary.DirichletBCConfig([
-            fe.DCboundary.DirichletBCSpec(location=bottom, component="all", value=0.),
+            fe.DCboundary.DirichletBCSpec(location=bottom, component="z", value=0.),
+            fe.DCboundary.DirichletBCSpec(location=origin, component="x", value=0.),
+            fe.DCboundary.DirichletBCSpec(location=origin, component="y", value=0.),
+            fe.DCboundary.DirichletBCSpec(location=corner_x, component="y", value=0.),
         ]).create_bc(prob_mech)
 
         bc_therm = fe.DCboundary.DirichletBCConfig([
@@ -203,8 +213,8 @@ result = run(
     rho_init=rho0,
     max_iter=300,
     continuations={
-        "beta": Continuation(initial=1.0, final=8.0, update_every=50,
-                             multiply_by=1.0, add=1.0),
+        "beta": Continuation(initial=1.0, final=4.0, update_every=50,
+                             step=1.0),
     },
     output_dir=output_dir,
     save_every=5,
@@ -232,5 +242,134 @@ try:
 except ImportError:
     pass
 
-print(f"\nFinal VTU: {output_dir}/final.vtu")
+# ── Surface & volume mesh extraction ───────────────────────────────────────
+
+print("\nExtracting surface mesh ...")
+surface = gene.extract_surface(result.rho_filtered, result.mesh, threshold=0.5)
+stl_path = os.path.join(output_dir, "optimized.stl")
+surface.save(stl_path)
+print(f"  Saved: {stl_path}  ({surface.n_points} vertices, {surface.n_cells} faces, "
+      f"manifold={surface.is_manifold})")
+
+print("\nRemeshing optimised geometry ...")
+remesh = gene.extract_volume_mesh(
+    result.rho_filtered, result.mesh, threshold=0.5, mesh_size=L / (mesh_n))
+
+# ── Re-solve on the clean mesh ─────────────────────────────────────────────
+
+bottom_r = lambda pt: np.isclose(pt[2], 0., atol=tol)
+top_r = lambda pt: np.isclose(pt[2], L, atol=tol)
+
+# Thermal
+prob_therm_r = ThermalProblem(
+    mesh=remesh, vec=1, dim=3, ele_type='TET4', location_fns=[])
+bc_therm_r = fe.DCboundary.DirichletBCConfig([
+    fe.DCboundary.DirichletBCSpec(location=bottom_r, component="all", value=T_cold),
+    fe.DCboundary.DirichletBCSpec(location=top_r, component="all", value=T_hot),
+]).create_bc(prob_therm_r)
+
+# Full density (solid structure after remesh)
+rho_solid = np.ones(remesh.points.shape[0])
+iv_therm_r = fe.InternalVars(volume_vars=(rho_solid,))
+
+solver_opts_r = fe.DirectSolverOptions()
+solver_therm_r = fe.create_solver(
+    prob_therm_r, bc_therm_r, solver_options=solver_opts_r,
+    adjoint_solver_options=solver_opts_r,
+    iter_num=1, internal_vars=iv_therm_r)
+
+init_therm_r = fe.zero_like_initial_guess(prob_therm_r, bc_therm_r)
+sol_therm_r = solver_therm_r(iv_therm_r, init_therm_r)
+T_field_r = onp.array(sol_therm_r).reshape(-1)
+print(f"  T range: {T_field_r.min():.1f} K .. {T_field_r.max():.1f} K")
+
+# Mechanical (with solved T field) — same BCs as optimisation
+prob_mech_r = MechanicalProblem(
+    mesh=remesh, vec=3, dim=3, ele_type='TET4', location_fns=[top_r])
+import numpy as _onp
+pts_r = _onp.asarray(remesh.points)
+bottom_idx = _onp.where(_onp.isclose(pts_r[:, 2], 0., atol=tol))[0]
+pin1_idx = bottom_idx[_onp.argmin(pts_r[bottom_idx, 0])]
+pin2_idx = bottom_idx[_onp.argmax(pts_r[bottom_idx, 0])]
+pin1_x, pin1_y, pin1_z = float(pts_r[pin1_idx, 0]), float(pts_r[pin1_idx, 1]), float(pts_r[pin1_idx, 2])
+pin2_x, pin2_y, pin2_z = float(pts_r[pin2_idx, 0]), float(pts_r[pin2_idx, 1]), float(pts_r[pin2_idx, 2])
+pin1_fn = lambda pt: (np.isclose(pt[0], pin1_x, atol=tol)
+                      & np.isclose(pt[1], pin1_y, atol=tol)
+                      & np.isclose(pt[2], pin1_z, atol=tol))
+pin2_fn = lambda pt: (np.isclose(pt[0], pin2_x, atol=tol)
+                      & np.isclose(pt[1], pin2_y, atol=tol)
+                      & np.isclose(pt[2], pin2_z, atol=tol))
+bc_mech_r = fe.DCboundary.DirichletBCConfig([
+    fe.DCboundary.DirichletBCSpec(location=bottom_r, component="z", value=0.),
+    fe.DCboundary.DirichletBCSpec(location=pin1_fn, component="x", value=0.),
+    fe.DCboundary.DirichletBCSpec(location=pin1_fn, component="y", value=0.),
+    fe.DCboundary.DirichletBCSpec(location=pin2_fn, component="y", value=0.),
+]).create_bc(prob_mech_r)
+
+iv_mech_r = fe.InternalVars(
+    volume_vars=(rho_solid, np.array(T_field_r)))
+solver_mech_r = fe.create_solver(
+    prob_mech_r, bc_mech_r, solver_options=solver_opts_r,
+    adjoint_solver_options=solver_opts_r,
+    iter_num=1, internal_vars=iv_mech_r)
+
+init_mech_r = fe.zero_like_initial_guess(prob_mech_r, bc_mech_r)
+sol_mech_r = solver_mech_r(iv_mech_r, init_mech_r)
+
+# ── Compute stress & strain at nodes ───────────────────────────────────────
+
+print("  Computing stress and strain fields ...")
+
+num_nodes_r = remesh.points.shape[0]
+u_r = onp.array(sol_mech_r).reshape(num_nodes_r, 3)
+
+fe0 = prob_mech_r.fes[0]
+shape_grads = onp.array(fe0.shape_grads)   # (C, Q, N, 3)
+shape_vals = onp.array(fe0.shape_vals)     # (Q, N)
+cells_r = onp.array(fe0.cells)
+
+# Displacement gradient at centroids (average over quad points)
+u_cell = u_r[cells_r]                                          # (C, N, 3)
+u_grads = onp.einsum('cqnd,cnv->cqvd', shape_grads, u_cell)   # (C, Q, 3, 3)
+u_grad_avg = u_grads.mean(axis=1)                              # (C, 3, 3)
+
+# Temperature at centroids
+T_cell = T_field_r[cells_r]                                    # (C, N)
+T_avg = onp.einsum('qn,cn->c', onp.array(shape_vals), T_cell) / shape_vals.shape[0]
+
+# Strain and stress per element
+eps_all = 0.5 * (u_grad_avg + onp.transpose(u_grad_avg, (0, 2, 1)))
+eps_th_all = alpha_cte * (T_avg - T_ref)
+eps_mech_all = eps_all - eps_th_all[:, None, None] * onp.eye(3)[None, :, :]
+
+lmbda_solid = E0 * nu_val / ((1 + nu_val) * (1 - 2 * nu_val))
+mu_solid = E0 / (2. * (1. + nu_val))
+sigma_all = (lmbda_solid * onp.trace(eps_mech_all, axis1=1, axis2=2)[:, None, None]
+             * onp.eye(3)[None, :, :] + 2 * mu_solid * eps_mech_all)
+
+# Von Mises stress
+s_dev = sigma_all - onp.trace(sigma_all, axis1=1, axis2=2)[:, None, None] / 3 * onp.eye(3)
+von_mises = onp.sqrt(1.5 * onp.einsum('cij,cij->c', s_dev, s_dev))
+
+print(f"  Von Mises: min={von_mises.min():.4e}, max={von_mises.max():.4e}")
+
+# ── Save results ───────────────────────────────────────────────────────────
+
+result_vtu = os.path.join(output_dir, "remeshed_result.vtu")
+fe.utils.save_sol(
+    mesh=remesh,
+    sol_file=result_vtu,
+    point_infos=[
+        ("displacement", onp.array(u_r)),
+        ("temperature", T_field_r),
+    ],
+    cell_infos=[
+        ("von_mises", von_mises),
+        ("stress", sigma_all.reshape(-1, 9)),
+        ("strain", eps_all.reshape(-1, 9)),
+        ("strain_mechanical", eps_mech_all.reshape(-1, 9)),
+    ],
+)
+print(f"\nSaved: {result_vtu}")
+print(f"Final VTU: {output_dir}/final.vtu")
 print("Done.")

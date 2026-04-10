@@ -47,8 +47,10 @@ Example:
 """
 
 from . import adaptive
+from . import mesh_extraction
 from . import optimizer
 from . import sdf
+from .mesh_extraction import extract_surface, extract_volume_mesh
 from .filters import (
     create_density_filter,
     create_helmholtz_filter,
@@ -81,6 +83,11 @@ __all__ = [
     'DensityField',
     'from_opt_result',
     'from_vtk',
+
+    # Mesh extraction (pyvista)
+    'mesh_extraction',
+    'extract_surface',
+    'extract_volume_mesh',
 
     # Adaptive remeshing
     'adaptive',

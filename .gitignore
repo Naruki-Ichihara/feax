@@ -12,6 +12,7 @@ distributed.yml
 *.xplane.pb
 examples/private/
 output_adaptive/
+output_thermomech_opt/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
