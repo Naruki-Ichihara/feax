@@ -104,6 +104,23 @@ pip install feax[cuda13]
 pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
 ```
 
+### Optional: scikit-sparse (CPU host-side direct solvers)
+
+The `cholmod` / `umfpack` direct solvers require [scikit-sparse](https://github.com/scikit-sparse/scikit-sparse), which depends on SuiteSparse ≥ 7.4.0. Without it, `DirectSolverOptions()` falls back to `spsolve` on CPU (or `cudss` on GPU).
+
+```bash
+# Ubuntu 24.04+ (system SuiteSparse is recent enough)
+apt-get install -y libsuitesparse-dev
+pip install feax[sksparse]
+```
+
+For Ubuntu 22.04 / Google Colab, the system `libsuitesparse-dev` is too old (5.10.1). Build SuiteSparse from source via the bundled helper:
+
+```bash
+bash scripts/colab_install_suitesparse.sh
+pip install feax[sksparse]
+```
+
 ## License
 
 FEAX is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for the full license text.

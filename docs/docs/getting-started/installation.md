@@ -81,7 +81,20 @@ FEAX provides optional dependency groups via `pyproject.toml`:
 | `.[cuda12]` | JAX (cuda12) + cuDSS for CUDA 12 | GPU acceleration (CUDA 12) |
 | `.[cuda13]` | cuDSS + cuBLAS + cuDNN for CUDA 13 | GPU acceleration (CUDA 13, without JAX) |
 | `.[jax]` | `jax[cuda13]` | JAX for CUDA 13 (use with `cuda13`) |
+| `.[sksparse]` | `scikit-sparse` | CPU host-side direct solvers (`cholmod`, `umfpack`) |
 | `.[dev]` | pytest, black, ruff, mypy | Development and testing |
+
+### scikit-sparse (Optional)
+
+The `cholmod` and `umfpack` direct solvers wrap [scikit-sparse](https://github.com/scikit-sparse/scikit-sparse), which compiles against the SuiteSparse C library. Without it, `DirectSolverOptions()` (auto) falls back to JAX's `spsolve` on CPU or `cudss` on GPU — no functionality is lost for typical use.
+
+To enable `cholmod` / `umfpack`, install the system library first, then the extra:
+
+```bash
+# Debian / Ubuntu / Google Colab
+apt-get install -y libsuitesparse-dev
+pip install feax[sksparse]
+```
 
 For GPU use outside Docker, combine `cuda13` with `jax`:
 
@@ -204,6 +217,17 @@ In a Colab notebook cell, first install system dependencies for gmsh:
 !apt install -y libglu1 libxcursor-dev libxft2 libxinerama1 libfltk1.3-dev libfreetype6-dev libgl1-mesa-dev libocct-foundation-dev libocct-data-exchange-dev
 !pip install feax
 ```
+
+> **Note:** `scikit-sparse` is **not** installed by default. The default direct solver auto-selection falls back to `spsolve`/`cudss`, which is sufficient for most workflows.
+>
+> To opt in to `cholmod` / `umfpack`, scikit-sparse 0.5.0 requires SuiteSparse ≥ 7.4.0. Colab's `apt install libsuitesparse-dev` provides only 5.10.1 (Ubuntu 22.04), so the system package is too old. Use the bundled helper to build SuiteSparse 7.x from source (~5–8 min on Colab):
+>
+> ```python
+> !curl -fsSL https://raw.githubusercontent.com/Naruki-Ichihara/feax/main/scripts/colab_install_suitesparse.sh | bash
+> !pip install feax[sksparse]
+> ```
+>
+> The script disables CUDA in CHOLMOD (`SUITESPARSE_USE_CUDA=OFF`) to avoid an `nvcc compute_52` build failure on Colab GPU runtimes.
 
 ### With GPU Support
 

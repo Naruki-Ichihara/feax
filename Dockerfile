@@ -14,7 +14,7 @@ WORKDIR /workspace
 # Install feax with CUDA dependencies.
 # JAX is intentionally not reinstalled here: the NVCR base image already ships
 # JAX compiled for CUDA 13.1.1. Use pip install .[cuda13,jax] outside containers.
-RUN pip install .[cuda13]
+RUN pip install .[cuda13,sksparse]
 RUN pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
 
 # Optional: Node.js 20 + pydoc-markdown + Docusaurus dependencies

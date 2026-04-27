@@ -125,13 +125,17 @@ def detect_available_solver_backends(solver: str = "auto") -> tuple[str, ...]:
             if backend != "cpu":
                 raise RuntimeError("cholmod is only enabled on the CPU")
             if not _has_cholmod():
-                raise RuntimeError("sksparse is not installed")
+                raise RuntimeError(
+                    "sksparse is not installed. Install with: pip install feax[sksparse]"
+                )
             return ("cholmod",)
         if solver == "umfpack":
             if backend != "cpu":
                 raise RuntimeError("umfpack is only enabled on the CPU")
             if not _has_umfpack():
-                raise RuntimeError("sksparse is not installed")
+                raise RuntimeError(
+                    "sksparse is not installed. Install with: pip install feax[sksparse]"
+                )
             return ("umfpack",)
         raise ValueError(
             f"Unknown direct solver '{solver}'. "

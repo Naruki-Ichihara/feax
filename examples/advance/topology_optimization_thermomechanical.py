@@ -2,7 +2,7 @@
 Topology optimization: stiffness maximisation vs thermal insulation.
 
 Physics:
-  - Mechanics: force-controlled compression + thermal stress from solved T field
+  - Mechanics: force-controlled tension + thermal stress from solved T field
   - Thermal:   steady-state conduction, bottom T=T_cold, top T=T_hot
 
 Energy densities:
@@ -13,7 +13,7 @@ Energy densities:
 Objective:  min  w_mech * compliance + w_therm * thermal_compliance
 
 BCs:
-  - Mechanics: bottom z=0 fixed, top z=L traction in -z
+  - Mechanics: bottom z=0 fixed, top z=L traction in +z
   - Thermal:   bottom T=T_cold, top T=T_hot
 """
 
@@ -45,7 +45,7 @@ T_ref = 293.            # reference (stress-free) temperature [K]
 T_cold = 20.            # bottom plate: liquid hydrogen, 20 K (-253 C)
 T_hot = 293.            # top plate: room temperature, 293 K (20 C)
 
-traction_z = 0.001        # tensile traction on top face (inner wall pulls outward)
+traction_z = 0.001        # tensile traction on top face (+z direction)
 
 w_mech = 1.0
 w_therm = 1.0

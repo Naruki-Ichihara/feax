@@ -28,11 +28,133 @@ The bottom face is fixed only in z, allowing free in-plane thermal expansion/con
 
 ### Objective
 
+Minimize a weighted sum of normalized mechanical and thermal compliances subject to a volume fraction equality constraint. See [Governing Equations](#governing-equations) for the full formulation.
+
+## Governing Equations
+
+### Thermal Problem — Steady-State Heat Conduction
+
 $$
-\min_\rho \quad w_\text{mech} \frac{C_\text{mech}}{C_\text{mech}^0} + w_\text{therm} \frac{C_\text{therm}}{C_\text{therm}^0}
+\nabla \cdot (\kappa \nabla T) = 0 \quad \text{in } \Omega
 $$
 
-where $C_\text{mech}$ is the mechanical compliance (external work) and $C_\text{therm} = \int \tfrac{1}{2}\kappa|\nabla T|^2\,dV$ is the thermal compliance. Both are normalised by their values at full density ($\rho = 1$).
+**Boundary conditions:**
+
+$$
+T = T_{\text{cold}} = 20\,\text{K} \quad \text{on } z = 0
+$$
+
+$$
+T = T_{\text{hot}} = 293\,\text{K} \quad \text{on } z = L
+$$
+
+The thermal conductivity is interpolated via SIMP:
+
+$$
+\kappa(\rho) = \kappa_\varepsilon + (\kappa_0 - \kappa_\varepsilon)\,\rho^{p}
+$$
+
+The energy density used in the variational formulation is:
+
+$$
+\psi_{\text{therm}} = \frac{1}{2}\,\kappa\,|\nabla T|^2
+$$
+
+### Mechanical Problem — Linear Elasticity with Thermal Stress
+
+$$
+\nabla \cdot \boldsymbol{\sigma} = \mathbf{0} \quad \text{in } \Omega
+$$
+
+**Constitutive law (isotropic Hooke's law on mechanical strain):**
+
+$$
+\boldsymbol{\sigma} = \lambda\,\text{tr}(\boldsymbol{\varepsilon}_m)\,\mathbf{I} + 2\mu\,\boldsymbol{\varepsilon}_m
+$$
+
+**Strain decomposition:**
+
+$$
+\boldsymbol{\varepsilon} = \frac{1}{2}\left(\nabla\mathbf{u} + \nabla\mathbf{u}^T\right)
+$$
+
+$$
+\boldsymbol{\varepsilon}_{th} = \alpha\,(T - T_{\text{ref}})\,\mathbf{I}
+$$
+
+$$
+\boldsymbol{\varepsilon}_m = \boldsymbol{\varepsilon} - \boldsymbol{\varepsilon}_{th}
+$$
+
+where $\alpha$ is the coefficient of thermal expansion (CTE) and $T_{\text{ref}}$ is the stress-free reference temperature.
+
+**SIMP-interpolated elastic constants:**
+
+$$
+E(\rho) = E_\varepsilon + (E_0 - E_\varepsilon)\,\rho^{p}
+$$
+
+$$
+\mu = \frac{E}{2(1+\nu)}, \qquad \lambda = \frac{E\nu}{(1+\nu)(1-2\nu)}
+$$
+
+**Energy density:**
+
+$$
+\psi_{\text{mech}} = \frac{1}{2}\left[\lambda\,(\text{tr}\,\boldsymbol{\varepsilon}_m)^2 + 2\mu\,(\boldsymbol{\varepsilon}_m : \boldsymbol{\varepsilon}_m)\right]
+$$
+
+**Boundary conditions:**
+
+$$
+u_z = 0 \quad \text{on } z = 0 \quad \text{(bottom face, free in-plane)}
+$$
+
+$$
+\boldsymbol{\sigma}\cdot\mathbf{n} = (0,\;0,\;t_z)^T \quad \text{on } z = L \quad \text{(top face, tensile)}
+$$
+
+Additional pin constraints remove rigid-body modes:
+
+| Location | Constrained DOFs | Purpose |
+|---|---|---|
+| Origin $(0, 0, 0)$ | $u_x = 0,\; u_y = 0$ | Prevents in-plane translation |
+| Corner $(L, 0, 0)$ | $u_y = 0$ | Prevents rotation about z-axis |
+
+### Coupling Direction
+
+The thermal and mechanical problems are coupled in one direction (weak coupling):
+
+$$
+\rho \;\longrightarrow\; T(\rho) \;\longrightarrow\; \mathbf{u}(\rho,\, T)
+$$
+
+The temperature field affects the mechanical problem through thermal strain $\boldsymbol{\varepsilon}_{th}$, but deformation does not affect the temperature field.
+
+### Optimization Formulation
+
+$$
+\min_{\rho} \quad w_m \frac{C_m}{C_m^0} + w_t \frac{C_t}{C_t^0}
+$$
+
+$$
+\text{s.t.} \quad \frac{\displaystyle\int_\Omega \bar{\rho}\,dV}{\displaystyle\int_\Omega dV} = v_f, \qquad 0 \le \rho \le 1
+$$
+
+where:
+
+- $C_m = \int_{\Gamma_t} \mathbf{t}\cdot\mathbf{u}\,dS$ — mechanical compliance (external work)
+- $C_t = \int_\Omega \frac{1}{2}\kappa|\nabla T|^2\,dV$ — thermal compliance (stored thermal energy)
+- $C_m^0,\,C_t^0$ — reference values at full density ($\rho = 1$) for normalization
+- $\bar{\rho} = H_\beta(\tilde{\rho})$ — physical density after density filtering and Heaviside projection
+
+### Post-Processing: Von Mises Stress
+
+After re-solving on the remeshed geometry, the von Mises stress is computed per element:
+
+$$
+\sigma_{\text{vM}} = \sqrt{\frac{3}{2}\,\mathbf{s}:\mathbf{s}}, \qquad \mathbf{s} = \boldsymbol{\sigma} - \frac{1}{3}\text{tr}(\boldsymbol{\sigma})\,\mathbf{I}
+$$
 
 ## Coupling via InternalVars
 

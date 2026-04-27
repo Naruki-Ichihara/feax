@@ -1,7 +1,23 @@
 {
   "permissions": {
     "allow": [
-      "Bash(nvidia-smi:*)"
+      "Bash(nvidia-smi:*)",
+      "Bash(pip list *)",
+      "Bash(PYTHONPATH=/tmp/blocksk python -c \"import sitecustomize; import importlib.util; print\\('hidden:', importlib.util.find_spec\\('sksparse'\\)\\)\")",
+      "Bash(PYTHONPATH=/tmp/blocksk python -m pytest tests/test_direct_vmap.py -q)",
+      "Read(//usr/lib/**)",
+      "Bash(dpkg -l libsuitesparse-dev)",
+      "Bash(cmake --version)",
+      "Bash(git clone *)",
+      "Bash(cmake -S /tmp/ss -B /tmp/ss/build -DCMAKE_INSTALL_PREFIX=/opt/ss-test '-DSUITESPARSE_ENABLE_PROJECTS=suitesparse_config;amd;camd;colamd;ccolamd;btf;cholmod;klu;umfpack;spqr' -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DBLA_VENDOR=OpenBLAS)",
+      "Bash(cmake -S /tmp/ss -B /tmp/ss/build -DCMAKE_INSTALL_PREFIX=/opt/ss-test '-DSUITESPARSE_ENABLE_PROJECTS=suitesparse_config;amd;camd;colamd;ccolamd;btf;cholmod;klu;umfpack;spqr' -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DSUITESPARSE_USE_CUDA=OFF -DBLA_VENDOR=OpenBLAS)",
+      "Bash(cmake --install /tmp/ss/build)",
+      "Read(//opt/ss-test/**)",
+      "Read(//opt/ss-test/include/**)",
+      "Bash(/tmp/sk-venv/bin/pip install *)",
+      "Bash(/tmp/sk-venv/bin/python -c 'import numpy, scipy; print\\(numpy.__version__, scipy.__version__\\)')",
+      "Bash(echo \"venv OK: $\\(/tmp/sk-venv/bin/python -c 'import numpy, scipy; print\\(numpy.__version__, scipy.__version__\\)'\\)\")",
+      "Bash(chmod +x /workspace/scripts/colab_install_suitesparse.sh)"
     ]
   }
 }
