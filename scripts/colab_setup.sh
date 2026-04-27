@@ -14,10 +14,18 @@
 #
 # After this script completes, install FEAX with one of:
 #   pip install git+https://github.com/Naruki-Ichihara/feax.git                                # CPU baseline
-#   pip install "feax[sksparse] @ git+https://github.com/Naruki-Ichihara/feax.git"             # + cholmod/umfpack
-#   pip install "feax[cuda13,sksparse] @ git+https://github.com/Naruki-Ichihara/feax.git"      # GPU
+#   SUITESPARSE_INCLUDE_DIR=/usr/local/include/suitesparse SUITESPARSE_LIBRARY_DIR=/usr/local/lib \
+#     pip install "feax[sksparse] @ git+https://github.com/Naruki-Ichihara/feax.git"           # + cholmod/umfpack
+#   SUITESPARSE_INCLUDE_DIR=/usr/local/include/suitesparse SUITESPARSE_LIBRARY_DIR=/usr/local/lib \
+#     pip install "feax[cuda13,sksparse] @ git+https://github.com/Naruki-Ichihara/feax.git"    # GPU
 # For the cuDSS direct solver also install spineax:
-#   pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
+#   CMAKE_ARGS="-DBUILD_PBATCH_SOLVE=OFF" \
+#     pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
+#
+# The SUITESPARSE_* env vars are needed because scikit-sparse's setup.py only
+# auto-searches /usr/include/suitesparse (the apt path); we install to /usr/local.
+# CMAKE_ARGS=-DBUILD_PBATCH_SOLVE=OFF works around a __cudaGetKernel link error
+# in spineax's optional pbatch_solve module on Colab GPU.
 #
 # Usage:
 #   bash scripts/colab_setup.sh

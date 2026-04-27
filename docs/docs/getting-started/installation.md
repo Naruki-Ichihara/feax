@@ -222,8 +222,12 @@ The setup step takes ~5–8 minutes on Colab (one-time, dominated by the SuiteSp
 > **Note:** `scikit-sparse` is **not** required — the default `DirectSolverOptions()` auto-selects `cudss` on GPU or `spsolve` on CPU. Once `colab_setup.sh` has run, you can opt in to `cholmod` / `umfpack` with:
 >
 > ```python
-> !pip install "feax[sksparse] @ git+https://github.com/Naruki-Ichihara/feax.git"
+> !SUITESPARSE_INCLUDE_DIR=/usr/local/include/suitesparse \
+>  SUITESPARSE_LIBRARY_DIR=/usr/local/lib \
+>  pip install "feax[sksparse] @ git+https://github.com/Naruki-Ichihara/feax.git"
 > ```
+>
+> The `SUITESPARSE_*` env vars point scikit-sparse's setup.py at the source-built SuiteSparse under `/usr/local` — its default search only covers `/usr/include/suitesparse` (the apt path).
 
 ### With GPU Support
 
@@ -231,13 +235,17 @@ Colab provides CUDA-enabled GPUs by default. Run the setup script, then install 
 
 ```python
 !curl -fsSL https://raw.githubusercontent.com/Naruki-Ichihara/feax/main/scripts/colab_setup.sh | bash
-!pip install "feax[cuda13,sksparse] @ git+https://github.com/Naruki-Ichihara/feax.git"
-!pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
+!SUITESPARSE_INCLUDE_DIR=/usr/local/include/suitesparse \
+ SUITESPARSE_LIBRARY_DIR=/usr/local/lib \
+ pip install "feax[cuda13,sksparse] @ git+https://github.com/Naruki-Ichihara/feax.git"
+!CMAKE_ARGS="-DBUILD_PBATCH_SOLVE=OFF" pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
 
 # Verify GPU is available
 import jax
 print(jax.devices())  # Should show GPU
 ```
+
+> **`BUILD_PBATCH_SOLVE=OFF`** is required because Colab's system CUDA toolkit does not match the pip-installed `nvidia-cudss-cu13`, which makes spineax's optional `pbatch_solve` module fail to link with `__cudaGetKernel` (see [spineax troubleshooting](https://github.com/johnviljoen/spineax#troubleshooting)). FEAX only uses single-batch cuDSS solves, so this flag has no functional impact.
 
 ## Verification
 
