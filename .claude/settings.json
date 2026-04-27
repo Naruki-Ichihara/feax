@@ -17,7 +17,9 @@
       "Bash(/tmp/sk-venv/bin/pip install *)",
       "Bash(/tmp/sk-venv/bin/python -c 'import numpy, scipy; print\\(numpy.__version__, scipy.__version__\\)')",
       "Bash(echo \"venv OK: $\\(/tmp/sk-venv/bin/python -c 'import numpy, scipy; print\\(numpy.__version__, scipy.__version__\\)'\\)\")",
-      "Bash(chmod +x /workspace/scripts/colab_install_suitesparse.sh)"
+      "Bash(chmod +x /workspace/scripts/colab_install_suitesparse.sh)",
+      "Bash(chmod +x /workspace/scripts/colab_setup.sh)",
+      "Bash(bash -n /workspace/scripts/colab_setup.sh)"
     ]
   }
 }

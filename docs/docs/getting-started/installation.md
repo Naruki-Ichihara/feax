@@ -210,33 +210,29 @@ You can use FEAX in Google Colab notebooks with free GPU/TPU access.
 
 ### Basic Setup
 
-In a Colab notebook cell, first install system dependencies for gmsh:
+In a Colab notebook cell, install system dependencies via the bundled helper script. It mirrors the [Dockerfile](https://github.com/Naruki-Ichihara/feax/blob/main/Dockerfile): installs gmsh + Python bindings, swig, NLopt, BLAS/LAPACK, gmsh runtime libraries, builds SuiteSparse 7.x from source (with `SUITESPARSE_USE_CUDA=OFF` to avoid an `nvcc compute_52` failure on Colab GPU), and installs the `nlopt` Python bindings:
 
 ```python
-!apt update
-!apt install -y libglu1 libxcursor-dev libxft2 libxinerama1 libfltk1.3-dev libfreetype6-dev libgl1-mesa-dev libocct-foundation-dev libocct-data-exchange-dev
-!pip install feax
+!curl -fsSL https://raw.githubusercontent.com/Naruki-Ichihara/feax/main/scripts/colab_setup.sh | bash
+!pip install git+https://github.com/Naruki-Ichihara/feax.git
 ```
 
-> **Note:** `scikit-sparse` is **not** installed by default. The default direct solver auto-selection falls back to `spsolve`/`cudss`, which is sufficient for most workflows.
->
-> To opt in to `cholmod` / `umfpack`, scikit-sparse 0.5.0 requires SuiteSparse ≥ 7.4.0. Colab's `apt install libsuitesparse-dev` provides only 5.10.1 (Ubuntu 22.04), so the system package is too old. Use the bundled helper to build SuiteSparse 7.x from source (~5–8 min on Colab):
+The setup step takes ~5–8 minutes on Colab (one-time, dominated by the SuiteSparse build).
+
+> **Note:** `scikit-sparse` is **not** required — the default `DirectSolverOptions()` auto-selects `cudss` on GPU or `spsolve` on CPU. Once `colab_setup.sh` has run, you can opt in to `cholmod` / `umfpack` with:
 >
 > ```python
-> !curl -fsSL https://raw.githubusercontent.com/Naruki-Ichihara/feax/main/scripts/colab_install_suitesparse.sh | bash
-> !pip install feax[sksparse]
+> !pip install "feax[sksparse] @ git+https://github.com/Naruki-Ichihara/feax.git"
 > ```
->
-> The script disables CUDA in CHOLMOD (`SUITESPARSE_USE_CUDA=OFF`) to avoid an `nvcc compute_52` build failure on Colab GPU runtimes.
 
 ### With GPU Support
 
-Colab provides CUDA-enabled GPUs by default. Install system dependencies and FEAX:
+Colab provides CUDA-enabled GPUs by default. Run the setup script, then install the GPU extras:
 
 ```python
-!apt update
-!apt install -y libglu1 libxcursor-dev libxft2 libxinerama1 libfltk1.3-dev libfreetype6-dev libgl1-mesa-dev libocct-foundation-dev libocct-data-exchange-dev
-!pip install feax
+!curl -fsSL https://raw.githubusercontent.com/Naruki-Ichihara/feax/main/scripts/colab_setup.sh | bash
+!pip install "feax[cuda13,sksparse] @ git+https://github.com/Naruki-Ichihara/feax.git"
+!pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
 
 # Verify GPU is available
 import jax

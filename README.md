@@ -114,10 +114,10 @@ apt-get install -y libsuitesparse-dev
 pip install feax[sksparse]
 ```
 
-For Ubuntu 22.04 / Google Colab, the system `libsuitesparse-dev` is too old (5.10.1). Build SuiteSparse from source via the bundled helper:
+For Ubuntu 22.04 / Google Colab, the system `libsuitesparse-dev` is too old (5.10.1). Use the bundled helper, which also installs gmsh, NLopt, and other system dependencies that match the Dockerfile:
 
 ```bash
-bash scripts/colab_install_suitesparse.sh
+bash scripts/colab_setup.sh
 pip install feax[sksparse]
 ```
 
