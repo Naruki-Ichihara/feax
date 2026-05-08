@@ -7,7 +7,7 @@ try:
     from importlib.metadata import PackageNotFoundError, version
     __version__ = version("feax")
 except (ImportError, PackageNotFoundError):
-    __version__ = "0.5.1"
+    __version__ = "0.5.2"
 
 # Main API
 from .assembler import create_J_bc_function, create_res_bc_function, get_jacobian_info, get_res
@@ -74,7 +74,7 @@ from .solvers.options import (
     resolve_direct_solver,
     resolve_iterative_solver,
 )
-from .utils import zero_like_initial_guess
+from .utils import zero_like_initial_guess, XDMFWriter
 from . import distributed
 from .profiler import (
     JaxprInfo,

@@ -52,7 +52,14 @@ class CachedBCOOToCSR:
         traced array.
         """
         # 1. Deduplicate and convert to CSR to obtain the sparsity structure.
-        A_dedup = A.sum_duplicates(nse=A.nse)   # sorted unique (row, col) indices
+        #    ``remove_zeros=False`` is critical: the sparsity pattern must be
+        #    determined by the (row, col) index set alone, not by which values
+        #    happen to be exactly zero at warmup time.  Otherwise positions
+        #    that are zero now but become nonzero later (e.g. von Karman
+        #    geometric-stiffness entries that vanish at the flat reference
+        #    state) would be missing from the cached CSR layout, and the
+        #    scatter-add step would route their values to the wrong slots.
+        A_dedup = A.sum_duplicates(nse=A.nse, remove_zeros=False)   # sorted unique (row, col) indices
         bcsr = jax.experimental.sparse.BCSR.from_bcoo(A_dedup)
         self._csr_indptr = bcsr.indptr
         self._csr_indices = bcsr.indices

@@ -26,6 +26,18 @@ from .options import NewtonOptions
 logger = logging.getLogger(__name__)
 
 
+class NewtonLineSearchError(RuntimeError):
+    """Raised when Armijo line search exhausts backtracks without a descent step.
+
+    A failed line search means the proposed Newton direction is not a
+    descent direction for the residual merit function ½‖r‖².  This is
+    almost always a symptom of an inconsistent Jacobian, a bad linear
+    solve, or a degenerate state, rather than a problem the line search
+    itself can recover from — so the Python-loop Newton path raises this
+    by default rather than silently truncating the iteration.
+    """
+
+
 def _ensure_verbose_logging():
     """Ensure the logger can emit INFO messages when verbose=True."""
     if logger.getEffectiveLevel() > logging.INFO:
@@ -533,7 +545,13 @@ def create_newton_solver(
             # concrete (non-traced) matrix indices. Without this, the first
             # call to jax.jit(linear_solve_fn) would trace through _warmup()
             # and hit TracerArrayConversionError on onp.asarray(A.indices).
-            from .common import prewarm_direct_solvers
+            #
+            # NOTE: do NOT do a local ``from .common import …`` here.  Python
+            # treats any name assigned in a function as local in *every*
+            # branch — a local import in this branch would shadow the
+            # top-level ``prewarm_direct_solvers`` import for the
+            # ``make_jittable=True`` branch below, raising
+            # ``UnboundLocalError``.  Use the module-level import instead.
             prewarm_direct_solvers(
                 problem=problem,
                 bc=bc,
@@ -731,7 +749,7 @@ def create_armijo_line_search_scan(res_bc_applied, c1=1e-4, rho=0.5, max_backtra
         grad_merit = -np.dot(res, res)
 
         def scan_fn(carry, _):
-            alpha, best_sol, best_norm, found_good = carry
+            alpha, best_sol, best_norm, best_alpha, found_good = carry
             trial_sol = sol + alpha * delta_sol
             if internal_vars is not None:
                 trial_res = res_bc_applied(trial_sol, internal_vars)
@@ -747,13 +765,17 @@ def create_armijo_line_search_scan(res_bc_applied, c1=1e-4, rho=0.5, max_backtra
             should_update = is_acceptable & np.logical_not(found_good)
             new_sol = np.where(should_update, trial_sol, best_sol)
             new_norm = np.where(should_update, trial_norm, best_norm)
+            new_alpha_accepted = np.where(should_update, alpha, best_alpha)
             new_alpha = alpha * rho
             new_found = found_good | is_acceptable
 
-            return (new_alpha, new_sol, new_norm, new_found), None
+            return (new_alpha, new_sol, new_norm, new_alpha_accepted, new_found), None
 
-        init_carry = (1.0, sol, res_norm, False)
-        (final_alpha, best_sol, best_norm, found_good), _ = jax.lax.scan(
+        # ``best_alpha`` records the *actual* alpha at which the Armijo
+        # condition was first satisfied — this is what callers care about.
+        # Initialised to NaN so it's obvious if the line search fails.
+        init_carry = (1.0, sol, res_norm, np.nan, False)
+        (_, best_sol, best_norm, best_alpha, found_good), _ = jax.lax.scan(
             scan_fn, init_carry, None, length=max_backtracks
         )
 
@@ -766,7 +788,7 @@ def create_armijo_line_search_scan(res_bc_applied, c1=1e-4, rho=0.5, max_backtra
 
         final_sol = np.where(found_good, best_sol, fallback_sol)
         final_norm = np.where(found_good, best_norm, fallback_norm)
-        final_alpha_out = np.where(found_good, final_alpha / rho, 1e-8)
+        final_alpha_out = np.where(found_good, best_alpha, 1e-8)
 
         return final_sol, final_norm, final_alpha_out, found_good
 
@@ -780,7 +802,7 @@ def create_armijo_line_search_scan_parametric(res_bc_parametric, c1=1e-4, rho=0.
         grad_merit = -np.dot(res, res)
 
         def scan_fn(carry, _):
-            alpha, best_sol, best_norm, found_good = carry
+            alpha, best_sol, best_norm, best_alpha, found_good = carry
             trial_sol = sol + alpha * delta_sol
             trial_res = res_bc_parametric(trial_sol, internal_vars, bc)
             trial_norm = np.linalg.norm(trial_res)
@@ -793,13 +815,14 @@ def create_armijo_line_search_scan_parametric(res_bc_parametric, c1=1e-4, rho=0.
             should_update = is_acceptable & np.logical_not(found_good)
             new_sol = np.where(should_update, trial_sol, best_sol)
             new_norm = np.where(should_update, trial_norm, best_norm)
+            new_alpha_accepted = np.where(should_update, alpha, best_alpha)
             new_alpha = alpha * rho
             new_found = found_good | is_acceptable
 
-            return (new_alpha, new_sol, new_norm, new_found), None
+            return (new_alpha, new_sol, new_norm, new_alpha_accepted, new_found), None
 
-        init_carry = (1.0, sol, res_norm, False)
-        (final_alpha, best_sol, best_norm, found_good), _ = jax.lax.scan(
+        init_carry = (1.0, sol, res_norm, np.nan, False)
+        (_, best_sol, best_norm, best_alpha, found_good), _ = jax.lax.scan(
             scan_fn, init_carry, None, length=max_backtracks
         )
 
@@ -809,7 +832,7 @@ def create_armijo_line_search_scan_parametric(res_bc_parametric, c1=1e-4, rho=0.
 
         final_sol = np.where(found_good, best_sol, fallback_sol)
         final_norm = np.where(found_good, best_norm, fallback_norm)
-        final_alpha_out = np.where(found_good, final_alpha / rho, 1e-8)
+        final_alpha_out = np.where(found_good, best_alpha, 1e-8)
 
         return final_sol, final_norm, final_alpha_out, found_good
 
@@ -1158,6 +1181,18 @@ def newton_solve_py(J_bc_applied, res_bc_applied, initial_guess, bc, newton_opti
             logger.info(
                 f"Newton iter {iter_count:3d}: res_norm = {new_res_norm:.6e}, "
                 f"alpha = {alpha:.4f}, success = {success}"
+            )
+
+        if not success and getattr(newton_options, "raise_on_line_search_failure", True):
+            raise NewtonLineSearchError(
+                f"Newton iter {iter_count}: Armijo line search failed after "
+                f"{newton_options.line_search_max_backtracks} backtracks "
+                f"(alpha collapsed to ~{alpha:.2e}, res_norm = {res_norm:.6e}). "
+                "The Newton direction is not a descent direction for ½‖r‖² — "
+                "this typically indicates an inconsistent Jacobian, a faulty "
+                "linear solve, or a degenerate state, not something the line "
+                "search can recover from.  Set "
+                "NewtonOptions(raise_on_line_search_failure=False) to silence."
             )
 
         sol = new_sol

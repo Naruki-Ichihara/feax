@@ -164,6 +164,27 @@ class ImplicitPipeline(TimePipeline):
     For **staggered multi-physics** (multiple solves per step),
     subclass :class:`TimePipeline` directly and override ``step()``.
 
+    Pseudo-time mode
+    ----------------
+    Set the class attribute ``pseudo_time = True`` when the implicit
+    residual ``R(u_{n+1}, t_{n+1}) = 0`` does **not** depend on
+    ``u_n`` — i.e. when the previous-step state is used purely as a
+    Newton warm-start (load stepping, parameter continuation, steady-
+    state homotopy) and not as a transient history term.  In that
+    case Newton's converged solution at step ``n+1`` is independent
+    of its initial guess, so we cut the gradient through the state
+    handed from one step to the next via :func:`jax.lax.stop_gradient`.
+    Differentiating a ``run()`` chain (or any direct chain of
+    ``step()`` calls) under :func:`jax.value_and_grad` then needs only
+    the **final step's** adjoint solve instead of one per step — the
+    intermediate steps still execute their forward Newton (warm-start
+    chain) but contribute nothing to the gradient.
+
+    **Do not enable** ``pseudo_time`` for genuinely transient problems
+    (mass terms, ``(u_{n+1} - u_n)/dt`` in the residual, history
+    variables) — gradients through time would be silently dropped and
+    the resulting derivatives would be incorrect.
+
     Example::
 
         class CahnHilliardPipeline(ImplicitPipeline):
@@ -178,7 +199,23 @@ class ImplicitPipeline(TimePipeline):
             def update_vars(self, state, t, dt):
                 c_old = self.problem.unflatten_fn_sol_list(state)[0][:, 0]
                 return fe.InternalVars(volume_vars=(c_old,))
+
+        # Pseudo-time / load-stepping example (gradient-friendly)::
+
+        class ThermalRampPipeline(ImplicitPipeline):
+            pseudo_time = True            # ← enable adjoint short-circuit
+
+            def update_vars(self, state, t, dt):
+                lam = t + dt
+                return fe.InternalVars(
+                    volume_vars=(jnp.full(self._n_nodes, lam),),
+                )
     """
+
+    #: When ``True`` the warm-start state is detached from the gradient
+    #: at every step (see class docstring).  Default ``False`` keeps the
+    #: full transient adjoint behaviour.
+    pseudo_time: bool = False
 
     @abstractmethod
     def update_vars(self, state: Any, t: float, dt: float):
@@ -201,7 +238,18 @@ class ImplicitPipeline(TimePipeline):
         """
 
     def step(self, state: Any, t: float, dt: float) -> Any:
-        """Solve the implicit system for this time step."""
+        """Solve the implicit system for this time step.
+
+        When :attr:`pseudo_time` is true the input ``state`` is wrapped
+        in :func:`jax.lax.stop_gradient` before being forwarded to
+        :meth:`update_vars` and to ``self.solver`` (warm-start) — this
+        cuts the gradient through the previous-step state so that
+        differentiating a chain of steps only requires one adjoint
+        solve at the final step.
+        """
+        if self.pseudo_time:
+            import jax
+            state = jax.lax.stop_gradient(state)
         iv = self.update_vars(state, t, dt)
         return self.solver(iv, state)
 

@@ -481,6 +481,15 @@ class NewtonOptions:
     internal_jit : bool, default False
         JIT-compile the internal linear solve used inside Newton iterations.
         Ignored for ``iter_num == 1`` (linear-only path).
+    raise_on_line_search_failure : bool, default True
+        Raise :class:`NewtonLineSearchError` when the Armijo backtracking
+        exhausts ``line_search_max_backtracks`` without finding a descent
+        step (effectively ``alpha → 0``).  A failed line search indicates
+        the proposed Newton direction is not a descent direction — almost
+        always a sign of a bug elsewhere (e.g. an inconsistent Jacobian
+        or a wrong linear-solve result), so failing loudly is the safer
+        default.  Only used by the Python-loop Newton path; the JAX-
+        traced loops cannot raise from within ``while_loop``/``fori_loop``.
     """
 
     tol: float = 1e-6
@@ -491,6 +500,7 @@ class NewtonOptions:
     line_search_rho: float = 0.5
     internal_jit: bool = False
     make_jittable: bool = False
+    raise_on_line_search_failure: bool = True
 
 
 @dataclass(frozen=True)
