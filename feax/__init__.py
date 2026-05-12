@@ -1,6 +1,54 @@
+import os as _os
+
 import jax
 
-jax.config.update("jax_enable_x64", True)
+# ── Floating-point precision ────────────────────────────────────────────────
+# feax defaults to **float64** (double precision): FE assembly and direct
+# linear solves on the resulting stiffness matrices are ill-conditioned in
+# float32 and routinely produce garbage Newton steps / spurious adjoints.
+#
+# Override with the ``FEAX_X64`` environment variable, read here at import
+# time (before any JAX array is created):
+#
+#     FEAX_X64=1   (default, or unset)  →  float64
+#     FEAX_X64=0                        →  float32
+#
+# or programmatically right after ``import feax`` via :func:`feax.enable_x64`.
+
+
+def _resolve_x64_env() -> bool:
+    raw = _os.environ.get("FEAX_X64")
+    if raw is None:
+        return True                       # default: double precision
+    return raw.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+jax.config.update("jax_enable_x64", _resolve_x64_env())
+
+
+def enable_x64(flag: bool = True) -> None:
+    """Switch JAX between float64 (``flag=True``) and float32 (``flag=False``).
+
+    .. warning::
+        JAX's x64 setting is global and only affects arrays created
+        *after* it is set.  Call this immediately after ``import feax``
+        and before constructing any meshes / problems / arrays — arrays
+        created earlier keep their original dtype.  For a guaranteed-clean
+        run prefer the ``FEAX_X64`` environment variable instead.
+
+    Examples
+    --------
+    >>> import feax
+    >>> feax.enable_x64(False)        # run the rest of the script in float32
+    >>> import feax as fe             # (re-import is a no-op; flag persists)
+    """
+    jax.config.update("jax_enable_x64", bool(flag))
+
+
+def x64_enabled() -> bool:
+    """Return ``True`` if JAX is currently in float64 (double-precision) mode."""
+    return bool(jax.config.read("jax_enable_x64"))
+
 
 # Version info
 try:

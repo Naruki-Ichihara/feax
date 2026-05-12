@@ -1,10 +1,8 @@
 import os
-
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-
 import jax.numpy as np
-
 import feax as fe
+fe.enable_x64(False)
+print(fe.x64_enabled())
 
 elastic_moduli = 70e3
 poisson_ratio = 0.3

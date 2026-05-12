@@ -5,10 +5,10 @@ A torsional surface traction is applied to the right face (load-controlled twist
 """
 
 import os
-
 import jax.numpy as np
-
 import feax as fe
+#fe.enable_x64(False)
+
 
 # Box geometry
 Lx, Ly, Lz = 5., 1., 1.
