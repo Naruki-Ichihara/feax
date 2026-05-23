@@ -14,9 +14,10 @@ import feax as fe
 import feax.flat as flat
 
 # Material properties
-E_base = 210e9  # Pa (steel)
+E_base = 9026 #MPa
 nu = 0.3
-mesh_size = 0.05
+mesh_size = 0.15#0.05
+unit_cell_length = 3
 
 class LinearElasticity(fe.problem.Problem):
     def get_tensor_map(self):
@@ -31,7 +32,7 @@ class BCCUnitCell(flat.unitcell.UnitCell):
     """BCC lattice unit cell."""
 
     def mesh_build(self, mesh_size):
-        return fe.mesh.box_mesh(size=1.0, mesh_size=mesh_size, element_type='HEX8')
+        return fe.mesh.box_mesh(size=unit_cell_length, mesh_size=mesh_size, element_type='HEX8')
 
 # Create unit cell and BCC graph structure
 print("Creating BCC lattice unit cell...")
@@ -40,8 +41,8 @@ mesh = unitcell.mesh
 print(f"Mesh: {len(mesh.points)} nodes, {len(mesh.cells)} elements")
 
 # Define BCC lattice: 8 corners + 1 center node
-corners = np.array([[i, j, k] for i in [0, 1] for j in [0, 1] for k in [0, 1]], dtype=np.float32)
-center = np.array([[0.5, 0.5, 0.5]], dtype=np.float32)
+corners = np.array([[i, j, k] for i in [0, unit_cell_length] for j in [0, unit_cell_length] for k in [0, unit_cell_length]], dtype=np.float32)
+center = np.array([[unit_cell_length/2, unit_cell_length/2, unit_cell_length/2]], dtype=np.float32)
 nodes = np.vstack([corners, center])
 
 # BCC edges: all corners connect to center
@@ -50,10 +51,10 @@ edges = np.array([[i, 8] for i in range(8)])
 # Create problem first
 problem = LinearElasticity(mesh=mesh, vec=3, dim=3, ele_type='HEX8', location_fns=[])
 
-# Create lattice density field using graph
+# Create lattice density field using graph (node-based)
 print("Creating BCC strut structure...")
-lattice_func = flat.graph.create_lattice_function(nodes, edges, radius=0.1)
-rho = flat.graph.create_lattice_density_field(problem, lattice_func, density_solid=1.0, density_void=0.01)
+lattice_func = flat.graph.create_lattice_function(nodes, edges, radius=0.6)
+rho = flat.graph.create_lattice_density_field_nodal(problem, lattice_func, density_solid=1.0, density_void=1e-6)
 
 # Periodic boundary conditions
 print("Setting up periodic boundary conditions...")
@@ -73,13 +74,12 @@ internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), s
 
 # Homogenization solver
 print("Creating homogenization solver...")
-solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-10, atol=1e-10, maxiter=10000, verbose=True)
+solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-10, atol=1e-10, verbose=True)
 
 compute_C_hom = flat.solver.create_homogenization_solver(
     problem, bc, P, mesh, solver_options=solver_options, dim=3
 )
 
-# ── Benchmark: without JIT ─────────────────────────────────────────────────
 print("\n--- Without JIT ---")
 t0 = time.time()
 result = compute_C_hom(internal_vars)
@@ -87,25 +87,6 @@ jax.block_until_ready(result)
 t_no_jit = time.time() - t0
 print(f"  Time: {t_no_jit:.4f}s")
 
-# ── Benchmark: with JIT (includes compilation) ────────────────────────────
-print("\n--- With JIT (1st call = compile + run) ---")
-compute_C_hom_jit = jax.jit(compute_C_hom)
-
-t0 = time.time()
-result = compute_C_hom_jit(internal_vars)
-jax.block_until_ready(result)
-t_jit_compile = time.time() - t0
-print(f"  Time: {t_jit_compile:.4f}s")
-
-# ── Benchmark: with JIT (cached) ──────────────────────────────────────────
-print("\n--- With JIT (2nd call = cached) ---")
-t0 = time.time()
-result = compute_C_hom_jit(internal_vars)
-jax.block_until_ready(result)
-t_jit_cached = time.time() - t0
-print(f"  Time: {t_jit_cached:.4f}s")
-
-print(f"\n  Speedup (no JIT / JIT cached): {t_no_jit / t_jit_cached:.1f}x")
 
 C_hom = result.C_hom
 print(f"\nHomogenized stiffness matrix shape: {C_hom.shape}")
@@ -122,10 +103,13 @@ nu_eff = C12 / (C11 + C12)
 G_eff = C44
 
 print("\nHomogenized properties:")
-print(f"  Effective Young's modulus: {E_eff/1e9:.2f} GPa")
+print(f"  Effective Young's modulus: {C11/1e3:.2f} GPa")
+print(f"  Effective Young's modulus: {C12/1e3:.2f} GPa")
+print(f"  Effective Young's modulus: {E_eff/1e3:.2f} GPa")
 print(f"  Effective Poisson's ratio: {nu_eff:.3f}")
-print(f"  Effective shear modulus: {G_eff/1e9:.2f} GPa")
+print(f"  Effective shear modulus: {G_eff/1e3:.2f} GPa")
 print(f"  Relative stiffness (E_eff/E_base): {E_eff/E_base:.3f}")
+print(f"  Relative density: {rho.mean():.3f}")
 
 # Save lattice structure and results
 print("\nSaving results...")
@@ -139,7 +123,7 @@ lattice_file = os.path.join(output_dir, "bcc_lattice_structure.vtu")
 fe.utils.save_sol(
     mesh=mesh,
     sol_file=lattice_file,
-    cell_infos=[("density", rho)]
+    point_infos=[("density", rho)]
 )
 print(f"  Saved: {lattice_file}")
 

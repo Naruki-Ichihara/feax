@@ -13,7 +13,7 @@ Design variables (node-based, 4 fields):
 
 The orthotropic in-plane stiffness ``C_ijkl(a_2, a_4)`` is built via the
 quadratic Advani–Tucker closure (``a_4 = a_2 ⊗ a_2``) and the helper
-:func:`feax.mechanics.orientation.orthotropic_stiffness`.
+:func:`feax.mechanics.orientation.orientation_averaged_stiffness`.
 
 Optimizer: NLopt LD_MMA on a single packed vector [rho; x1; x2; x3] with
 per-variable bounds (rho in [0,1], x_i in [-1,1]).
@@ -33,7 +33,7 @@ from feax.mechanics.orientation import (
     orientation_tensor_2d,
     principal_direction,
     quadratic_closure,
-    orthotropic_stiffness,
+    orientation_averaged_stiffness,
 )
 
 
@@ -104,7 +104,7 @@ class AnisotropicElasticity(fe.Problem):
 
     1. ``a_2 = orientation_tensor_2d(x1, x2, x3, sgn_beta=SGN_BETA)``
     2. ``a_4 = quadratic_closure(a_2)``
-    3. ``C   = orthotropic_stiffness(a_2, a_4, E1, E2, G12, NU12)``
+    3. ``C   = orientation_averaged_stiffness(a_2, a_4, E1, E2, G12, NU12)``
     4. SIMP-penalised weight ``simp(rho) · ||(a11, a22)||``.
     """
 
@@ -112,7 +112,7 @@ class AnisotropicElasticity(fe.Problem):
         def stress(u_grad, rho, x1, x2, x3):
             a2, a11, a22 = orientation_tensor_2d(x1, x2, x3, sgn_beta=SGN_BETA)
             a4 = quadratic_closure(a2)
-            C = orthotropic_stiffness(a2, a4, E1=E1, E2=E2, G12=G12, nu12=NU12)
+            C = orientation_averaged_stiffness(a2, a4, E1=E1, E2=E2, G12=G12, nu12=NU12)
             simp = SIMP_EPSILON + (1.0 - SIMP_EPSILON) * rho**SIMP_PENALTY
             mag = np.sqrt(a11**2 + a22**2)
             weight = simp * mag

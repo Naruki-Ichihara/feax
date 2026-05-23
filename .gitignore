@@ -1,4 +1,4 @@
-jax-fem/
+
 CLAUDE.md
 docker-compose.override.yml
 jax-distributed-run.sh
@@ -12,6 +12,9 @@ distributed.yml
 *.xplane.pb
 examples/private/
 private/
+project/
+feax4d/
+reporter/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

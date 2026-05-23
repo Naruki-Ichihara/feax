@@ -299,3 +299,35 @@ def create_lattice_density_field(problem: Any, lattice_func: Callable,
     element_densities = np.where(lattice_values > 0.5, density_solid, density_void)
 
     return element_densities
+
+
+def create_lattice_density_field_nodal(problem: Any, lattice_func: Callable,
+                                       density_solid: float = 1.0,
+                                       density_void: float = 1e-5,
+                                       var_index: int = 0) -> np.ndarray:
+    """Create node-based density field from lattice function for FEAX problem.
+
+    Evaluates the lattice function at each mesh node. The assembler will
+    interpolate these nodal values to quadrature points via shape functions,
+    producing a smoother density distribution than the element-centroid version.
+
+    Args:
+        problem: FEAX Problem instance
+        lattice_func: Function that evaluates lattice at a point
+        density_solid: Density value for solid regions (lattice struts)
+        density_void: Density value for void regions
+        var_index: Which finite element variable to use (default 0)
+
+    Returns:
+        Density array with shape (num_nodes,) - one value per node
+    """
+    # Use FE node positions (matches assembler interpolation)
+    node_points = problem.fes[var_index].points  # (num_nodes, dim)
+
+    # Evaluate lattice function at each node
+    lattice_values = jax.vmap(lattice_func)(node_points)
+
+    # Convert to density values (node-based)
+    node_densities = np.where(lattice_values > 0.5, density_solid, density_void)
+
+    return node_densities

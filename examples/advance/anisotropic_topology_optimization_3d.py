@@ -15,7 +15,7 @@ Design variables (node-based, 7 fields):
 The 3-D Advani-Tucker orientation tensor ``a_2`` is built via
 :func:`feax.mechanics.orientation.orientation_tensor_3d` and the
 3-D transversely-isotropic stiffness ``C_ijkl(a_2, a_4)`` via
-:func:`feax.mechanics.orientation.orthotropic_stiffness_3d`
+:func:`feax.mechanics.orientation.orientation_averaged_stiffness_3d`
 (quadratic closure ``a_4 = a_2 \\otimes a_2``).
 
 Physical setup (= ``topology_optimization_adaptive.py``):
@@ -45,7 +45,7 @@ from feax.mechanics.orientation import (
     orientation_tensor_3d,
     principal_direction,
     quadratic_closure,
-    orthotropic_stiffness_3d,
+    orientation_averaged_stiffness_3d,
 )
 
 
@@ -106,7 +106,7 @@ class AnisotropicElasticity3D(fe.Problem):
 
     1. ``a_2 = orientation_tensor_3d(x1, x2, x3, x12, x13, x23, sgn_beta)``
     2. ``a_4 = quadratic_closure(a_2)``
-    3. ``C   = orthotropic_stiffness_3d(a_2, a_4, E1, E2, G12, NU12, NU23)``
+    3. ``C   = orientation_averaged_stiffness_3d(a_2, a_4, E1, E2, G12, NU12, NU23)``
     4. SIMP-penalised weight ``simp(rho) * sqrt(a11**2 + a22**2 + a33**2)``.
        The alignment-magnitude factor — present in the 2-D libertas
        formulation as well — naturally suppresses spurious "isotropic
@@ -120,7 +120,7 @@ class AnisotropicElasticity3D(fe.Problem):
                 x1, x2, x3, x12, x13, x23, sgn_beta=SGN_BETA,
             )
             a4 = quadratic_closure(a2)
-            C = orthotropic_stiffness_3d(
+            C = orientation_averaged_stiffness_3d(
                 a2, a4,
                 E1=E1, E2=E2, G12=G12, nu12=NU12, nu23=NU23,
             )

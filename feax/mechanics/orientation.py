@@ -39,9 +39,15 @@ Module contents
 2. **Closures** — :func:`quadratic_closure`, :func:`linear_closure`,
    :func:`hybrid_closure` for ``a_4`` from ``a_2``.
 
-3. **Constitutive builders** — :func:`orthotropic_stiffness` (2-D
-   plane-stress, 4 moduli) and :func:`orthotropic_stiffness_3d`
-   (full 3-D transverse-isotropic, 5 moduli).
+3. **Constitutive builders** — :func:`orientation_averaged_stiffness`
+   (2-D plane-stress, 4 moduli) and
+   :func:`orientation_averaged_stiffness_3d` (full 3-D
+   transverse-isotropic, 5 moduli).  These produce the *ODF-averaged*
+   stiffness over an orthotropic base material — the resulting
+   macroscopic stiffness is **not** in general orthotropic (it is
+   orthotropic only when the ODF is symmetric about the principal
+   direction of ``a_2``; closure-free :func:`build_a4_2d` with
+   ``y_2 != 0`` deliberately admits non-orthotropic macro states).
 
 References
 ----------
@@ -448,6 +454,139 @@ def linear_closure(a2: np.ndarray) -> np.ndarray:
     return c1 * iso + c2 * aniso
 
 
+def build_a4_2d(
+    a2: np.ndarray,
+    y1: float,
+    y2: float,
+    eps: float = 1e-12,
+) -> np.ndarray:
+    r"""Closure-free 2-D ``a_4`` parameterised by two extra DOFs.
+
+    Given a (possibly sub-normalised) 2-D second-order orientation
+    tensor ``a_2`` with trace :math:`\tau = a_{11} + a_{22} \in [0, 1]`
+    and two scalar design parameters :math:`(y_1, y_2)` with
+    :math:`y_1^2 + y_2^2 \le 1`, build the fully-symmetric fourth-order
+    tensor ``a_4`` that
+
+    * is *admissible*, i.e. representable as :math:`\tau \cdot
+      \langle p_i p_j p_k p_l \rangle` for some probability
+      distribution on :math:`\mathbb{R}P^1`;
+    * satisfies the contraction identity :math:`a_{4,ijkk} = a_{2,ij}`
+      exactly (which neither :func:`quadratic_closure` nor
+      :func:`linear_closure` do for :math:`\tau < 1`);
+    * has full index symmetry :math:`a_{4,ijkl} = a_{4,\sigma(ijkl)}`.
+
+    Construction (Schur reflection coefficient).  Let :math:`\hat
+    a_{ij} = a_{ij}/\tau` be the normalised orientation tensor (trace
+    1) and define its trigonometric moments
+
+    .. math::
+
+        \nu_1 \;=\; \hat a_{11} - \hat a_{22} + 2 i \hat a_{12},
+        \qquad
+        \rho_2 \;=\; y_1 + i y_2.
+
+    The 4th-order trigonometric moment of the normalised distribution
+    is then taken to be
+
+    .. math::
+
+        \nu_2 \;=\; \nu_1^2 + \rho_2 \,(1 - |\nu_1|^2),
+
+    which sweeps the *entire* admissible region for the 4th moment as
+    :math:`\rho_2` ranges over the closed unit disk (Toeplitz-PSD
+    parameterisation of the trigonometric moment problem).  The five
+    independent components of :math:`\hat{\mathbf a}_4` are then
+
+    .. math::
+
+        \hat a_{1111}, \hat a_{2222} &= (3 \pm 4 \hat c_2 + \hat c_4)/8,\\
+        \hat a_{1122} &= (1 - \hat c_4)/8,\\
+        \hat a_{1112}, \hat a_{1222} &= (2 \hat s_2 \pm \hat s_4)/8,
+
+    with :math:`\hat c_2 = \mathrm{Re}(\nu_1), \hat s_2 =
+    \mathrm{Im}(\nu_1)` and likewise for :math:`\nu_2`.  Finally
+    :math:`a_{4,ijkl} = \tau \cdot \hat a_{4,ijkl}` so that ``a_4 → 0``
+    as ``τ → 0`` and the contraction :math:`a_{4,ijkk} = a_{2,ij}` is
+    preserved at any :math:`\tau`.
+
+    Limiting cases:
+
+    * :math:`\rho_2 = 0` — the *maximum-determinant* (Bingham-like)
+      baseline: ``a_4`` is the contraction-consistent 4th moment of the
+      "most spread-out" admissible distribution for the given ``a_2``.
+      This is the natural drop-in replacement for
+      :func:`quadratic_closure` when one wants the contraction
+      identity satisfied at sub-trace-1 ``a_2``.
+    * :math:`|\rho_2| = 1` — singular limit: the inferred distribution
+      collapses to two Dirac peaks on :math:`\mathbb{R}P^1` (a
+      cross-fibre lattice).  Approach this edge with care: the
+      stiffness remains finite but the inferred distribution is
+      degenerate.
+    * :math:`\mathbf{a}_2 = \tau\, \mathbf{n}\mathbf{n}^T` (rank 1) —
+      :math:`|\nu_1| = 1`, so :math:`\rho_2` drops out and ``a_4 = τ ·
+      n^{\otimes 4}`` regardless of ``(y_1, y_2)``.
+
+    Use this in place of ``a_4 = quadratic_closure(a_2)`` when the
+    downstream model can express more than purely aligned states
+    (e.g. cross-ply or near-isotropic lattices).
+
+    Parameters
+    ----------
+    a2 : (2, 2) array
+        Symmetric 2-D second-order orientation tensor with
+        :math:`a_{11}, a_{22} \ge 0`, :math:`a_{12}^2 \le a_{11}
+        a_{22}`, :math:`\tau = a_{11} + a_{22} \le 1`.
+    y1, y2 : scalar
+        Components of the Schur reflection coefficient :math:`\rho_2 =
+        y_1 + i y_2`.  Admissibility requires :math:`y_1^2 + y_2^2 \le
+        1`; this function does *not* enforce that bound, so callers
+        must either box-constrain on the unit disk or add it as an
+        optimisation constraint.
+    eps : float
+        Numerical floor on the trace, used as ``τ + eps`` in the
+        normalisation to keep the function well-defined at fully empty
+        elements (``τ → 0``).  At ``τ = 0`` the output is ``a_4 = 0``.
+
+    Returns
+    -------
+    a4 : (2, 2, 2, 2) array
+        Fully-symmetric, contraction-consistent fourth-order
+        orientation tensor.
+    """
+    tau = a2[0, 0] + a2[1, 1]
+    tau_safe = tau + eps
+
+    c2 = (a2[0, 0] - a2[1, 1]) / tau_safe
+    s2 = 2.0 * a2[0, 1] / tau_safe
+
+    nu1_sq_re = c2 * c2 - s2 * s2
+    nu1_sq_im = 2.0 * c2 * s2
+    abs_nu1_sq = c2 * c2 + s2 * s2
+
+    c4 = nu1_sq_re + y1 * (1.0 - abs_nu1_sq)
+    s4 = nu1_sq_im + y2 * (1.0 - abs_nu1_sq)
+
+    f1111 = (3.0 + 4.0 * c2 + c4) / 8.0
+    f2222 = (3.0 - 4.0 * c2 + c4) / 8.0
+    f1122 = (1.0 - c4) / 8.0
+    f1112 = (2.0 * s2 + s4) / 8.0
+    f1222 = (2.0 * s2 - s4) / 8.0
+
+    a1111 = tau * f1111
+    a2222 = tau * f2222
+    a1122 = tau * f1122
+    a1112 = tau * f1112
+    a1222 = tau * f1222
+
+    return np.array([
+        [[[a1111, a1112], [a1112, a1122]],
+         [[a1112, a1122], [a1122, a1222]]],
+        [[[a1112, a1122], [a1122, a1222]],
+         [[a1122, a1222], [a1222, a2222]]],
+    ])
+
+
 def hybrid_closure(a2: np.ndarray) -> np.ndarray:
     """Hybrid (Advani–Tucker) closure: linear + quadratic blend.
 
@@ -478,7 +617,7 @@ def hybrid_closure(a2: np.ndarray) -> np.ndarray:
 # Orthotropic stiffness builders from (a_2, a_4)
 # ---------------------------------------------------------------------------
 
-def orthotropic_stiffness(
+def orientation_averaged_stiffness(
     a2: np.ndarray,
     a4: np.ndarray,
     E1: float,
@@ -488,8 +627,21 @@ def orthotropic_stiffness(
 ) -> np.ndarray:
     r"""Build the 2-D plane-stress in-plane stiffness ``C_ijkl(a_2, a_4)``.
 
-    Advani–Tucker decomposition for a 2-D orthotropic lamina (4
-    independent moduli):
+    Advani–Tucker orientation-averaged decomposition: ``C`` is the
+    expectation of the orthotropic lamina stiffness under an ODF on
+    :math:`\mathbb{R}P^1`, expressed in closed form via the second-
+    and fourth-order orientation tensors ``(a_2, a_4)``.  The **base
+    material** is orthotropic (4 in-plane moduli below); the resulting
+    **macro stiffness is not in general orthotropic** — it is
+    orthotropic only when the ODF is symmetric about the principal
+    direction of ``a_2``.  With the closure-free :func:`build_a4_2d`
+    parameterisation, ``y_2 != 0`` (in the eigenframe of ``a_2``)
+    produces ``a_{4,1112}, a_{4,1222} != 0``, which propagates into
+    Voigt ``D_{13}, D_{23} != 0`` and yields a fully (monoclinic /
+    general) anisotropic plane-stress stiffness with no orthotropic
+    principal frame.
+
+    Form (4 independent moduli):
 
     .. math::
 
@@ -561,7 +713,7 @@ def orthotropic_stiffness(
     )
 
 
-def orthotropic_stiffness_3d(
+def orientation_averaged_stiffness_3d(
     a2: np.ndarray,
     a4: np.ndarray,
     E1: float,
@@ -570,10 +722,15 @@ def orthotropic_stiffness_3d(
     nu12: float,
     nu23: float,
 ) -> np.ndarray:
-    r"""Build the 3-D in-plane stiffness ``C_ijkl(a_2, a_4)`` from (5 moduli).
+    r"""Build the 3-D stiffness ``C_ijkl(a_2, a_4)`` from a transversely-
+    isotropic base material averaged over an ODF on the unit sphere.
 
-    Full Advani–Tucker decomposition (Nomura *et al.* 2019, Eq. 14)
-    onto basis tensors built from the orientation tensors:
+    Full Advani–Tucker orientation-averaged decomposition (Nomura
+    *et al.* 2019, Eq. 14) onto basis tensors built from the
+    orientation tensors.  As with the 2-D variant, the **base
+    material** is transversely isotropic, but the **macro stiffness**
+    is in general anisotropic and matches a transversely-isotropic
+    symmetry class only when the ODF respects that symmetry.
 
     .. math::
 
@@ -677,6 +834,7 @@ __all__ = [
     "quadratic_closure",
     "linear_closure",
     "hybrid_closure",
-    "orthotropic_stiffness",
-    "orthotropic_stiffness_3d",
+    "build_a4_2d",
+    "orientation_averaged_stiffness",
+    "orientation_averaged_stiffness_3d",
 ]

@@ -42,8 +42,8 @@ from .orientation import (
     quadratic_closure,
     linear_closure,
     hybrid_closure,
-    orthotropic_stiffness as orthotropic_stiffness_from_orientation,
-    orthotropic_stiffness_3d as orthotropic_stiffness_from_orientation_3d,
+    orientation_averaged_stiffness,
+    orientation_averaged_stiffness_3d,
 )
 
 __all__ = [
@@ -78,6 +78,6 @@ __all__ = [
     "quadratic_closure",
     "linear_closure",
     "hybrid_closure",
-    "orthotropic_stiffness_from_orientation",
-    "orthotropic_stiffness_from_orientation_3d",
+    "orientation_averaged_stiffness",
+    "orientation_averaged_stiffness_3d",
 ]
