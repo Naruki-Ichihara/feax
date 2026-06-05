@@ -119,13 +119,27 @@ fe.utils.save_sol(mesh, "periodic_poisson.vtu", point_infos=[("u", sol_full.resh
 
 ## 3D Periodic Boundary Conditions
 
+`periodic_bc_3D` builds the full set of face/edge/corner pairings automatically, but it
+operates on a `UnitCell` (which carries the geometric bounds and boundary-identification
+functions), **not** on a bare `Mesh`. Subclass `flat.unitcell.UnitCell` and implement
+`mesh_build()`:
+
 ```python
 from feax.flat.pbc import periodic_bc_3D
 
-mesh_3d = fe.mesh.box_mesh(size=1.0, mesh_size=0.1)
-pairings_3d = periodic_bc_3D(mesh_3d, vec=3, dim=3)
+class BoxUnitCell(flat.unitcell.UnitCell):
+    def mesh_build(self, mesh_size):
+        return fe.mesh.box_mesh(size=1.0, mesh_size=mesh_size, element_type='HEX8')
+
+unitcell = BoxUnitCell(mesh_size=0.1)
+mesh_3d = unitcell.mesh
+
+pairings_3d = periodic_bc_3D(unitcell, vec=3, dim=3)
 P_3d = flat.pbc.prolongation_matrix(pairings_3d, mesh_3d, vec=3)
 ```
+
+A matching `periodic_bc_2D(unitcell, vec=..., dim=2)` convenience function is also
+available. See [Lattice Homogenization](./lattice_homogenization.md) for a complete RVE example.
 
 ## Complete Code
 

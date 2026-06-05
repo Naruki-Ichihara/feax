@@ -59,6 +59,7 @@ const sidebars: SidebarsConfig = {
         'advanced/cohesive_fracture',
         'advanced/third_medium_contact',
         'advanced/cahn_hilliard',
+        'advanced/laminated_plates',
         'advanced/batched_topology_optimization',
         'advanced/thermomechanical_topology_optimization',
       ],

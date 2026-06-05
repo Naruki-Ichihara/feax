@@ -159,7 +159,7 @@ Builds a pure JAX function that computes the total energy by
 integrating the problem&#x27;s energy density over the domain:
 
 ```python
-E(u) = ∫ ψ(∇u) dΩ
+E(u) = ∫ ψ(∇u, *internal_vars) dΩ
 ```
 
 The energy density is obtained from ``problem.get_energy_density()``.
@@ -171,7 +171,7 @@ Parameters
 
 Returns
 -------
-- **energy** (*callable*): Function ``energy(u_flat) -&gt; scalar`` that computes the total energy ∫ ψ(∇u) dΩ.
+- **energy** (*callable*): ``energy(u_flat)`` or ``energy(u_flat, internal_vars)`` returning a scalar total energy.
 
 
 Raises

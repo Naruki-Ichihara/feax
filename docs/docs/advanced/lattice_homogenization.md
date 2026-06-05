@@ -94,17 +94,23 @@ edges = np.array([[i, 8] for i in range(8)])
 # Create problem first
 problem = LinearElasticity(mesh=mesh, vec=3, dim=3, ele_type='HEX8', location_fns=[])
 
-# Create lattice density field using graph
+# Create lattice density field using graph (node-based)
 lattice_func = flat.graph.create_lattice_function(nodes, edges, radius=0.1)
-rho = flat.graph.create_lattice_density_field(problem, lattice_func,
-                                               density_solid=1.0, density_void=0.01)
+rho = flat.graph.create_lattice_density_field_nodal(problem, lattice_func,
+                                                    density_solid=1.0, density_void=1e-6)
 ```
 
 **How `flat.graph` works:**
 
 1. **`create_lattice_function(nodes, edges, radius)`** - Creates function that evaluates if point is near any strut
-2. **`create_lattice_density_field(problem, lattice_func, ...)`** - Evaluates lattice at element centroids
-3. Returns element-based density array `(num_elements,)`
+2. **`create_lattice_density_field_nodal(problem, lattice_func, ...)`** - Evaluates the lattice at each mesh **node**
+3. Returns a node-based density array `(num_nodes,)`; the assembler interpolates these nodal values to quadrature points via the element shape functions, giving a smoother density field than the element-centroid variant
+
+:::note Nodal vs. element density
+`create_lattice_density_field_nodal` returns one value **per node** `(num_nodes,)`. The
+element-centroid variant `create_lattice_density_field` returns one value **per cell**
+`(num_elements,)` instead — use whichever matches how you want the density interpolated.
+:::
 
 **Advantages:**
 - Clean node-edge representation
@@ -135,25 +141,27 @@ $$
 
 ## Internal Variables with Density
 
-Use element-based variables for density-dependent properties:
+The density-dependent Young's modulus is built directly from the nodal `rho`:
 
 ```python
 bc_config = fe.DCboundary.DirichletBCConfig([])
 bc = bc_config.create_bc(problem)
 
-# Density-based Young's modulus (rho is already per-cell from create_lattice_density_field)
+# Density-based Young's modulus (rho is nodal, from create_lattice_density_field_nodal)
 E_field = E_base * rho
 nu_field = fe.internal_vars.InternalVars.create_cell_var(problem, nu)
 internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
 ```
 
-**Why cell-based variables?**
-- Density field from `flat.graph` is element-based
-- More efficient than quad-point based for homogenization
-- Natural for topology optimization
+**Notes:**
+- `E_field` is nodal `(num_nodes,)` — the assembler interpolates it to quadrature points.
+- `nu_field` is a uniform per-cell value via `create_cell_var`; FEAX handles a mix of nodal and cell volume variables, dispatching each by its length.
 
-!!! note
-    `E_field` is computed directly as `E_base * rho` since `rho` is already a per-cell array from `create_lattice_density_field`. The `create_cell_var` helper is only for uniform scalar values.
+:::note
+`E_field` is computed directly as `E_base * rho` since `rho` already carries the spatial
+variation. The `create_cell_var` helper is only for promoting a uniform scalar (like `nu`)
+to a per-cell array.
+:::
 
 ## Homogenization Solver
 
@@ -325,7 +333,7 @@ edges = np.array([[i, 8] for i in range(8)])
 # Create problem and density field
 problem = LinearElasticity(mesh=mesh, vec=3, dim=3, ele_type='HEX8', location_fns=[])
 lattice_func = flat.graph.create_lattice_function(nodes, edges, radius=0.1)
-rho = flat.graph.create_lattice_density_field(problem, lattice_func, density_solid=1.0, density_void=0.01)
+rho = flat.graph.create_lattice_density_field_nodal(problem, lattice_func, density_solid=1.0, density_void=1e-6)
 
 # Periodic boundary conditions
 pairings = flat.pbc.periodic_bc_3D(unitcell, vec=3, dim=3)
@@ -333,7 +341,7 @@ P = flat.pbc.prolongation_matrix(pairings, mesh, vec=3)
 
 # Boundary conditions and internal variables
 bc = fe.DCboundary.DirichletBCConfig([]).create_bc(problem)
-E_field = E_base * rho  # rho is already per-cell from create_lattice_density_field
+E_field = E_base * rho  # rho is nodal, from create_lattice_density_field_nodal
 nu_field = fe.internal_vars.InternalVars.create_cell_var(problem, nu)
 internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
 

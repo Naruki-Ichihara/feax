@@ -68,7 +68,7 @@ bc = bc_config.create_bc(problem)
 
 # Internal variables with density-based Young's modulus
 print("Setting up material properties...")
-E_field = E_base * rho  # rho is already per-cell from create_lattice_density_field
+E_field = E_base * rho  # rho is nodal, from create_lattice_density_field_nodal
 nu_field = fe.internal_vars.InternalVars.create_cell_var(problem, nu)
 internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
 

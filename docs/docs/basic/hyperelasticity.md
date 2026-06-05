@@ -60,26 +60,20 @@ $$
 
 ```python
 class HyperElasticityFeax(fe.problem.Problem):
-    def get_tensor_map(self):
-        def psi(F):
+    def get_energy_density(self):
+        def psi(u_grad, *_):
             E = 100.
             nu = 0.3
             mu = E / (2. * (1. + nu))
             kappa = E / (3. * (1. - 2. * nu))
+            I = np.eye(self.dim)
+            F = u_grad + I
             J = np.linalg.det(F)
             Jinv = J**(-2. / 3.)
             I1 = np.trace(F.T @ F)
-            energy = (mu / 2.) * (Jinv * I1 - 3.) + (kappa / 2.) * (J - 1.)**2.
-            return energy
+            return (mu / 2.) * (Jinv * I1 - 3.) + (kappa / 2.) * (J - 1.)**2.
 
-        P_fn = jax.grad(psi)
-        def first_PK_stress(u_grad):
-            I = np.eye(self.dim)
-            F = u_grad + I
-            P = P_fn(F)
-            return P
-
-        return first_PK_stress
+        return psi
 
     def get_surface_maps(self):
         def traction_map(u_grad, surface_quad_point, traction_magnitude):
@@ -90,7 +84,7 @@ class HyperElasticityFeax(fe.problem.Problem):
         return [traction_map]
 ```
 
-`jax.grad(psi)` computes the exact stress tensor without manual derivation. FEAX then assembles the tangent stiffness automatically via `jax.jacobian`. The traction function uses `surface_quad_point` to compute the position-dependent torsional load, with the centroid `y_c`, `z_c` captured from the outer scope.
+You only define the scalar strain-energy density $\psi(\nabla u)$. FEAX differentiates it internally to obtain the first Piola–Kirchhoff stress (the residual) and assembles the tangent stiffness automatically via a second derivative — no manual stress derivation required. The traction function uses `surface_quad_point` to compute the position-dependent torsional load, with the centroid `y_c`, `z_c` captured from the outer scope.
 
 ## Mesh and Boundary Conditions
 
@@ -155,7 +149,7 @@ fe.utils.save_sol(
 
 ## Key Takeaways
 
-1. **Energy-based formulation** with `jax.grad` eliminates manual stress derivation
+1. **Energy-based formulation** via `get_energy_density` — FEAX auto-differentiates the scalar energy, eliminating manual stress derivation
 2. **Automatic tangent stiffness** via JAX's automatic differentiation
 3. **Newton's method** for nonlinear problems — omit `iter_num=1`
 4. **Position-dependent traction** via `surface_quad_point` in `get_surface_maps`

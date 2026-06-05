@@ -244,3 +244,32 @@ Create element-based density field from lattice function for FEAX problem.
 
   Density array with shape (num_elements,) - one value per element
 
+#### create\_lattice\_density\_field\_nodal
+
+```python
+def create_lattice_density_field_nodal(problem: Any,
+                                       lattice_func: Callable,
+                                       density_solid: float = 1.0,
+                                       density_void: float = 1e-5,
+                                       var_index: int = 0) -> np.ndarray
+```
+
+Create node-based density field from lattice function for FEAX problem.
+
+Evaluates the lattice function at each mesh node. The assembler will
+interpolate these nodal values to quadrature points via shape functions,
+producing a smoother density distribution than the element-centroid version.
+
+**Arguments**:
+
+- `problem` - FEAX Problem instance
+- `lattice_func` - Function that evaluates lattice at a point
+- `density_solid` - Density value for solid regions (lattice struts)
+- `density_void` - Density value for void regions
+- `var_index` - Which finite element variable to use (default 0)
+
+
+**Returns**:
+
+  Density array with shape (num_nodes,) - one value per node
+

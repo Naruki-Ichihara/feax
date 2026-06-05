@@ -153,10 +153,10 @@ mesh = gene.adaptive.adaptive_mesh(cantilever_geometry, h_max=1.0)
 
 ### Continuation
 
-`Continuation` schedules parameter updates during optimization. Here $\beta$ doubles every 20 iterations from 1 to 16:
+`Continuation` schedules parameter updates during optimization. The schedule is additive: every `update_every` iterations the value changes by `step`, clamped between `initial` and `final`. Here $\beta$ increases by 3 every 20 iterations from 1 to 16:
 
 ```python
-Continuation(initial=1.0, final=16.0, update_every=20, multiply_by=2.0)
+Continuation(initial=1.0, final=16.0, update_every=20, step=3.0)
 ```
 
 Updates happen at epoch boundaries (synchronized with remeshing). Continuation values are passed as traced JAX arguments, so updates do **not** trigger recompilation.
@@ -211,7 +211,7 @@ result = run(
     max_iter=500,
     continuations={
         "beta": Continuation(initial=1.0, final=16.0, update_every=20,
-                             multiply_by=2.0),
+                             step=3.0),
     },
     adaptive=AdaptiveConfig(
         remesh=lambda m, rho: gene.adaptive.adaptive_mesh(
@@ -351,7 +351,7 @@ result = run(
     max_iter=500,
     continuations={
         "beta": Continuation(initial=1.0, final=16.0, update_every=20,
-                             multiply_by=2.0),
+                             step=3.0),
     },
     adaptive=AdaptiveConfig(
         remesh=lambda m, rho: gene.adaptive.adaptive_mesh(

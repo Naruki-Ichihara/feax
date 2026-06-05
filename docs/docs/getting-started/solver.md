@@ -221,7 +221,7 @@ fe.NewtonOptions(
 )
 ```
 
-Setting `internal_jit=True` (default) JIT-compiles the residual, Jacobian, and linear solve functions individually, avoiding the long monolithic JIT compilation that can occur with large problems.
+Setting `internal_jit=True` JIT-compiles the residual, Jacobian, and linear solve functions individually, avoiding the long monolithic JIT compilation that can occur with large problems. The default is `internal_jit=False`.
 
 ## Boundary Condition Elimination: `symmetric_bc`
 
@@ -644,7 +644,7 @@ The Newton solver offers two JIT strategies via `NewtonOptions`:
 |---|---|---|
 | `make_jittable=True` | Entire Newton loop is traced into a single XLA program via `jax.lax.fori_loop`. Requires fixed `iter_num`. | Small–medium problems; required for `jax.vmap`. |
 | `make_jittable=False` (default) | Python-level Newton loop; each component (residual, Jacobian, linear solve) compiled separately. | Large 3-D problems where monolithic compilation is too slow. |
-| `internal_jit=True` (default) | Wraps each component with `jax.jit` when `make_jittable=False`. | Ensures compiled execution even in the Python-loop path. |
+| `internal_jit=False` (default) | When set to `True`, wraps each component with `jax.jit` in the `make_jittable=False` path. | Set `True` to ensure compiled execution even in the Python-loop path. |
 
 :::note JIT compilation time
 For large problems, `make_jittable=True` can cause very long initial compilation times because the entire Newton loop is fused into one XLA graph. In such cases, use the default `make_jittable=False` with `internal_jit=True` to keep compilation fast while still running compiled kernels.

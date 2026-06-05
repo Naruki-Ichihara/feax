@@ -336,6 +336,7 @@ Parameters
 - **line_search_c1** (*float, default 1e-4*): Armijo sufficient decrease constant.
 - **line_search_rho** (*float, default 0.5*): Backtracking shrink factor (alpha *= rho).
 - **internal_jit** (*bool, default False*): JIT-compile the internal linear solve used inside Newton iterations. Ignored for ``iter_num == 1`` (linear-only path).
+- **raise_on_line_search_failure** (*bool, default True*): Raise :class:`NewtonLineSearchError` when the Armijo backtracking exhausts ``line_search_max_backtracks`` without finding a descent step (effectively ``alpha → 0``).  A failed line search indicates the proposed Newton direction is not a descent direction — almost always a sign of a bug elsewhere (e.g. an inconsistent Jacobian or a wrong linear-solve result), so failing loudly is the safer default.  Only used by the Python-loop Newton path; the JAX- traced loops cannot raise from within ``while_loop``/``fori_loop``.
 
 
 ## SolverOptions Objects

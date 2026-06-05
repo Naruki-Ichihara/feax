@@ -38,17 +38,17 @@ right = lambda point: np.isclose(point[0], L,  tol)
 
 ## Problem Definition
 
-Implement `get_tensor_map` to return the stress function, and `get_surface_maps` to define the traction:
+Implement `get_energy_density` to return the strain-energy density $\psi(\nabla u)$, and `get_surface_maps` to define the traction. FEAX differentiates the energy internally to obtain the residual and tangent, so you only supply the scalar energy:
 
 ```python
 class LinearElasticity(fe.problem.Problem):
-    def get_tensor_map(self):
-        def stress(u_grad, *args):
+    def get_energy_density(self):
+        def psi(u_grad, *args):
             mu      = E / (2. * (1. + nu))
             lmbda   = E * nu / ((1 + nu) * (1 - 2 * nu))
             epsilon = 0.5 * (u_grad + u_grad.T)
-            return lmbda * np.trace(epsilon) * np.eye(self.dim) + 2 * mu * epsilon
-        return stress
+            return 0.5 * lmbda * np.trace(epsilon)**2 + mu * np.sum(epsilon * epsilon)
+        return psi
 
     def get_surface_maps(self):
         def surface_map(u, x, traction_mag):
@@ -151,13 +151,13 @@ left  = lambda point: np.isclose(point[0], 0., tol)
 right = lambda point: np.isclose(point[0], L,  tol)
 
 class LinearElasticity(fe.problem.Problem):
-    def get_tensor_map(self):
-        def stress(u_grad, *args):
+    def get_energy_density(self):
+        def psi(u_grad, *args):
             mu      = E / (2. * (1. + nu))
             lmbda   = E * nu / ((1 + nu) * (1 - 2 * nu))
             epsilon = 0.5 * (u_grad + u_grad.T)
-            return lmbda * np.trace(epsilon) * np.eye(self.dim) + 2 * mu * epsilon
-        return stress
+            return 0.5 * lmbda * np.trace(epsilon)**2 + mu * np.sum(epsilon * epsilon)
+        return psi
 
     def get_surface_maps(self):
         def surface_map(u, x, traction_mag):

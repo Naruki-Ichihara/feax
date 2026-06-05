@@ -160,3 +160,35 @@ The function systematically pairs:
 - Edge and face exclusions prevent double-counting of constraints
 - Each geometric pairing is replicated for each DoF component
 
+#### periodic\_bc\_2D
+
+```python
+def periodic_bc_2D(unitcell: UnitCell,
+                   vec: int = 1,
+                   dim: int = 2) -> List[PeriodicPairing]
+```
+
+Generate periodic boundary condition pairings for a 2D unit cell.
+
+Creates a complete set of periodic pairings for all edges and corners of a
+2D unit cell. This ensures full periodicity where opposite boundaries are
+constrained to have compatible displacements.
+
+The function systematically pairs:
+- Opposite edges (2 edge pairs, excluding corners)
+- Corresponding corners (3 corner pairs, excluding origin)
+
+**Arguments**:
+
+- `unitcell` _UnitCell_ - The unit cell object providing boundary identification
+  functions and geometric mapping capabilities.
+- `vec` _int_ - Number of degrees of freedom per node. Defaults to 1.
+- `dim` _int_ - Spatial dimension of the problem. Defaults to 2.
+
+
+**Returns**:
+
+- `List[PeriodicPairing]` - Complete list of periodic pairings ordered as:
+  1. Corner pairings (excluding origin as master)
+  2. Edge pairings (excluding corners)
+

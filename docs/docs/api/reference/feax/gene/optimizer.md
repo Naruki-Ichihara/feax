@@ -33,7 +33,7 @@ result = run(MyPipeline(), mesh, max_iter=300)
 #### constraint
 
 ```python
-def constraint(target: float, type: str = 'le')
+def constraint(target: float, type: str = 'le', tol: float = 0.0)
 ```
 
 Mark a ``Pipeline`` method as an optimisation constraint.
@@ -42,6 +42,7 @@ Parameters
 ----------
 - **target** (*float*)
 - **type** (*str*)
+- **tol** (*float*)
 
 
 ## Pipeline Objects
@@ -109,22 +110,22 @@ class Continuation()
 
 Parameter that updates periodically during optimization.
 
-At every ``update_every`` iterations the value is multiplied by
-``multiply_by`` (or incremented by ``add``), clamped between
-``initial`` and ``final``.
+At every ``update_every`` iterations the value changes by ``step``:
 
-Continuation values are passed as traced (not static) JAX
-arguments, so updates do **not** trigger recompilation.
+- ``step &gt; 0``: additive, ``value = initial + step * n``
+- ``step &lt; 0``: additive (decreasing), ``value = initial + step * n``
+
+The value is always clamped between ``initial`` and ``final``.
 
 **Examples**:
 
 
 ```python
-# Heaviside beta: 1 -&gt; 16, doubled every 40 iterations
-Continuation(initial=1.0, final=16.0, update_every=40, multiply_by=2.0)
+# Heaviside beta: 1 -&gt; 8, +1 every 50 iterations
+Continuation(initial=1.0, final=8.0, update_every=50, step=1.0)
 
 # SIMP penalty: 1 -&gt; 3, +0.5 every 30 iterations
-Continuation(initial=1.0, final=3.0, update_every=30, multiply_by=1.0, add=0.5)
+Continuation(initial=1.0, final=3.0, update_every=30, step=0.5)
 ```
 
 #### value\_at

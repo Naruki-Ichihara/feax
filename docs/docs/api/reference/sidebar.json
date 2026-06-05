@@ -4,6 +4,13 @@
       "items": [
         {
           "items": [
+            "reference/feax/distributed/__init__"
+          ],
+          "label": "feax.distributed",
+          "type": "category"
+        },
+        {
+          "items": [
             "reference/feax/flat/graph",
             "reference/feax/flat/pbc",
             "reference/feax/flat/solver",
@@ -18,6 +25,7 @@
             "reference/feax/gene/adaptive",
             "reference/feax/gene/filters",
             "reference/feax/gene/mdmm",
+            "reference/feax/gene/mesh_extraction",
             "reference/feax/gene/optimizer",
             "reference/feax/gene/responses",
             "reference/feax/gene/sdf"
@@ -27,7 +35,10 @@
         },
         {
           "items": [
-            "reference/feax/mechanics/cohesive"
+            "reference/feax/mechanics/cohesive",
+            "reference/feax/mechanics/orientation",
+            "reference/feax/mechanics/shell",
+            "reference/feax/mechanics/tmc"
           ],
           "label": "feax.mechanics",
           "type": "category"
@@ -56,12 +67,14 @@
           "type": "category"
         },
         "reference/feax/DCboundary",
+        "reference/feax/__init__",
         "reference/feax/assembler",
         "reference/feax/basis",
         "reference/feax/fe",
         "reference/feax/internal_vars",
         "reference/feax/mesh",
         "reference/feax/problem",
+        "reference/feax/profiler",
         "reference/feax/solver",
         "reference/feax/utils"
       ],

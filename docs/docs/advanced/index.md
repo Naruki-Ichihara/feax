@@ -10,6 +10,7 @@ This section covers advanced topics in FEAX for specialized applications.
 - **[Cohesive Fracture with Matrix-Free Newton Solver](cohesive_fracture.md)** - Quasi-static fracture simulation using the matrix-free Newton solver and cohesive zone model with energy-based formulation and automatic differentiation.
 - **[Third Medium Contact](third_medium_contact.md)** - Frictionless contact via the third-medium method with HuHu-LuLu biharmonic regularization, incremental loading, and non-symmetric BC elimination.
 - **[Cahn-Hilliard Phase Separation](cahn_hilliard.md)** - Transient spinodal decomposition using mixed formulation, backward Euler time integration, and the `ImplicitPipeline` time-stepping interface.
+- **[Laminated Plates (Shell)](laminated_plates.md)** - First-order shear-deformation (Mindlin) plates and classical lamination theory with `feax.mechanics.shell`: lamina/laminate stiffness, thermal `(N_T, M_T)` resultants, von Kármán nonlinearity, and a load-stepped thermal-warping example.
 - **[Batched Topology Optimization with Surface Loads](batched_topology_optimization.md)** - Multi-load topology optimization using `jax.vmap` to vectorize FE solves, SIREN density fields, and gradient-based updates across 10 load cases in parallel.
 - **[Thermomechanical Topology Optimization](thermomechanical_topology_optimization.md)** - Cryogenic insulation wall design coupling thermal and mechanical solvers via `InternalVars`. Solved temperature field drives thermal strain, with smooth mesh extraction (PyVista) and re-analysis on the optimised geometry.
 

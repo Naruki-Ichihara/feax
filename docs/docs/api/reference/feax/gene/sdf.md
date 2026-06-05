@@ -84,7 +84,8 @@ def to_mesh(resolution: int = 80,
             bounds: Optional[Tuple[onp.ndarray, onp.ndarray]] = None,
             level: float = 0.0,
             padding: float = 0.0,
-            watertight: bool = False) -> Tuple[onp.ndarray, onp.ndarray]
+            watertight: bool = False,
+            smooth_iterations: int = 10) -> Tuple[onp.ndarray, onp.ndarray]
 ```
 
 Extract a triangle surface mesh via marching cubes.
@@ -96,6 +97,7 @@ Parameters
 - **level** (*float*): Iso-level for marching cubes (default 0.0 = surface).
 - **padding** (*float*): Extra space added around bounds in each direction.
 - **watertight** (*bool*): If ``True``, post-process the mesh with trimesh to guarantee a watertight (manifold, closed) surface. Merges duplicate vertices, removes degenerate faces, fills holes, and fixes normals.  Requires ``trimesh``.
+- **smooth_iterations** (*int*): Number of Laplacian smoothing passes when ``watertight=True`` (default 10).  Set to 0 to disable smoothing.
 
 
 Returns
@@ -111,12 +113,48 @@ def to_stl(path: str,
            bounds: Optional[Tuple[onp.ndarray, onp.ndarray]] = None,
            level: float = 0.0,
            padding: float = 0.0,
-           watertight: bool = False) -> None
+           watertight: bool = False,
+           smooth_iterations: int = 10) -> None
 ```
 
 Export the iso-surface as an STL file.
 
 Parameters are forwarded to :meth:`to_mesh`.
+
+#### to\_volume\_mesh
+
+```python
+def to_volume_mesh(resolution: int = 80,
+                   mesh_size: Optional[float] = None,
+                   bounds: Optional[Tuple[onp.ndarray, onp.ndarray]] = None,
+                   padding: float = 0.0,
+                   element_type: str = 'TET4') -> 'Mesh'
+```
+
+Extract a volumetric FE mesh via marching cubes + Gmsh remeshing.
+
+Pipeline: SDF → marching cubes surface → STL → Gmsh volume mesh.
+
+Parameters
+----------
+- **resolution** (*int*): Grid resolution for marching cubes surface extraction.
+- **mesh_size** (*float, optional*): Target element size for Gmsh. Defaults to ``diagonal / resolution``.
+- **bounds** (*(lower, upper), optional*): Bounding box. Defaults to the SDF&#x27;s own bounds.
+- **padding** (*float*): Extra padding around bounds for marching cubes.
+- **element_type** (*str*): Target element type: ``&#x27;TET4&#x27;`` (default) or ``&#x27;TET10&#x27;``.
+
+
+Returns
+-------
+feax.Mesh
+    Volumetric finite element mesh.
+
+Raises
+------
+ImportError
+    If ``gmsh`` is not available.
+RuntimeError
+    If Gmsh fails to generate the volume mesh.
 
 ## Union Objects
 

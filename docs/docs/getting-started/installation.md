@@ -265,7 +265,7 @@ print(f"JAX 64-bit enabled: {jax.config.jax_enable_x64}")
 Expected output:
 ```
 JAX version: 0.4.x
-FEAX version: 0.1.0
+FEAX version: 0.5.2
 JAX devices: [CpuDevice(id=0)] or [GpuDevice(id=0)]
 JAX 64-bit enabled: True
 ```

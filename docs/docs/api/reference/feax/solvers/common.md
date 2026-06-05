@@ -7,6 +7,33 @@ Shared solver helpers.
 
 Small stateless utilities used across linear/newton/reduced solver modules.
 
+## CachedBCOOToCSR Objects
+
+```python
+class CachedBCOOToCSR()
+```
+
+One-shot index analysis, repeated value-only conversion.
+
+On the first call the full ``sum_duplicates`` + ``BCSR.from_bcoo``
+path is executed with concrete arrays.  From that result we extract
+a scatter mapping (``_target_indices``) that maps each raw BCOO data
+entry to the correct position in the deduplicated CSR ``data`` array.
+
+Subsequent calls only perform ``zeros().at[mapping].add(data)`` —
+an O(nnz) operation with no sort.
+
+#### convert
+
+```python
+def convert(A: BCOO)
+```
+
+Return (csr_data, csr_indptr, csr_indices).
+
+First call: full analysis (concrete).
+Subsequent calls: value-only scatter (JIT-friendly).
+
 #### create\_x0
 
 ```python
@@ -60,17 +87,17 @@ def create_linear_solve_fn(solver_options, *, cache_namespace: str = "global")
 
 Create a linear solve function based on solver options.
 
-#### prewarm\_cudss\_solvers
+#### prewarm\_direct\_solvers
 
 ```python
-def prewarm_cudss_solvers(problem, bc, internal_vars, J_bc_func,
-                          forward_options, adjoint_options, forward_solve_fn,
-                          adjoint_solve_fn)
+def prewarm_direct_solvers(problem, bc, internal_vars, J_bc_func,
+                           forward_options, adjoint_options, forward_solve_fn,
+                           adjoint_solve_fn)
 ```
 
-Pre-warm cuDSS solve closures with concrete CSR structure.
+Pre-warm direct solve closures with concrete CSR structure.
 
-This must run outside JAX tracing so the first-call cuDSS initialization
+This must run outside JAX tracing so the first-call direct initialization
 does not capture tracers in closure state.
 
 #### check\_convergence

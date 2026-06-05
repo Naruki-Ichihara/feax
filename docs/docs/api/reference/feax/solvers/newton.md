@@ -8,6 +8,21 @@ Newton solver utilities for FEAX.
 Contains x0 initialization, Armijo line-search implementations,
 and Newton solve variants used by ``feax.solver``.
 
+## NewtonLineSearchError Objects
+
+```python
+class NewtonLineSearchError(RuntimeError)
+```
+
+Raised when Armijo line search exhausts backtracks without a descent step.
+
+A failed line search means the proposed Newton direction is not a
+descent direction for the residual merit function ½‖r‖².  This is
+almost always a symptom of an inconsistent Jacobian, a bad linear
+solve, or a degenerate state, rather than a problem the line search
+itself can recover from — so the Python-loop Newton path raises this
+by default rather than silently truncating the iteration.
+
 #### create\_newton\_solve\_fn
 
 ```python
