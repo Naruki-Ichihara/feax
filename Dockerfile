@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/jax:25.10-py3
+FROM nvcr.io/nvidia/jax:26.05-py3
 
 RUN apt update
 RUN apt upgrade -y
@@ -15,7 +15,14 @@ WORKDIR /workspace
 # JAX is intentionally not reinstalled here: the NVCR base image already ships
 # JAX compiled for CUDA 13.1.1. Use pip install .[cuda13,jax] outside containers.
 RUN pip install .[cuda13,sksparse]
-RUN pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
+
+# Install spineax (patched fork for cuDSS 0.8) WITHOUT touching the base JAX.
+# Pre-install the build backend + cuDSS 0.8 (headers for build, libcudss.so.0 for
+# runtime), then build spineax against the container's own jaxlib headers so the
+# FFI ABI matches at runtime. --no-deps keeps the NVCR base JAX in place.
+RUN pip install --no-build-isolation "scikit-build-core>=0.5" nanobind nvidia-cudss-cu13
+RUN pip install --no-build-isolation --no-deps \
+    "git+https://github.com/Naruki-Ichihara/spineax.git"
 
 # Optional: Node.js 20 + pydoc-markdown + Docusaurus dependencies
 # Build with: docker build --build-arg INSTALL_DOCS=true .
