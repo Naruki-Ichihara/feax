@@ -81,6 +81,7 @@ Override these methods to define the constitutive law and loading:
 | `get_surface_maps()` | `(u, x, *iv) → t` | Surface tractions (Neumann BCs) |
 | `get_weak_form()` | `(vals, grads, x, *iv) → (mass, grad)` | Multi-variable coupled physics |
 | `get_surface_weak_forms()` | `(vals, x, *iv) → tractions` | Multi-variable surface loads |
+| `get_universal_kernel()` | element-level kernel (see below) | Custom quadrature, ANS, EAS, Hessian regularization |
 | `custom_init(*args)` | — | Custom setup using `additional_info` |
 
 The `*iv` arguments are internal variables (volume or surface), passed automatically by the assembler.
@@ -222,6 +223,147 @@ class StokesProblem(fe.problem.Problem):
 ```
 
 Multi-variable problems require `get_weak_form()` (or `get_universal_kernel()`) — the single-variable methods (`get_tensor_map`, etc.) are not used and will produce a warning if defined.
+
+#### `get_universal_kernel()` — element-level control
+
+`get_weak_form()` operates at a single quadrature point and lets the framework handle interpolation and integration. `get_universal_kernel()` drops one level lower: it receives the full **element** data — all nodal values, all quadrature points, shape function gradients and weights — and returns the element residual vector directly. The framework then handles global assembly and automatic differentiation.
+
+Use `get_universal_kernel()` when the physics at a quadrature point cannot be expressed independently of the other quadrature points in the same element, for example:
+
+- custom quadrature rules (different from the element's default Gauss points)
+- assumed natural strain (ANS) tying across quadrature points
+- element-level static condensation (enhanced assumed strain, EAS)
+- element-level Hessian regularization (biharmonic, see the Third-Medium Contact example)
+
+##### Kernel signature
+
+The kernel function receives the following arguments per element:
+
+```python
+def kernel(
+    cell_sol_flat,          # (num_dofs_per_cell,)  nodal DOF values, flattened
+    physical_quad_points,   # (num_quads, dim)       physical coords of native Gauss pts
+    cell_shape_grads,       # (num_quads, num_nodes, dim)  dN/dx at native Gauss pts
+    cell_JxW,               # (num_quads,)           det(J) × weight at native Gauss pts
+    cell_v_grads_JxW,       # (num_quads, num_nodes, vec, dim)  pre-weighted test grad
+    *cell_internal_vars,    # per-cell internal variables (gathered from InternalVars)
+):
+    ...
+    return residual_flat    # (num_dofs_per_cell,)  element residual, flattened
+```
+
+The kernel is **vmapped over all cells** by the framework: it sees one element at a time. `cell_sol_flat` is the concatenation of all nodal DOF values for that element; use `self.unflatten_fn_dof(cell_sol_flat)` to recover the per-variable, per-node arrays.
+
+##### Return value
+
+Return a 1-D JAX array of length `num_dofs_per_cell` — the element's contribution to the global residual. Use `jax.flatten_util.ravel_pytree` to flatten structured arrays before returning:
+
+```python
+import jax.flatten_util
+
+R = ...  # (num_nodes, vec) element residual
+return jax.flatten_util.ravel_pytree(R)[0]
+```
+
+The global stiffness matrix (Jacobian) is assembled automatically via `jax.jacrev` on the kernel, so no manual linearisation is required.
+
+##### Accessing nodal data
+
+`cell_sol_flat` contains all element DOFs in a flat vector. `unflatten_fn_dof` splits it back into per-variable arrays:
+
+```python
+class MyProblem(fe.Problem):
+    def get_universal_kernel(self):
+        unflatten = self.unflatten_fn_dof
+
+        def kernel(cell_sol_flat, physical_quad_points,
+                   cell_shape_grads, cell_JxW, cell_v_grads_JxW,
+                   *cell_internal_vars):
+            cell_sol_list = unflatten(cell_sol_flat)
+            cell_sol = cell_sol_list[0]   # (num_nodes, vec) for variable 0
+            ...
+        return kernel
+```
+
+##### Per-cell internal variables
+
+`cell_internal_vars` contains **one entry per variable in `InternalVars.volume_vars`**, already gathered to the element level:
+
+| Global shape | Per-cell shape passed to kernel |
+|---|---|
+| `(num_nodes,)` | `(num_nodes_per_elem,)` — gathered via connectivity |
+| `(num_cells,)` | scalar (the cell's value) |
+| `(num_cells, num_quads, ...)` | `(num_quads, ...)` — the element's rows |
+| Any other shape | passed through unchanged |
+
+This makes it straightforward to pass, for example, per-cell node coordinates — which would be the physical positions of the element's nodes — as a volume variable, and use them to build a custom isoparametric Jacobian inside the kernel.
+
+##### Minimal example
+
+A linear-elastic kernel that recomputes the isoparametric Jacobian from per-cell node coordinates stored as a volume internal variable, using a custom quadrature rule precomputed at construction time:
+
+```python
+import jax
+import jax.numpy as np
+import jax.flatten_util
+import feax as fe
+from feax.internal_vars import InternalVars
+
+class CustomQuadratureProblem(fe.Problem):
+    def custom_init(self, dNdxi, weights, C):
+        # dNdxi  : (nq, num_nodes, 3)  reference shape gradients at custom quad pts
+        # weights: (nq,)               quadrature weights (sum to reference-cell volume)
+        # C      : (3,3,3,3)           stiffness tensor
+        self._dNdxi = dNdxi
+        self._w = weights
+        self._C = C
+
+    def get_universal_kernel(self):
+        dNdxi = self._dNdxi      # (nq, num_nodes, 3)
+        w = self._w              # (nq,)
+        C = self._C              # (3,3,3,3)
+        unflatten = self.unflatten_fn_dof
+
+        def kernel(cell_sol_flat, physical_quad_points,
+                   cell_shape_grads, cell_JxW, cell_v_grads_JxW,
+                   cell_nodes):
+            # cell_nodes: (num_nodes, 3) — per-cell physical coords from InternalVars
+            cell_sol = unflatten(cell_sol_flat)[0]          # (num_nodes, 3)
+
+            # Isoparametric Jacobian and its inverse at each custom quad point
+            J    = np.einsum("ai,qaI->qiI", cell_nodes, dNdxi)  # (nq, 3, 3)
+            Jinv = np.linalg.inv(J)
+            detJ = np.linalg.det(J)
+
+            # Physical shape gradients dN/dx
+            dNdx = np.einsum("qaI,qIi->qai", dNdxi, Jinv)       # (nq, num_nodes, 3)
+
+            # Small-strain stress
+            grad_u = np.einsum("ai,qaj->qij", cell_sol, dNdx)   # (nq, 3, 3)
+            eps    = 0.5 * (grad_u + np.transpose(grad_u, (0, 2, 1)))
+            sigma  = np.einsum("ijkl,qkl->qij", C, eps)          # (nq, 3, 3)
+
+            # Element residual R_ai = Σ_q (w · detJ)_q σ_ij (dN_a/dx_j)_q
+            JxW = w * detJ
+            R = np.einsum("q,qij,qaj->ai", JxW, sigma, dNdx)    # (num_nodes, 3)
+            return jax.flatten_util.ravel_pytree(R)[0]
+
+        return kernel
+
+
+# Construction: pass custom quad data via additional_info,
+# node coords via InternalVars
+problem = CustomQuadratureProblem(
+    mesh, vec=3, dim=3, ele_type="HEX8",
+    additional_info=(dNdxi, weights, C),
+)
+cell_nodes = np.asarray(mesh.points)[np.asarray(mesh.cells)]  # (nc, nn, 3)
+iv = InternalVars(volume_vars=(cell_nodes,))
+```
+
+:::note
+`get_universal_kernel()` can coexist with `get_tensor_map()` for single-variable problems: the assembler adds their contributions. For multi-variable problems only `get_universal_kernel()` (or `get_weak_form()`) is used.
+:::
 
 ### Using `additional_info` and `custom_init`
 

@@ -81,6 +81,11 @@ from .solvers.common import (
     create_linear_solve_fn,
     create_x0,
 )
+from .solvers.eigen import (
+    BucklingConvergenceError,
+    create_linear_buckling_solver,
+    generalized_eigh,
+)
 from .solvers.linear import create_linear_solver, linear_solve
 from .solvers.matrix_free import (
     LinearSolverOptions,

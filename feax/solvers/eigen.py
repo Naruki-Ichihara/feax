@@ -1,0 +1,647 @@
+"""Linear-buckling eigensolvers for feax, in JAX.
+
+Solves the linear-buckling pencil ``(K + λ K_g) φ = 0`` for the lowest positive
+buckling factors ``λ`` and their mode shapes, with three forward backends:
+
+* ``solver="sparse"`` (:func:`_sparse_buckling`, **default**) — matrix-free shift-invert
+  ``T = -K⁻¹ K_g`` solved by SciPy ARPACK (:func:`scipy.sparse.linalg.eigs`) with one
+  sparse factorization for ``K⁻¹``. ``O(nf · ncv)`` memory, never a dense ``N×N``. Runs
+  purely host-side (no nested ``jax.pure_callback``), so it is leak-free under repeated
+  calls (e.g. inside topology optimization).
+* ``solver="dense"`` (:func:`_dense_buckling`) — Cholesky reduction of the generalized
+  symmetric-definite pencil to a standard ``jnp.linalg.eigh`` on the free DoFs.
+  Exact and robust, but ``O(nf²)`` memory; for small/medium reduced systems.
+* ``solver="matfree"`` (:func:`_matfree_buckling`, opt-in) — the same shift-invert via
+  matfree's JAX Arnoldi. Equivalent results, but applies ``K⁻¹`` through a nested
+  ``jax.pure_callback`` that accumulates in the XLA runtime across calls (memory leak in
+  long loops); prefer ``"sparse"`` unless you specifically need the JAX path.
+
+The differentiable driver :func:`create_linear_buckling_solver` wraps any backend with
+an analytical eigenvalue sensitivity, so ``λ`` is ``jax.grad``-able w.r.t. the assembled
+``K`` / ``K_g`` (and ``bf`` itself stays jittable — the eigensolve is an opaque host
+callback regardless of backend).
+"""
+from __future__ import annotations
+
+from typing import Tuple
+
+import jax
+import jax.numpy as jnp
+import numpy as onp
+from jax.scipy.linalg import solve_triangular
+
+try:                                   # jax.experimental.sparse.BCOO, if available
+    from jax.experimental.sparse import BCOO
+except Exception:                      # pragma: no cover
+    BCOO = ()
+
+try:                                   # matfree: optional opt-in backend (solver="matfree")
+    from matfree import eig as _mf_eig, decomp as _mf_decomp
+    _HAVE_MATFREE = True
+except Exception:                      # pragma: no cover
+    _HAVE_MATFREE = False
+
+
+class BucklingConvergenceError(RuntimeError):
+    """Raised when the matrix-free buckling eigensolve fails to converge.
+
+    Lets a caller (e.g. a topology-optimization loop) detect a bad solve early and
+    react — instead of silently propagating garbage eigenvalues / sensitivities.
+    """
+
+
+def generalized_eigh(A: jnp.ndarray, B: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """Solve the generalized symmetric eigenproblem ``A x = λ B x`` (``B ≻ 0``).
+
+    Parameters
+    ----------
+    A : (n, n) array
+        Symmetric matrix (symmetrised internally for round-off).
+    B : (n, n) array
+        Symmetric positive-definite matrix.
+
+    Returns
+    -------
+    w : (n,) array
+        Eigenvalues ``λ`` in ascending order.
+    X : (n, n) array
+        Eigenvectors as columns, B-orthonormal (``Xᵀ B X = I``).
+
+    Notes
+    -----
+    Implemented via the Cholesky reduction ``C = L⁻¹ A L⁻ᵀ`` with ``B = L Lᵀ``; the
+    eigenvalues of ``C`` equal those of the pencil and ``x = L⁻ᵀ u``.
+    """
+    A = jnp.asarray(A); B = jnp.asarray(B)
+    A = 0.5 * (A + A.T)
+    L = jnp.linalg.cholesky(B)                       # B = L Lᵀ (L lower-triangular)
+    Y = solve_triangular(L, A, lower=True)           # L⁻¹ A
+    C = solve_triangular(L, Y.T, lower=True).T       # L⁻¹ A L⁻ᵀ  (symmetric)
+    C = 0.5 * (C + C.T)
+    w, U = jnp.linalg.eigh(C)                         # standard symmetric eig
+    X = solve_triangular(L.T, U, lower=False)        # x = L⁻ᵀ u
+    return w, X
+
+
+def _dense_buckling(K, Kg, free_dofs, num_modes: int = 6,
+                    zero_tol: float = 1e-8, verbose: bool = False
+                    ) -> Tuple[onp.ndarray, onp.ndarray]:
+    """Dense generalized-eigh buckling core (non-differentiable; returns NumPy).
+
+    Used as the forward solve inside :func:`create_linear_buckling_solver` (``solver=
+    "dense"``). Prefer that differentiable wrapper in user code.
+
+    Linear buckling factors and modes of ``(K + λ K_g) φ = 0``.
+
+    Solves the pencil on the unconstrained DoFs (``free_dofs``) as the symmetric /
+    positive-definite generalized problem ``K_g x = γ K x`` via :func:`generalized_eigh`
+    (so ``K`` restricted to the free DoFs must be positive definite — i.e. rigid-body
+    and Dirichlet DoFs excluded). The buckling factor is ``λ = -1/γ``; the lowest
+    positive ``λ`` scales the reference load to the critical load.
+
+    Parameters
+    ----------
+    K, Kg : (N, N) BCOO or dense array
+        Material tangent stiffness and geometric (initial-stress) stiffness.
+    free_dofs : int array
+        Indices of the unconstrained DoFs.
+    num_modes : int
+        Number of lowest positive buckling modes to return.
+    zero_tol : float
+        Buckling factors with ``|λ|`` below this (rigid/spurious) are discarded.
+
+    Returns
+    -------
+    lambdas : (m,) array
+        Ascending positive buckling factors (``m = min(num_modes, #positive)``).
+    modes : (m, N) array
+        Mode shapes scattered back onto the full DoF vector (zero on constrained DoFs).
+    """
+    N = K.shape[0]
+    free = onp.asarray(free_dofs)
+    nf = len(free)
+    if verbose:
+        jax.debug.print("[buckling/dense] dense generalized eigh | N={N}, free={nf}, "
+                        "constrained={nc}, num_modes={m}",
+                        N=N, nf=nf, nc=N - nf, m=num_modes)
+    if BCOO and isinstance(K, BCOO):
+        # slice to the free DoFs while still sparse, then densify only the small block
+        Kf = _restrict_bcoo(K, free).todense()
+        Kgf = _restrict_bcoo(Kg, free).todense()
+    else:
+        fj = jnp.asarray(free)
+        Kf = jnp.asarray(K)[jnp.ix_(fj, fj)]
+        Kgf = jnp.asarray(Kg)[jnp.ix_(fj, fj)]
+    if verbose:
+        jax.debug.print("[buckling/dense]   reduced blocks densified {sh}; "
+                        "min diag(K_free)={d:.3e} (>0 needed for Cholesky)",
+                        sh=Kf.shape, d=jnp.min(jnp.diag(Kf)))
+
+    gamma, Vf = generalized_eigh(Kgf, Kf)            # K_g x = γ K x
+    if verbose:
+        # eigen-residual ‖K_g x − γ K x‖/‖K_g x‖ for every computed pair
+        KgX = Kgf @ Vf; KX = Kf @ Vf
+        res_all = (jnp.linalg.norm(KgX - gamma[None, :] * KX, axis=0)
+                   / (jnp.linalg.norm(KgX, axis=0) + 1e-30))
+        jax.debug.print("[buckling/dense]   Cholesky+eigh done; gamma in "
+                        "[{lo:.3e}, {hi:.3e}]; max eig-residual={r:.2e}",
+                        lo=jnp.min(gamma), hi=jnp.max(gamma), r=jnp.max(res_all))
+    gamma = onp.asarray(gamma); Vf = onp.asarray(Vf)
+
+    lam = -1.0 / gamma
+    valid = (lam > zero_tol) & onp.isfinite(lam)
+    order = onp.argsort(onp.where(valid, lam, onp.inf))[:num_modes]
+    order = order[valid[order]]                      # keep only genuine positive modes
+    if verbose:
+        Kfn = onp.asarray(Kf); Kgfn = onp.asarray(Kgf)
+        jax.debug.print("[buckling/dense]   positive buckling factors found = {n}",
+                        n=int(valid.sum()))
+        for i, c in enumerate(order):
+            x = Vf[:, c]
+            res = (onp.linalg.norm(Kgfn @ x - gamma[c] * (Kfn @ x))
+                   / (onp.linalg.norm(Kgfn @ x) + 1e-30))
+            jax.debug.print("[buckling/dense]   mode {i}: lambda={l:.6g}  gamma={g:.4e}  "
+                            "resid={r:.2e}", i=i + 1, l=lam[c], g=gamma[c], r=res)
+
+    modes = onp.zeros((len(order), N))
+    modes[:, free] = Vf[:, order].T
+    return lam[order], modes
+
+
+def _restrict_bcoo(M, free):
+    """Extract the ``free × free`` sub-matrix of a BCOO as a new BCOO (host-side).
+
+    Done once up front so the Arnoldi mat-vecs are plain reduced-space sparse
+    products (``M_free @ v``) — avoiding a scatter into a length-``N`` zero vector
+    inside the JIT, which XLA tries (slowly) to constant-fold.
+    """
+    idx = onp.asarray(M.indices); dat = onp.asarray(M.data)
+    N = M.shape[0]
+    remap = -onp.ones(N, dtype=onp.int64)
+    remap[onp.asarray(free)] = onp.arange(len(free))
+    r = remap[idx[:, 0]]; c = remap[idx[:, 1]]
+    keep = (r >= 0) & (c >= 0)
+    new_idx = onp.stack([r[keep], c[keep]], axis=1)
+    return BCOO((jnp.asarray(dat[keep]), jnp.asarray(new_idx)),
+                shape=(len(free), len(free)))
+
+
+def _restrict_csr(M, free):
+    """``free × free`` sub-matrix of a BCOO as a SciPy CSR — pure NumPy/SciPy.
+
+    Use this (not :func:`_restrict_bcoo`) inside the host eigensolve callback: building
+    JAX BCOOs and dispatching JAX ops (matmul / vmap) from within a ``jax.pure_callback``
+    accumulates runtime state and leaks memory across repeated calls.
+    """
+    import scipy.sparse as sp
+    idx = onp.asarray(M.indices); dat = onp.asarray(M.data)
+    N = M.shape[0]; nf = len(free)
+    remap = -onp.ones(N, dtype=onp.int64)
+    remap[onp.asarray(free)] = onp.arange(nf)
+    r = remap[idx[:, 0]]; c = remap[idx[:, 1]]
+    keep = (r >= 0) & (c >= 0)
+    return sp.csr_matrix((dat[keep], (r[keep], c[keep])), shape=(nf, nf))
+
+
+def _make_host_solve(A):
+    """Factorize a reduced SPD stiffness (SciPy sparse ``A``); return a host ``K⁻¹`` apply.
+
+    The returned ``solve(b)`` is plain SciPy/NumPy — **no** JAX. The buckling eigensolve
+    already runs host-side (inside the differentiable wrapper's ``pure_callback``); any
+    JAX op or nested ``pure_callback`` there accumulates runtime state across calls and
+    leaks memory until OOM. Uses CHOLMOD (``sksparse``) when available, else SciPy
+    ``splu``.
+    """
+    import scipy.sparse as sp
+    A = sp.csc_matrix(A)
+    A = (0.5 * (A + A.T)).tocsc()                     # clean round-off asymmetry
+
+    factor = None                                    # try CHOLMOD (sparse Cholesky)
+    try:
+        from sksparse.cholmod import cholesky as _chol
+        f = _chol(A)
+        if callable(f):                              # some builds return a non-Factor; guard
+            factor = f
+    except Exception:
+        factor = None
+    if factor is not None:
+        return (lambda b: onp.asarray(factor(b), dtype=onp.float64)), "cholmod"
+    try:
+        lu = sp.linalg.splu(A)                        # SuperLU LU
+    except (RuntimeError, MemoryError) as e:          # near-singular / out-of-memory
+        raise BucklingConvergenceError(
+            f"sparse factorization of K failed ({type(e).__name__}: {e}); K is "
+            "likely near-singular on the free DoFs (raise the SIMP void floor or "
+            "constrain more rigid modes).") from e
+    return (lambda b: onp.asarray(lu.solve(onp.asarray(b, dtype=onp.float64)),
+                                  dtype=onp.float64)), "splu"
+
+
+def _make_kinv_apply(Kf):
+    """JAX-callable ``K⁻¹`` apply via :func:`jax.pure_callback` (matfree backend only).
+
+    .. warning::
+        The matfree path runs JAX (its Arnoldi ``lax.scan`` / ``jnp.linalg.eig`` and this
+        nested ``K⁻¹`` ``pure_callback``) *inside* the host eigensolve callback. That
+        per-call JAX dispatch accumulates in the runtime and leaks memory (~tens of
+        MB/iter) over a long loop — it cannot be fully avoided while using matfree here.
+        Prefer the default ``solver="sparse"`` (SciPy ARPACK, :func:`_sparse_buckling`),
+        which is pure host-side and leak-free; reserve ``"matfree"`` for single solves.
+    """
+    import scipy.sparse as sp
+    idx = onp.asarray(Kf.indices); dat = onp.asarray(Kf.data); nf = Kf.shape[0]
+    solve, backend = _make_host_solve(
+        sp.csc_matrix((dat, (idx[:, 0], idx[:, 1])), shape=(nf, nf)))
+
+    def kinv(b):
+        return jax.pure_callback(
+            lambda x: solve(onp.asarray(x, dtype=onp.float64)),
+            jax.ShapeDtypeStruct(b.shape, b.dtype), b)
+    return kinv, backend
+
+
+def _sparse_buckling(K, Kg, free_dofs, num_modes: int = 6, num_matvecs: int = 30,
+                     seed: int = 0, conv_tol: float = 1e-2, verbose: bool = False
+                     ) -> Tuple[onp.ndarray, onp.ndarray]:
+    """Sparse, matrix-free linear buckling via SciPy ARPACK shift-invert (host-side).
+
+    The default ``solver="sparse"`` backend. Recast ``(K + λ K_g) φ = 0`` as
+
+    .. code-block:: text
+
+        T = -K⁻¹ K_g ,   T φ = μ φ   with   μ = 1/λ,
+
+    and find the largest-magnitude ``μ`` (the smallest positive ``λ``) with ARPACK
+    (:func:`scipy.sparse.linalg.eigs`) driving a ``LinearOperator`` ``v ↦ -K⁻¹(K_g v)``.
+    ``K⁻¹`` is one sparse factorization (CHOLMOD / SuperLU). Everything runs in plain
+    SciPy/NumPy — **no** ``jax.pure_callback`` inside the eigensolve — so repeated calls
+    in an optimization loop do not accumulate runtime callbacks / factors (no leak).
+    Memory is the sparse factor + an ``O(nf · ncv)`` Krylov basis (never a dense ``N×N``).
+
+    Parameters
+    ----------
+    K, Kg : (N, N) BCOO
+        Material tangent stiffness and geometric (initial-stress) stiffness.
+    free_dofs : int array
+        Indices of the unconstrained DoFs (``K`` restricted to them must be SPD).
+    num_modes : int
+        Number of lowest positive buckling modes to return.
+    num_matvecs : int
+        Lower bound on the ARPACK Arnoldi basis size ``ncv`` (``ncv ≥ 2k+1`` is enforced).
+    conv_tol : float or None
+        Tolerance on the fundamental Ritz pair's residual ``‖Tφ−μφ‖/‖φ‖``; raise
+        :class:`BucklingConvergenceError` early if exceeded / no positive mode found.
+        ``None`` disables the check.
+    seed, verbose
+        RNG seed for the ARPACK starting vector; debug output.
+
+    Returns
+    -------
+    lambdas : (m,) array       Ascending positive buckling factors.
+    modes : (m, N) array       Mode shapes scattered onto the full DoF vector.
+    """
+    import scipy.sparse as sp
+    import scipy.sparse.linalg as spla
+    N = K.shape[0]
+    free = onp.asarray(free_dofs)
+    nf = len(free)
+    Kg_sp = _restrict_csr(Kg, free)                  # reduced sub-matrices (pure SciPy)
+    solve, backend = _make_host_solve(_restrict_csr(K, free))   # factorize K once (host)
+
+    def matvec(v):                                   # T v = -K⁻¹ (K_g v)
+        return -solve(Kg_sp @ onp.asarray(v, dtype=onp.float64))
+
+    T = spla.LinearOperator((nf, nf), matvec=matvec, dtype=onp.float64)
+    k = int(min(num_modes + 4, nf - 2))
+    if k < 1:
+        raise BucklingConvergenceError(
+            f"too few free DoFs ({nf}) for the sparse eigensolve; use solver='dense'.")
+    ncv = int(min(nf - 1, max(num_matvecs, 2 * k + 1)))
+    v0 = onp.random.RandomState(seed).randn(nf)
+    if verbose:
+        print(f"[buckling/sparse] ARPACK shift-invert (K⁻¹={backend}) | "
+              f"N={N}, free={nf}, k={k}, ncv={ncv}")
+    try:
+        vals, vecs = spla.eigs(T, k=k, which="LM", ncv=ncv, v0=v0)
+    except spla.ArpackNoConvergence as e:            # use whatever converged
+        vals, vecs = e.eigenvalues, e.eigenvectors
+        if vals.size == 0:
+            raise BucklingConvergenceError(
+                f"ARPACK did not converge (k={k}, ncv={ncv}); increase num_matvecs "
+                "or check that K is SPD on the free DoFs.") from e
+
+    mu = vals.real
+    real_pair = onp.abs(vals.imag) <= 1e-8 * (onp.abs(vals.real) + 1e-30)
+    lam = onp.where(mu != 0.0, 1.0 / mu, onp.inf)
+    valid = real_pair & onp.isfinite(lam) & (lam > 1e-12)
+    order = onp.argsort(onp.where(valid, lam, onp.inf))
+    order = order[valid[order]][:num_modes]
+
+    def _resid(c):                                   # eigen-residual ‖Tφ − μφ‖/‖φ‖
+        x = vecs[:, c].real
+        return float(onp.linalg.norm(matvec(x) - mu[c] * x) / (onp.linalg.norm(x) + 1e-30))
+
+    if conv_tol is not None:
+        if len(order) == 0:
+            raise BucklingConvergenceError(
+                "sparse buckling found no positive eigenvalue; the solve did not "
+                "converge.")
+        res0 = _resid(order[0])
+        if not onp.isfinite(res0) or res0 > conv_tol:
+            raise BucklingConvergenceError(
+                f"sparse buckling not converged: fundamental-mode residual {res0:.2e} "
+                f"> tol {conv_tol:.1e}. Increase num_matvecs, or check that K is SPD "
+                "on the free DoFs.")
+    if verbose:
+        for i, c in enumerate(order):
+            print(f"[buckling/sparse]   mode {i + 1}: lambda={lam[c]:.6g}  "
+                  f"mu={mu[c]:.4e}  resid={_resid(c):.2e}")
+
+    modes = onp.zeros((len(order), N))
+    modes[:, free] = vecs[:, order].real.T
+    return lam[order], modes
+
+
+def _matfree_buckling(K, Kg, free_dofs, num_modes: int = 6, num_matvecs: int = 30,
+                     seed: int = 0, conv_tol: float = 1e-2, verbose: bool = False
+                     ) -> Tuple[onp.ndarray, onp.ndarray]:
+    """Opt-in (``solver="matfree"``) buckling via matfree's JAX Arnoldi eig.
+
+    Equivalent to :func:`_sparse_buckling` but applies ``K⁻¹`` through a nested
+    ``jax.pure_callback`` (see :func:`_make_kinv_apply`), which accumulates in the XLA
+    runtime across repeated calls and leaks memory in long loops. Prefer the default
+    ``solver="sparse"`` (SciPy ARPACK) unless you specifically need the JAX path.
+
+    Recast ``(K + λ K_g) φ = 0`` as the shift-invert standard eigenproblem
+
+    .. code-block:: text
+
+        T = -K⁻¹ K_g ,   T φ = μ φ   with   μ = 1/λ,
+
+    whose largest positive ``μ`` give the smallest positive buckling factors ``λ = 1/μ``.
+    ``K⁻¹`` is applied by a single sparse factorization (SuperLU ``splu`` via
+    :func:`_make_kinv_apply`); the eigenpairs come from matfree's *non-symmetric*
+    Arnoldi factorization (``matfree.eig.eig_partial``).
+
+    Arnoldi works directly on the standard-orthonormal Krylov basis (no reduced
+    subspace + generalized Rayleigh–Ritz, whose ``UᵀKU`` Cholesky would corrupt mode
+    shapes on ill-conditioned ``K``), so the Ritz eigenvectors are the true buckling
+    modes — eigenvalues match the dense generalized solver to near machine precision and
+    the modes carry no spurious concentration. ``O(nf · num_matvecs)`` memory.
+
+    Parameters
+    ----------
+    K, Kg : (N, N) BCOO
+        Material tangent stiffness and geometric (initial-stress) stiffness.
+    free_dofs : int array
+        Indices of the unconstrained DoFs (``K`` restricted to them must be SPD).
+    num_modes : int
+        Number of lowest positive buckling modes to return.
+    num_matvecs : int
+        Arnoldi/Krylov subspace size (number of mat-vecs). Must exceed ``num_modes``;
+        larger gives more/secondary modes and better-resolved eigenpairs at higher cost.
+    conv_tol : float or None
+        Convergence tolerance on the fundamental Ritz pair's residual ``‖Tφ−μφ‖/‖φ‖``.
+        If exceeded (or no positive mode is found), raise :class:`BucklingConvergenceError`
+        early. ``None`` disables the check.
+    seed, verbose
+        RNG seed for the starting vector; debug output via ``jax.debug.print``.
+
+    Returns
+    -------
+    lambdas : (m,) array       Ascending positive buckling factors.
+    modes : (m, N) array       Mode shapes scattered onto the full DoF vector.
+    """
+    if not _HAVE_MATFREE:
+        raise ImportError("_matfree_buckling requires the 'matfree' package "
+                          "(pip install matfree).")
+    N = K.shape[0]
+    free = onp.asarray(free_dofs)
+    nf = len(free)
+    Kf = _restrict_bcoo(K, free)                     # reduced sparse sub-matrices
+    Kgf = _restrict_bcoo(Kg, free)
+    nkv = int(min(num_matvecs, nf - 1))
+    kinv, backend = _make_kinv_apply(Kf)             # factorize K once (host)
+    if verbose:
+        jax.debug.print("[buckling/sparse] Arnoldi shift-invert (K⁻¹={bk}) | "
+                        "N={N}, free={nf}, num_matvecs={k}",
+                        bk=backend, N=N, nf=nf, k=nkv)
+
+    v0 = jnp.asarray(onp.random.RandomState(seed).randn(nf))
+
+    def T(v):                                        # μ = 1/λ eigenproblem  T φ = μ φ
+        return -kinv(Kgf @ v)
+
+    eig_fun = _mf_eig.eig_partial(_mf_decomp.hessenberg(nkv, reortho="full"))
+
+    # Run the Arnoldi factorization EAGER — do NOT wrap it in a per-call ``jax.jit``.
+    # A fresh jitted closure on every call would (a) trigger a full XLA compile each
+    # time and (b) retain the compiled executable together with its host K⁻¹ callback
+    # (which holds the large sparse factor) in JAX's cache, accumulating across an
+    # optimization loop until the host runs out of memory.
+    vals, vecs = eig_fun(T, v0)                       # vals (nkv,) complex; vecs (nkv, nf)
+    vals = onp.asarray(vals); vecs = onp.asarray(vecs)
+
+    mu = vals.real
+    real_pair = onp.abs(vals.imag) <= 1e-8 * (onp.abs(vals.real) + 1e-30)
+    lam = onp.where(mu != 0.0, 1.0 / mu, onp.inf)
+    valid = real_pair & onp.isfinite(lam) & (lam > 1e-12)
+    order = onp.argsort(onp.where(valid, lam, onp.inf))
+    order = order[valid[order]][:num_modes]
+
+    def _resid(c):                                   # eigen-residual ‖Tφ − μφ‖/‖φ‖
+        x = vecs[c].real
+        return float(onp.linalg.norm(onp.asarray(T(jnp.asarray(x))) - mu[c] * x)
+                     / (onp.linalg.norm(x) + 1e-30))
+
+    # Fail fast on non-convergence: stop here (before the eigenvalues feed the K_g
+    # sensitivity / the optimizer) if no positive mode was found or the fundamental
+    # Ritz pair is unconverged. ``conv_tol=None`` disables the check.
+    if conv_tol is not None:
+        if len(order) == 0:
+            raise BucklingConvergenceError(
+                f"matfree buckling found no positive eigenvalue (num_matvecs={nkv}); "
+                "the eigensolve did not converge.")
+        res0 = _resid(order[0])
+        if not onp.isfinite(res0) or res0 > conv_tol:
+            raise BucklingConvergenceError(
+                f"matfree buckling not converged: fundamental-mode residual {res0:.2e} "
+                f"> tol {conv_tol:.1e} (num_matvecs={nkv}). Increase num_matvecs, or "
+                "check that K is SPD on the free DoFs.")
+    if verbose:
+        for i, c in enumerate(order):
+            jax.debug.print("[buckling/sparse]   mode {i}: lambda={l:.6g}  mu={g:.4e}  "
+                            "resid={r:.2e}", i=i + 1, l=lam[c], g=mu[c], r=_resid(c))
+
+    modes = onp.zeros((len(order), N))
+    modes[:, free] = vecs[order].real
+    return lam[order], modes
+
+
+def _outer_cotangent(M, phi, w, free):
+    """Cotangent BCOO for a matrix input from the eigenvalue sensitivity.
+
+    For stored entry ``(r, c)`` of ``M`` the contribution is ``Σ_i w_i φ_i[r] φ_i[c]``
+    (rows/cols mapped to the free numbering; non-free entries get 0).
+    """
+    N = M.shape[0]
+    remap = -onp.ones(N, dtype=onp.int64)
+    remap[onp.asarray(free)] = onp.arange(len(free))
+    remap = jnp.asarray(remap)
+    rows = M.indices[:, 0]; cols = M.indices[:, 1]
+    rf = remap[rows]; cf = remap[cols]
+    ok = (rf >= 0) & (cf >= 0)
+    rf = jnp.where(ok, rf, 0); cf = jnp.where(ok, cf, 0)
+    contrib = jnp.sum(w[:, None] * phi[:, rf] * phi[:, cf], axis=0)
+    # Preserve the input BCOO's index metadata so the custom_vjp cotangent matches the
+    # primal's pytree structure exactly (custom_vjp requires identical container defs).
+    return BCOO((jnp.where(ok, contrib, 0.0), M.indices), shape=M.shape,
+                indices_sorted=M.indices_sorted, unique_indices=M.unique_indices)
+
+
+def create_linear_buckling_solver(free_dofs, num_modes: int = 3, solver: str = "sparse",
+                                  **solver_kw):
+    """Return a ``jax.grad``-able function ``bf(K, Kg) -> λ`` for buckling factors.
+
+    The forward eigensolve (sparse matrix-free :func:`_matfree_buckling` or dense
+    :func:`_dense_buckling`, selected by ``solver``) runs through a
+    :func:`jax.pure_callback`; differentiability is supplied by a
+    :func:`jax.custom_vjp` using the **analytical eigenvalue sensitivity**
+
+    .. code-block:: text
+
+        (K + λ K_g) φ = 0,   φᵀ K φ = 1   ⇒   dλ = λ φᵀ dK φ + λ² φᵀ dK_g φ.
+
+    Because only eigenvalues (not eigenvectors) are differentiated, this is robust to
+    the degenerate buckling-mode pairs that make a naive ``eigh`` VJP blow up. Gradients
+    flow to ``K.data`` and ``K_g.data`` (hence to any upstream design parameters that
+    assemble them), e.g. for buckling-load optimization.
+
+    Parameters
+    ----------
+    free_dofs : int array
+        Unconstrained DoFs (captured; the returned function differentiates only K, Kg).
+    num_modes : int
+        Number of buckling factors returned.
+    solver : {"sparse", "dense", "matfree"}
+        Forward eigensolver. ``"sparse"`` (default) forwards ``solver_kw`` to
+        :func:`_sparse_buckling` (SciPy ARPACK matrix-free shift-invert — low memory,
+        leak-free; e.g. ``num_matvecs=40``); ``"dense"`` uses :func:`_dense_buckling`
+        (exact, ``O(nf²)`` memory); ``"matfree"`` uses :func:`_matfree_buckling` (JAX
+        matfree Arnoldi — equivalent, opt-in; leaks memory in long loops).
+
+    Returns
+    -------
+    bf : Callable[[BCOO, BCOO], Tuple[jax.Array, jax.Array]]
+        ``bf(K, Kg) -> (lambdas, modes)``. ``lambdas`` is the ``(num_modes,)`` ascending
+        positive buckling factors, **differentiable** w.r.t. ``K`` and ``Kg``. ``modes``
+        is the ``(num_modes, N)`` full-DoF mode shapes for visualization and carries
+        **no gradient** (``stop_gradient``; eigenvector derivatives are unstable at the
+        degenerate buckling pairs).
+
+    Notes
+    -----
+    ``bf`` is jittable (``jax.jit(bf)`` / ``jax.jit(jax.grad(...))``): the forward
+    eigensolve runs host-side in a :func:`jax.pure_callback` and only ``K.data`` /
+    ``K_g.data`` are traced. The (constant) sparsity ``indices`` are captured on the
+    first **eager** call, so call ``bf(K, Kg)`` once outside ``jit`` before jitting it
+    (a clear error is raised otherwise).
+    """
+    if solver not in ("sparse", "dense", "matfree"):
+        raise ValueError(
+            f"unknown buckling solver {solver!r}; expected 'sparse' (default, SciPy "
+            "ARPACK matrix-free), 'dense', or 'matfree' (opt-in JAX/matfree backend).")
+    free = onp.asarray(free_dofs)
+    nf = len(free)
+    m = num_modes
+
+    # Sparsity patterns are fixed for a given problem, so the host callback can reuse the
+    # concrete indices captured on the first (eager) call. This lets `bf` itself be
+    # jitted: under jit `K.indices` is a tracer, but the callback only needs `K.data`
+    # (the traced input) — the constant indices come from this cache.
+    _idx_cache = {}
+    _meta = {}                                       # constant K/Kg shapes (set on 1st call)
+
+    def _concrete_indices(name, M):
+        idx = M.indices
+        if isinstance(idx, jax.core.Tracer):         # tracing (e.g. under jax.jit)
+            if name not in _idx_cache:
+                raise ValueError(
+                    "create_linear_buckling_solver: call bf(K, Kg) once eagerly before "
+                    "jitting so the (constant) sparsity indices can be captured for the "
+                    "host eigensolve callback.")
+            return _idx_cache[name]
+        _idx_cache[name] = onp.asarray(idx)          # concrete: capture / refresh
+        return _idx_cache[name]
+
+    def _solve_host(K, Kg):                          # concrete BCOO -> (λ, modes, φ_free)
+        N = K.shape[0]
+        if solver == "dense":
+            lam, modes = _dense_buckling(K, Kg, free, num_modes=m)
+        elif solver == "matfree":                    # opt-in JAX/matfree backend
+            lam, modes = _matfree_buckling(K, Kg, free, num_modes=m, **solver_kw)
+        else:                                        # "sparse" -> SciPy ARPACK (default)
+            lam, modes = _sparse_buckling(K, Kg, free, num_modes=m, **solver_kw)
+        modes = onp.asarray(modes)                   # (m', N)
+        phi = modes[:, free]                         # (m', nf)
+        Kf_sp = _restrict_csr(K, free)               # SciPy (no JAX in the host callback)
+        Kphi = (Kf_sp @ phi.T).T                     # (m', nf)
+        scale = 1.0 / onp.sqrt(onp.abs(onp.sum(phi * Kphi, axis=1)))  # φᵀ K φ = 1
+        phi = phi * scale[:, None]
+        modes = modes * scale[:, None]
+        out_m = lam.shape[0]                          # pad if fewer positive modes found
+        if out_m < m:
+            lam = onp.concatenate([lam, onp.full(m - out_m, onp.inf)])
+            phi = onp.concatenate([phi, onp.zeros((m - out_m, nf))], axis=0)
+            modes = onp.concatenate([modes, onp.zeros((m - out_m, N))], axis=0)
+        return (onp.asarray(lam[:m], onp.float64),
+                onp.asarray(modes[:m], onp.float64),
+                onp.asarray(phi[:m], onp.float64))
+
+    # Persistent host callback: ONE function object reused for every call. Passing a
+    # fresh ``lambda`` to ``jax.pure_callback`` on each call registers a new host callable
+    # with the runtime that is never released — it accumulates (with whatever its host
+    # execution allocates, e.g. the sparse factor) and leaks memory across a long loop
+    # (topology optimization). Reading the constant indices/shapes from the caches keeps
+    # this callable identical across calls.
+    def _host_eval(kd, kgd):
+        return _solve_host(
+            BCOO((onp.asarray(kd), _idx_cache["K"]), shape=_meta["K"]),
+            BCOO((onp.asarray(kgd), _idx_cache["Kg"]), shape=_meta["Kg"]))
+
+    def _callback(K, Kg):
+        N = K.shape[0]
+        _concrete_indices("K", K)                    # populate index cache (jittable)
+        _concrete_indices("Kg", Kg)
+        _meta["K"] = K.shape; _meta["Kg"] = Kg.shape
+        return jax.pure_callback(
+            _host_eval,                              # same object every call -> no leak
+            (jax.ShapeDtypeStruct((m,), jnp.float64),
+             jax.ShapeDtypeStruct((m, N), jnp.float64),
+             jax.ShapeDtypeStruct((m, nf), jnp.float64)),
+            K.data, Kg.data)
+
+    @jax.custom_vjp
+    def bf(K, Kg):
+        """Return ``(lambdas, modes)``: ``lambdas`` is differentiable w.r.t. K, Kg;
+        ``modes`` (full-DoF mode shapes) carries no gradient (stop_gradient)."""
+        lam, modes, _ = _callback(K, Kg)
+        return lam, jax.lax.stop_gradient(modes)
+
+    def _fwd(K, Kg):
+        lam, modes, phi = _callback(K, Kg)
+        return (lam, jax.lax.stop_gradient(modes)), (K, Kg, lam, phi)
+
+    def _bwd(res, cts):
+        K, Kg, lam, phi = res
+        lam_bar, _modes_bar = cts                     # mode-shape cotangent ignored
+        K_cot = _outer_cotangent(K, phi, lam_bar * lam, free)
+        Kg_cot = _outer_cotangent(Kg, phi, lam_bar * lam * lam, free)
+        return (K_cot, Kg_cot)
+
+    bf.defvjp(_fwd, _bwd)
+    return bf
+
+
+__all__ = ["generalized_eigh", "create_linear_buckling_solver",
+           "BucklingConvergenceError"]

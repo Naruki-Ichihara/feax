@@ -58,6 +58,11 @@ from .direct import (
     spsolve,
     umfpack_solve,
 )
+from .eigen import (
+    BucklingConvergenceError,
+    create_linear_buckling_solver,
+    generalized_eigh,
+)
 
 __all__ = [
     "AbstractSolverOptions",
@@ -103,4 +108,7 @@ __all__ = [
     "TimePipeline",
     "TimeResult",
     "run_time",
+    "create_linear_buckling_solver",
+    "generalized_eigh",
+    "BucklingConvergenceError",
 ]

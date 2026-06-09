@@ -189,6 +189,115 @@ def prolongation_matrix(
     return P_mat
 
 
+def cyclic_prolongation_matrix(
+    mesh: Mesh,
+    vec: int,
+    location_master: Callable[[onp.ndarray], bool],
+    location_slave: Callable[[onp.ndarray], bool],
+    rotation: onp.ndarray,
+    mapping: Callable[[onp.ndarray], onp.ndarray],
+    tol: float = 1e-5,
+) -> BCOO:
+    """Prolongation matrix for *cyclic* (rotational) symmetry between two cut faces.
+
+    Unlike :func:`prolongation_matrix` — which enforces the translational relation
+    ``u_slave = u_master`` component-by-component — this builds the rotation-coupled
+    constraint
+
+    .. math:: \\mathbf{u}_{\\text{slave}} = \\mathbf{R}\\,\\mathbf{u}_{\\text{master}},
+
+    where ``R`` is the sector rotation. This is what a 1/N angular sector of a body
+    of revolution requires on its two radial cut planes: the slave-plane DoF block of
+    each node is expressed as a linear combination (via ``R``) of the matching
+    master-plane node's *independent* DoF block, so the whole slave plane is removed
+    from the reduced system.
+
+    Args:
+        mesh (Mesh): Finite element mesh (provides ``points``).
+        vec (int): DoFs per node (3 for 3D elasticity).
+        location_master (Callable): Predicate selecting master-plane nodes.
+        location_slave (Callable): Predicate selecting slave-plane nodes.
+        rotation (array): ``(vec, vec)`` rotation matrix ``R`` relating the master
+            DoF block to the slave DoF block (e.g. rotation by the sector angle about
+            the symmetry axis).
+        mapping (Callable): Maps a master-plane *point* onto its matching slave-plane
+            *point* (typically the same physical rotation as ``rotation`` applied to
+            coordinates). Used only to pair nodes geometrically.
+        tol (float): Geometric matching tolerance.
+
+    Returns:
+        BCOO: Prolongation matrix ``P`` of shape ``(N, M)`` with ``u = P @ u_reduced``;
+        ``N`` is the full DoF count, ``M = N - vec * (#slave nodes)``.
+
+    Notes:
+        Master nodes must themselves be independent (they must not also be slaves of
+        another pairing); for a single radial sector with a polar opening the two cut
+        planes share no nodes, so this holds. Nodes carrying a Dirichlet BC should be
+        disjoint from the slave (eliminated) set to avoid conflicting constraints.
+    """
+    points = onp.asarray(mesh.points)
+    num_nodes = points.shape[0]
+    R = onp.asarray(rotation, dtype=onp.float64)
+    if R.shape != (vec, vec):
+        raise ValueError(f"rotation must be ({vec}, {vec}), got {R.shape}")
+
+    master_nodes = onp.argwhere(jax.vmap(location_master)(mesh.points)).reshape(-1)
+    slave_nodes_all = onp.argwhere(jax.vmap(location_slave)(mesh.points)).reshape(-1)
+    slave_pts = points[slave_nodes_all]
+
+    # Pair each master node with the slave node sitting at its rotated image.
+    slave_ordered = []
+    for m in master_nodes:
+        target = onp.asarray(mapping(points[m]))
+        dist = onp.linalg.norm(target[None, :] - slave_pts, axis=-1)
+        hit = onp.argwhere(dist < tol).reshape(-1)
+        assert hit.size == 1, (
+            f"Master node {m} at {points[m]} matched {hit.size} slave nodes "
+            f"(expected exactly 1). Check the mapping/rotation or tolerance."
+        )
+        slave_ordered.append(int(slave_nodes_all[hit[0]]))
+    slave_ordered = onp.array(slave_ordered, dtype=onp.int64)
+    assert len(master_nodes) == len(slave_ordered), (
+        f"Mismatch in node pairing: {len(master_nodes)} master vs "
+        f"{len(slave_ordered)} slave nodes."
+    )
+
+    is_slave = onp.zeros(num_nodes, dtype=bool)
+    is_slave[slave_ordered] = True
+    indep_nodes = onp.where(~is_slave)[0]
+    reduced_node_index = -onp.ones(num_nodes, dtype=onp.int64)
+    reduced_node_index[indep_nodes] = onp.arange(len(indep_nodes))
+
+    master_of_slave = {s: int(m) for m, s in zip(master_nodes, slave_ordered)}
+
+    N = num_nodes * vec
+    M = len(indep_nodes) * vec
+
+    I, J, V = [], [], []
+    for node in range(num_nodes):
+        if is_slave[node]:
+            m = master_of_slave[node]
+            rm = reduced_node_index[m]
+            assert rm >= 0, "Master node was eliminated; nested pairing not supported."
+            for a in range(vec):
+                row = node * vec + a
+                for b in range(vec):
+                    if R[a, b] != 0.0:
+                        I.append(row)
+                        J.append(int(rm * vec + b))
+                        V.append(float(R[a, b]))
+        else:
+            rn = reduced_node_index[node]
+            for a in range(vec):
+                I.append(node * vec + a)
+                J.append(int(rn * vec + a))
+                V.append(1.0)
+
+    indices = np.stack([np.array(I), np.array(J)], axis=1)
+    values = np.array(V)
+    return BCOO((values, indices), shape=(N, M))
+
+
 def periodic_bc_3D(
     unitcell: UnitCell, vec: int = 1, dim: int = 3
 ) -> List[PeriodicPairing]:

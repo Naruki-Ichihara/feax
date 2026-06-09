@@ -4,6 +4,7 @@ docker-compose.override.yml
 jax-distributed-run.sh
 distributed.yml
 
+*.csv
 *.vtu
 *.vtk
 *.h5

@@ -36,6 +36,7 @@
         {
           "items": [
             "reference/feax/mechanics/cohesive",
+            "reference/feax/mechanics/layered_solid_element",
             "reference/feax/mechanics/orientation",
             "reference/feax/mechanics/shell",
             "reference/feax/mechanics/tmc"

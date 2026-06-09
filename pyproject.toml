@@ -63,6 +63,9 @@ jax = [
 sksparse = [
     "scikit-sparse",
 ]
+matfree = [
+    "matfree",
+]
 cuda12 = [
     "jax[cuda12]",
     "nvidia-cudss-cu12",
