@@ -1,8 +1,7 @@
 import os
 import jax.numpy as np
+import jax
 import feax as fe
-fe.enable_x64(False)
-print(fe.x64_enabled())
 
 elastic_moduli = 70e3
 poisson_ratio = 0.3
@@ -11,8 +10,8 @@ tol = 1e-5
 
 # Define mesh
 L = 100
-W = 10
-H = 10
+W = 20
+H = 20
 box_size = (L, W, H)
 mesh = fe.mesh.box_mesh(box_size, mesh_size=1)
 
@@ -55,13 +54,18 @@ internal_vars = fe.InternalVars(
 )
 
 # Solver (auto selects based on backend and matrix property)
-solver_opts = fe.DirectSolverOptions()
+solver_opts = fe.KrylovSolverOptions(verbose=True)
 solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
 initial = fe.zero_like_initial_guess(problem, bc)
 
-def solve_forward(iv):
-    return solver(iv, initial)
-sol = solve_forward(internal_vars)
+# Pass the mesh-sized structural arrays as traced arguments via StaticVars so
+# jit does not bake them into the executable as constants.
+sv = fe.StaticVars.from_problem(problem)
+
+#@jax.jit
+def solve_forward(iv, sv):
+    return solver(iv, initial, static_vars=sv)
+sol = solve_forward(internal_vars, sv)
 sol_unflat = problem.unflatten_fn_sol_list(sol)
 displacement = sol_unflat[0]
 

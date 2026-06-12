@@ -147,7 +147,8 @@ register_pytree_node(
 def apply_boundary_to_J_csr(bc: DirichletBC,
                             problem: 'Problem',
                             csr_data: np.ndarray,
-                            symmetric: bool = True) -> np.ndarray:
+                            symmetric: bool = True,
+                            sv=None) -> np.ndarray:
     """Apply Dirichlet BCs directly to a CSR ``data`` array (no BCOO).
 
     The CSR *structure* (``problem.csr_indptr`` / ``csr_indices``) is fixed, and
@@ -181,15 +182,19 @@ def apply_boundary_to_J_csr(bc: DirichletBC,
     np.ndarray
         BC-applied CSR value array (same shape as ``csr_data``).
     """
-    is_bc_row = bc.bc_mask[problem.csr_row_of_slot]
+    # When sv (StaticVars) is given the slot maps are traced arguments, so the
+    # row/column BC masks are computed at run time instead of being
+    # constant-folded into nnz-sized literals inside the compiled executable.
+    src = sv if sv is not None else problem
+    is_bc_row = bc.bc_mask[src.csr_row_of_slot]
     if symmetric:
-        is_bc_col = bc.bc_mask[problem.csr_indices]
+        is_bc_col = bc.bc_mask[src.csr_indices]
         zero_mask = is_bc_row | is_bc_col
     else:
         zero_mask = is_bc_row
 
     data = np.where(zero_mask, 0.0, csr_data)
-    diag_slots = problem.csr_diag_slots[bc.bc_rows]
+    diag_slots = src.csr_diag_slots[bc.bc_rows]
     data = data.at[diag_slots].set(1.0)
     return data
 

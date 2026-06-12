@@ -286,8 +286,8 @@ class Operator:
 
     @staticmethod
     def gather_internal_vars(problem: 'Problem',
-                             internal_vars: Tuple[np.ndarray, ...]
-                             ) -> List[np.ndarray]:
+                             internal_vars: Tuple[np.ndarray, ...],
+                             sv=None) -> List[np.ndarray]:
         """Gather global internal variables to per-cell format.
 
         Transforms node-based variables from global (num_nodes,) arrays to
@@ -320,7 +320,9 @@ class Operator:
                         if var.shape[0] == fe.num_total_nodes:
                             fe_idx = i
                             break
-                    result.append(var[problem.fes[fe_idx].cells])
+                    cells = (sv.cells_list[fe_idx] if sv is not None
+                             else problem.fes[fe_idx].cells)
+                    result.append(var[cells])
             else:
                 result.append(var)
         return result
@@ -877,7 +879,8 @@ def _scan_vmap_batched(vmap_fn: Callable,
 def split_and_compute_cell(problem: 'Problem',
                            cells_sol_flat: np.ndarray,
                            jac_flag: bool,
-                           internal_vars_volume: Tuple[np.ndarray, ...]) -> Any:
+                           internal_vars_volume: Tuple[np.ndarray, ...],
+                           sv=None) -> Any:
     """Compute volume integrals for residual or Jacobian assembly.
     
     This function evaluates volume integrals over all elements, optionally
@@ -917,6 +920,8 @@ def split_and_compute_cell(problem: 'Problem',
     var_kinds = tuple(classify_volume_var(problem, v) for v in internal_vars_volume)
     kernel = create_volume_kernel(problem, var_kinds)
 
+    src = sv if sv is not None else problem
+
     if jac_flag:
         def kernel_jac(cell_sol_flat, *args):
             kernel_partial = lambda cell_sol_flat: kernel(cell_sol_flat, *args)
@@ -926,10 +931,10 @@ def split_and_compute_cell(problem: 'Problem',
         vmap_fn = jax.vmap(kernel)
 
     internal_vars_per_cell = Operator.gather_internal_vars(
-        problem, internal_vars_volume)
+        problem, internal_vars_volume, sv)
 
-    input_collection = [cells_sol_flat, problem.physical_quad_points, problem.shape_grads,
-                       problem.JxW, problem.v_grads_JxW, *internal_vars_per_cell]
+    input_collection = [cells_sol_flat, src.physical_quad_points, src.shape_grads,
+                       src.JxW, src.v_grads_JxW, *internal_vars_per_cell]
 
     # Adaptive batching bounds peak memory from materializing per-element
     # Jacobians (especially for large 3D meshes).
@@ -940,7 +945,8 @@ def split_and_compute_cell(problem: 'Problem',
 def compute_face(problem: 'Problem',
                 cells_sol_flat: np.ndarray,
                 jac_flag: bool,
-                internal_vars_surfaces: List[Tuple[np.ndarray, ...]]) -> Any:
+                internal_vars_surfaces: List[Tuple[np.ndarray, ...]],
+                sv=None) -> Any:
     """Compute surface integrals for residual or Jacobian assembly.
     
     This function evaluates surface integrals over all boundary faces,
@@ -972,10 +978,12 @@ def compute_face(problem: 'Problem',
     handled through separate surface kernels and internal variables.
     """
 
+    src = sv if sv is not None else problem
+
     if jac_flag:
         values = []
         jacs = []
-        for i, boundary_inds in enumerate(problem.boundary_inds_list):
+        for i, boundary_inds in enumerate(src.boundary_inds_list):
             kernel = create_surface_kernel(problem, i)
             def kernel_jac(cell_sol_flat, *args):
                 kernel_partial = lambda cell_sol_flat: kernel(cell_sol_flat, *args)
@@ -987,9 +995,9 @@ def compute_face(problem: 'Problem',
             # Handle case where internal_vars_surfaces might be empty or insufficient
             surface_vars_for_boundary = internal_vars_surfaces[i] if i < len(internal_vars_surfaces) else ()
 
-            input_collection = [selected_cell_sols_flat, problem.physical_surface_quad_points[i],
-                              problem.selected_face_shape_vals[i], problem.selected_face_shape_grads[i],
-                              problem.nanson_scale[i], *surface_vars_for_boundary]
+            input_collection = [selected_cell_sols_flat, src.physical_surface_quad_points[i],
+                              src.selected_face_shape_vals[i], src.selected_face_shape_grads[i],
+                              src.nanson_scale[i], *surface_vars_for_boundary]
 
             # Batch the surface Jacobian the same way as the volume path so a
             # large boundary (e.g. a pressure surface) does not materialize all
@@ -1001,7 +1009,7 @@ def compute_face(problem: 'Problem',
         return values, jacs
     else:
         values = []
-        for i, boundary_inds in enumerate(problem.boundary_inds_list):
+        for i, boundary_inds in enumerate(src.boundary_inds_list):
             kernel = create_surface_kernel(problem, i)
             vmap_fn = jax.vmap(kernel)
 
@@ -1010,9 +1018,9 @@ def compute_face(problem: 'Problem',
             # Handle case where internal_vars_surfaces might be empty or insufficient
             surface_vars_for_boundary = internal_vars_surfaces[i] if i < len(internal_vars_surfaces) else ()
 
-            input_collection = [selected_cell_sols_flat, problem.physical_surface_quad_points[i],
-                              problem.selected_face_shape_vals[i], problem.selected_face_shape_grads[i],
-                              problem.nanson_scale[i], *surface_vars_for_boundary]
+            input_collection = [selected_cell_sols_flat, src.physical_surface_quad_points[i],
+                              src.selected_face_shape_vals[i], src.selected_face_shape_grads[i],
+                              src.nanson_scale[i], *surface_vars_for_boundary]
             n_faces = boundary_inds.shape[0]
             val = _scan_vmap_batched(vmap_fn, input_collection, n_faces, False)
             values.append(val)
@@ -1021,7 +1029,8 @@ def compute_face(problem: 'Problem',
 
 def compute_residual_vars_helper(problem: 'Problem',
                                  weak_form_flat: np.ndarray,
-                                 weak_form_face_flat: List[np.ndarray]) -> List[np.ndarray]:
+                                 weak_form_face_flat: List[np.ndarray],
+                                 sv=None) -> List[np.ndarray]:
     """Assemble residual from element and face contributions.
     
     This helper function assembles the global residual vector by accumulating
@@ -1052,6 +1061,7 @@ def compute_residual_vars_helper(problem: 'Problem',
     ``1 + num_boundaries`` scatter-adds with one deterministic reduction (no
     atomics), matching the CSR-direct Jacobian assembly.
     """
+    src = sv if sv is not None else problem
     # Values in volume-then-boundary order — exactly the order the residual
     # scatter DOFs were assembled in Problem.__post_init__.
     val_arrays = [weak_form_flat.reshape(-1)]
@@ -1060,7 +1070,7 @@ def compute_residual_vars_helper(problem: 'Problem',
     V = np.concatenate(val_arrays) if len(val_arrays) > 1 else val_arrays[0]
 
     res_flat = jax.ops.segment_sum(
-        V[problem.res_perm], problem.res_sorted_dofs,
+        V[src.res_perm], src.res_sorted_dofs,
         num_segments=problem.num_total_dofs_all_vars, indices_are_sorted=True)
     return problem.unflatten_fn_sol_list(res_flat)
 
@@ -1123,9 +1133,80 @@ def _csr_data_from_values(problem: 'Problem', V: np.ndarray) -> np.ndarray:
         num_segments=problem.csr_nse, indices_are_sorted=True)
 
 
+def _vol_slot_sort(problem: 'Problem') -> Tuple[onp.ndarray, onp.ndarray]:
+    """Precompute (and cache on ``problem``) the static volume slot-sort.
+
+    Returns ``(perm, sorted_slots)`` as concrete numpy arrays. For the batched
+    case (``num_cuts > 1``) both have shape ``(num_cuts, bs * ndof^2)``; for a
+    single batch they are flat ``(num_cells * ndof^2,)``. The sort depends only
+    on mesh structure, so it is computed once per Problem — either embedded as
+    a trace-time constant (closure path) or shipped as :class:`StaticVars`
+    leaves (runtime-argument path).
+    """
+    cached = getattr(problem, '_vol_slot_sort_cache', None)
+    if cached is not None:
+        return cached
+
+    vslots = onp.asarray(problem.csr_volume_slots)     # (num_cells, ndof^2)
+    ndof2 = vslots.shape[1]
+    nse = problem.csr_nse
+    bs, num_cuts, n_padded = _batching(problem.num_cells)
+
+    if num_cuts <= 1:
+        flat = vslots.reshape(-1)
+        perm = onp.argsort(flat, kind='stable')
+        out = (perm, flat[perm])
+    else:
+        # Pad cells up to n_padded; padded cells' slots are the discard bucket
+        # (nse) so their Jacobians never reach the matrix.
+        pad = n_padded - problem.num_cells
+        vslots_pad = onp.concatenate(
+            [vslots, onp.full((pad, ndof2), nse, dtype=vslots.dtype)], axis=0)
+        vslots_batched = vslots_pad.reshape(num_cuts, bs * ndof2)
+        perm = onp.argsort(vslots_batched, axis=1, kind='stable')
+        out = (perm, onp.take_along_axis(vslots_batched, perm, axis=1))
+
+    problem._vol_slot_sort_cache = out
+    return out
+
+
+def _res_vol_slot_sort(problem: 'Problem') -> Tuple[onp.ndarray, onp.ndarray]:
+    """Precompute (and cache on ``problem``) the static residual-DOF sort used
+    by the fused residual+Jacobian volume assembly.
+
+    Same contract as :func:`_vol_slot_sort` but for the per-cell residual DOF
+    map (``problem.res_volume_dofs``): returns ``(perm, sorted_dofs)``, batched
+    ``(num_cuts, bs * ndof)`` or flat.
+    """
+    cached = getattr(problem, '_res_vol_slot_sort_cache', None)
+    if cached is not None:
+        return cached
+
+    rdofs = onp.asarray(problem.res_volume_dofs)       # (num_cells, ndof)
+    ndof = rdofs.shape[1]
+    ndof_total = problem.num_total_dofs_all_vars
+    bs, num_cuts, n_padded = _batching(problem.num_cells)
+
+    if num_cuts <= 1:
+        flat = rdofs.reshape(-1)
+        perm = onp.argsort(flat, kind='stable')
+        out = (perm, flat[perm])
+    else:
+        pad = n_padded - problem.num_cells
+        rdofs_pad = onp.concatenate(
+            [rdofs, onp.full((pad, ndof), ndof_total, dtype=rdofs.dtype)], axis=0)
+        rdofs_b = rdofs_pad.reshape(num_cuts, bs * ndof)
+        perm = onp.argsort(rdofs_b, axis=1, kind='stable')
+        out = (perm, onp.take_along_axis(rdofs_b, perm, axis=1))
+
+    problem._res_vol_slot_sort_cache = out
+    return out
+
+
 def _assemble_volume_csr_data(problem: 'Problem',
                               cells_sol_flat: np.ndarray,
-                              internal_vars_volume: Tuple[np.ndarray, ...]) -> np.ndarray:
+                              internal_vars_volume: Tuple[np.ndarray, ...],
+                              sv=None) -> np.ndarray:
     """Assemble the volume contribution to the CSR ``data`` without holding all
     element Jacobians.
 
@@ -1136,9 +1217,14 @@ def _assemble_volume_csr_data(problem: 'Problem',
     ``(num_cells, ndof, ndof)`` stack. This is the core memory win of the
     CSR-direct path.
 
+    When ``sv`` (:class:`feax.static_vars.StaticVars`) is given, all mesh-sized
+    arrays are read from it (traced arguments) instead of ``problem`` (closure
+    constants) — see the StaticVars module docstring.
+
     Returns an array of length ``nse + 1`` (the trailing slot is the discard
     bucket for entries dropped by the UPPER/LOWER filter).
     """
+    src = sv if sv is not None else problem
     var_kinds = tuple(classify_volume_var(problem, v) for v in internal_vars_volume)
     kernel = create_volume_kernel(problem, var_kinds)
 
@@ -1146,46 +1232,32 @@ def _assemble_volume_csr_data(problem: 'Problem',
         return _value_and_jacfwd(lambda s: kernel(s, *args), cell_sol_flat)
     vmap_fn = jax.vmap(kernel_jac)
 
-    internal_vars_per_cell = Operator.gather_internal_vars(problem, internal_vars_volume)
-    inputs = [cells_sol_flat, problem.physical_quad_points, problem.shape_grads,
-              problem.JxW, problem.v_grads_JxW, *internal_vars_per_cell]
+    internal_vars_per_cell = Operator.gather_internal_vars(problem, internal_vars_volume, sv)
+    inputs = [cells_sol_flat, src.physical_quad_points, src.shape_grads,
+              src.JxW, src.v_grads_JxW, *internal_vars_per_cell]
 
     nse = problem.csr_nse
     num_cells = problem.num_cells
-    # Static per-cell slot map (concrete: a closure constant, never traced).
-    vslots = onp.asarray(problem.csr_volume_slots)     # (num_cells, ndof^2)
-    ndof2 = vslots.shape[1]
     bs, num_cuts, n_padded = _batching(num_cells)
     carry = np.zeros(nse + 1, dtype=cells_sol_flat.dtype)
 
-    def _sorted_seg(carry, jacs_flat, slots_flat):
-        # Deterministic reduction: reorder values by a static slot-sort so the
-        # segment_sum runs on ascending segment ids (indices_are_sorted=True).
-        perm = onp.argsort(slots_flat, kind='stable')
-        return carry + jax.ops.segment_sum(
-            jacs_flat[np.asarray(perm)], np.asarray(slots_flat[perm]),
-            num_segments=nse + 1, indices_are_sorted=True)
+    # Slot-sort: from StaticVars leaves (traced) or trace-time constants.
+    if sv is not None:
+        perm_arr, sorted_arr = sv.csr_vol_perm, sv.csr_vol_sorted_slots
+    else:
+        perm_np, sorted_np = _vol_slot_sort(problem)
+        perm_arr, sorted_arr = np.asarray(perm_np), np.asarray(sorted_np)
 
     if num_cuts <= 1:
         _, jacs = vmap_fn(*inputs)
-        return _sorted_seg(carry, jacs.reshape(-1), vslots.reshape(-1))
+        return carry + jax.ops.segment_sum(
+            jacs.reshape(-1)[perm_arr], sorted_arr,
+            num_segments=nse + 1, indices_are_sorted=True)
 
-    # Pad cells up to n_padded so every scan step shares one shape. Padded
-    # cells' slots are the discard bucket (nse), so their Jacobians are summed
-    # into a throwaway slot and never reach the matrix — no remainder kernel.
     pad = n_padded - num_cells
     padded_inputs = jax.tree_util.tree_map(lambda x: _pad_axis0(x, pad), inputs)
     main_inputs = jax.tree_util.tree_map(
         lambda x: x.reshape(num_cuts, bs, *x.shape[1:]), padded_inputs)
-
-    vslots_pad = onp.concatenate(
-        [vslots, onp.full((pad, ndof2), nse, dtype=vslots.dtype)], axis=0)
-    vslots_batched = vslots_pad.reshape(num_cuts, bs * ndof2)
-    # Per-batch static slot-sort so each scan step's segment_sum is sorted.
-    perm_main = onp.argsort(vslots_batched, axis=1, kind='stable')        # (num_cuts, L)
-    sorted_main = onp.take_along_axis(vslots_batched, perm_main, axis=1)  # (num_cuts, L)
-    perm_main = np.asarray(perm_main)
-    sorted_main = np.asarray(sorted_main)
 
     def scan_body(carry, batch):
         binputs, bperm, bsorted = batch
@@ -1195,13 +1267,14 @@ def _assemble_volume_csr_data(problem: 'Problem',
             vals[bperm], bsorted, num_segments=nse + 1, indices_are_sorted=True)
         return carry, None
 
-    carry, _ = jax.lax.scan(scan_body, carry, (main_inputs, perm_main, sorted_main))
+    carry, _ = jax.lax.scan(scan_body, carry, (main_inputs, perm_arr, sorted_arr))
     return carry
 
 
 def _get_J_csr(problem: 'Problem',
                sol_list: List[np.ndarray],
-               internal_vars: InternalVars) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+               internal_vars: InternalVars,
+               sv=None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Assemble the Jacobian directly in CSR form, bypassing BCOO.
 
     Returns ``(csr_data, csr_indptr, csr_indices)`` — the cuDSS-ready triple.
@@ -1214,28 +1287,29 @@ def _get_J_csr(problem: 'Problem',
     This is the CSR-direct counterpart of :func:`get_jacobian`. No Dirichlet BCs are
     applied here (see the BC-aware CSR path).
     """
-    cells_sol_list = [sol[cells] for cells, sol in zip(problem.cells_list, sol_list)]
+    src = sv if sv is not None else problem
+    cells_sol_list = [sol[cells] for cells, sol in zip(src.cells_list, sol_list)]
     cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
 
     # Volume: memory-efficient per-batch accumulation (length nse + 1).
-    csr_data = _assemble_volume_csr_data(problem, cells_sol_flat, internal_vars.volume_vars)
+    csr_data = _assemble_volume_csr_data(problem, cells_sol_flat, internal_vars.volume_vars, sv)
 
     # Surface: per-boundary face Jacobians (small) added via their CSR slots.
     # The slot-sorted permutation (precomputed) keeps the reduction deterministic.
-    _, cells_jac_face_flat = compute_face(problem, cells_sol_flat, True, internal_vars.surface_vars)
+    _, cells_jac_face_flat = compute_face(problem, cells_sol_flat, True, internal_vars.surface_vars, sv)
     if cells_jac_face_flat:
         face_vals = np.concatenate([fj.reshape(-1) for fj in cells_jac_face_flat])
         csr_data = csr_data + jax.ops.segment_sum(
-            face_vals[problem.csr_face_perm], problem.csr_face_sorted_slots,
+            face_vals[src.csr_face_perm], src.csr_face_sorted_slots,
             num_segments=problem.csr_nse + 1, indices_are_sorted=True)
 
-    return csr_data[:problem.csr_nse], problem.csr_indptr, problem.csr_indices
+    return csr_data[:problem.csr_nse], src.csr_indptr, src.csr_indices
 
 
 def _assemble_volume_res_and_J(problem: 'Problem',
                                cells_sol_flat: np.ndarray,
-                               internal_vars_volume: Tuple[np.ndarray, ...]
-                               ) -> Tuple[np.ndarray, np.ndarray]:
+                               internal_vars_volume: Tuple[np.ndarray, ...],
+                               sv=None) -> Tuple[np.ndarray, np.ndarray]:
     """Assemble the volume residual AND CSR Jacobian from a single jacfwd pass.
 
     ``_value_and_jacfwd`` already returns both the element residual ``y`` and
@@ -1254,32 +1328,37 @@ def _assemble_volume_res_and_J(problem: 'Problem',
         return _value_and_jacfwd(lambda s: kernel(s, *args), cell_sol_flat)
     vmap_fn = jax.vmap(kernel_res_jac)
 
-    internal_vars_per_cell = Operator.gather_internal_vars(problem, internal_vars_volume)
-    inputs = [cells_sol_flat, problem.physical_quad_points, problem.shape_grads,
-              problem.JxW, problem.v_grads_JxW, *internal_vars_per_cell]
+    src = sv if sv is not None else problem
+    internal_vars_per_cell = Operator.gather_internal_vars(problem, internal_vars_volume, sv)
+    inputs = [cells_sol_flat, src.physical_quad_points, src.shape_grads,
+              src.JxW, src.v_grads_JxW, *internal_vars_per_cell]
 
     nse = problem.csr_nse
     ndof_total = problem.num_total_dofs_all_vars
     num_cells = problem.num_cells
-    vslots = onp.asarray(problem.csr_volume_slots)     # (num_cells, ndof^2)
-    rdofs = onp.asarray(problem.res_volume_dofs)       # (num_cells, ndof)
-    ndof2 = vslots.shape[1]
-    ndof = rdofs.shape[1]
     bs, num_cuts, n_padded = _batching(num_cells)
 
     J_carry = np.zeros(nse + 1, dtype=cells_sol_flat.dtype)
     R_carry = np.zeros(ndof_total + 1, dtype=cells_sol_flat.dtype)
 
-    def _seg(carry, vals, ids, nseg):
-        perm = onp.argsort(ids, kind='stable')
-        return carry + jax.ops.segment_sum(
-            vals[np.asarray(perm)], np.asarray(ids[perm]),
-            num_segments=nseg, indices_are_sorted=True)
+    # Slot/DOF sorts: StaticVars leaves (traced) or trace-time constants.
+    if sv is not None:
+        jperm, jsorted = sv.csr_vol_perm, sv.csr_vol_sorted_slots
+        rperm, rsorted = sv.res_vol_perm, sv.res_vol_sorted_dofs
+    else:
+        _jp, _js = _vol_slot_sort(problem)
+        _rp, _rs = _res_vol_slot_sort(problem)
+        jperm, jsorted = np.asarray(_jp), np.asarray(_js)
+        rperm, rsorted = np.asarray(_rp), np.asarray(_rs)
 
     if num_cuts <= 1:
         y, jac = vmap_fn(*inputs)
-        R_carry = _seg(R_carry, y.reshape(-1), rdofs.reshape(-1), ndof_total + 1)
-        J_carry = _seg(J_carry, jac.reshape(-1), vslots.reshape(-1), nse + 1)
+        R_carry = R_carry + jax.ops.segment_sum(
+            y.reshape(-1)[rperm], rsorted,
+            num_segments=ndof_total + 1, indices_are_sorted=True)
+        J_carry = J_carry + jax.ops.segment_sum(
+            jac.reshape(-1)[jperm], jsorted,
+            num_segments=nse + 1, indices_are_sorted=True)
         return R_carry, J_carry
 
     # Pad cells; padded entries route to the discard buckets (nse / ndof_total).
@@ -1287,16 +1366,7 @@ def _assemble_volume_res_and_J(problem: 'Problem',
     main_inputs = jax.tree_util.tree_map(
         lambda x: _pad_axis0(x, pad).reshape(num_cuts, bs, *x.shape[1:]), inputs)
 
-    vslots_b = onp.concatenate(
-        [vslots, onp.full((pad, ndof2), nse, dtype=vslots.dtype)], axis=0).reshape(num_cuts, bs * ndof2)
-    rdofs_b = onp.concatenate(
-        [rdofs, onp.full((pad, ndof), ndof_total, dtype=rdofs.dtype)], axis=0).reshape(num_cuts, bs * ndof)
-    jperm = onp.argsort(vslots_b, axis=1, kind='stable')
-    jsorted = onp.take_along_axis(vslots_b, jperm, axis=1)
-    rperm = onp.argsort(rdofs_b, axis=1, kind='stable')
-    rsorted = onp.take_along_axis(rdofs_b, rperm, axis=1)
-    xs = (main_inputs, np.asarray(jperm), np.asarray(jsorted),
-          np.asarray(rperm), np.asarray(rsorted))
+    xs = (main_inputs, jperm, jsorted, rperm, rsorted)
 
     def scan_body(carry, batch):
         Rc, Jc = carry
@@ -1314,33 +1384,34 @@ def _assemble_volume_res_and_J(problem: 'Problem',
 
 def _get_res_J_csr(problem: 'Problem',
                    sol_list: List[np.ndarray],
-                   internal_vars: InternalVars
-                   ) -> Tuple[List[np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
+                   internal_vars: InternalVars,
+                   sv=None) -> Tuple[List[np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
     """Fused residual + CSR Jacobian (single kernel pass per element).
 
     Returns ``(res_list, csr_data, csr_indptr, csr_indices)``. No Dirichlet BCs
     applied (see :func:`create_res_J_bc_csr_parametric`).
     """
-    cells_sol_list = [sol[cells] for cells, sol in zip(problem.cells_list, sol_list)]
+    src = sv if sv is not None else problem
+    cells_sol_list = [sol[cells] for cells, sol in zip(src.cells_list, sol_list)]
     cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
 
-    R_carry, J_carry = _assemble_volume_res_and_J(problem, cells_sol_flat, internal_vars.volume_vars)
+    R_carry, J_carry = _assemble_volume_res_and_J(problem, cells_sol_flat, internal_vars.volume_vars, sv)
 
     # Surface: one jacfwd pass yields both the face residual (values) and face
     # Jacobian; add each to its accumulator.
-    face_res, face_jacs = compute_face(problem, cells_sol_flat, True, internal_vars.surface_vars)
+    face_res, face_jacs = compute_face(problem, cells_sol_flat, True, internal_vars.surface_vars, sv)
     if face_jacs:
         fjv = np.concatenate([fj.reshape(-1) for fj in face_jacs])
         J_carry = J_carry + jax.ops.segment_sum(
-            fjv[problem.csr_face_perm], problem.csr_face_sorted_slots,
+            fjv[src.csr_face_perm], src.csr_face_sorted_slots,
             num_segments=problem.csr_nse + 1, indices_are_sorted=True)
         frv = np.concatenate([fr.reshape(-1) for fr in face_res])
         R_carry = R_carry + jax.ops.segment_sum(
-            frv[problem.res_face_perm], problem.res_face_sorted_dofs,
+            frv[src.res_face_perm], src.res_face_sorted_dofs,
             num_segments=problem.num_total_dofs_all_vars + 1, indices_are_sorted=True)
 
     res_list = problem.unflatten_fn_sol_list(R_carry[:problem.num_total_dofs_all_vars])
-    return res_list, J_carry[:problem.csr_nse], problem.csr_indptr, problem.csr_indices
+    return res_list, J_carry[:problem.csr_nse], src.csr_indptr, src.csr_indices
 
 
 def get_jacobian(problem: 'Problem',
@@ -1454,7 +1525,8 @@ def get_jacobian_info(problem: 'Problem',
 
 def get_res(problem: 'Problem',
             sol_list: List[np.ndarray],
-            internal_vars: InternalVars) -> List[np.ndarray]:
+            internal_vars: InternalVars,
+            sv=None) -> List[np.ndarray]:
     """Compute residual vector with separated internal variables.
     
     Assembles the global residual vector by evaluating the weak form at the
@@ -1488,16 +1560,17 @@ def get_res(problem: 'Problem',
     The residual represents the imbalance in the weak form equations.
     For converged solutions, the residual should be near zero.
     """
-    cells_sol_list = [sol[cells] for cells, sol in zip(problem.cells_list, sol_list)]
+    src = sv if sv is not None else problem
+    cells_sol_list = [sol[cells] for cells, sol in zip(src.cells_list, sol_list)]
     cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
 
     # Compute weak form values from volume integrals
-    weak_form_flat = split_and_compute_cell(problem, cells_sol_flat, False, internal_vars.volume_vars)
+    weak_form_flat = split_and_compute_cell(problem, cells_sol_flat, False, internal_vars.volume_vars, sv)
 
     # Add weak form values from surface integrals
-    weak_form_face_flat = compute_face(problem, cells_sol_flat, False, internal_vars.surface_vars)
+    weak_form_face_flat = compute_face(problem, cells_sol_flat, False, internal_vars.surface_vars, sv)
 
-    return compute_residual_vars_helper(problem, weak_form_flat, weak_form_face_flat)
+    return compute_residual_vars_helper(problem, weak_form_flat, weak_form_face_flat, sv)
 
 
 def create_J_bc_csr_function(
@@ -1536,11 +1609,12 @@ def create_J_bc_csr_parametric(problem: 'Problem', symmetric: bool = True) -> Ca
 
     shape = (problem.num_total_dofs_all_vars, problem.num_total_dofs_all_vars)
 
-    def J_bc_func(sol_flat, internal_vars: InternalVars, bc):
+    def J_bc_func(sol_flat, internal_vars: InternalVars, bc, sv=None):
+        src = sv if sv is not None else problem
         sol_list = problem.unflatten_fn_sol_list(sol_flat)
-        csr_data, _, _ = _get_J_csr(problem, sol_list, internal_vars)
-        csr_data = apply_boundary_to_J_csr(bc, problem, csr_data, symmetric=symmetric)
-        return CSRMatrix(csr_data, problem.csr_indptr, problem.csr_indices, shape)
+        csr_data, _, _ = _get_J_csr(problem, sol_list, internal_vars, sv)
+        csr_data = apply_boundary_to_J_csr(bc, problem, csr_data, symmetric=symmetric, sv=sv)
+        return CSRMatrix(csr_data, src.csr_indptr, src.csr_indices, shape)
 
     return J_bc_func
 
@@ -1558,22 +1632,22 @@ def create_res_J_bc_csr_parametric(problem: 'Problem', symmetric: bool = True) -
 
     shape = (problem.num_total_dofs_all_vars, problem.num_total_dofs_all_vars)
 
-    def res_J_func(sol_flat, internal_vars: InternalVars, bc):
+    def res_J_func(sol_flat, internal_vars: InternalVars, bc, sv=None):
         sol_list = problem.unflatten_fn_sol_list(sol_flat)
-        res_list, csr_data, indptr, indices = _get_res_J_csr(problem, sol_list, internal_vars)
+        res_list, csr_data, indptr, indices = _get_res_J_csr(problem, sol_list, internal_vars, sv)
         res_flat = jax.flatten_util.ravel_pytree(res_list)[0]
         res_bc = apply_boundary_to_res(bc, res_flat, sol_flat)
-        csr_bc = apply_boundary_to_J_csr(bc, problem, csr_data, symmetric=symmetric)
+        csr_bc = apply_boundary_to_J_csr(bc, problem, csr_data, symmetric=symmetric, sv=sv)
         return res_bc, CSRMatrix(csr_bc, indptr, indices, shape)
 
     return res_J_func
 
 
 def _residual_flat(problem: 'Problem', sol_flat: np.ndarray,
-                   internal_vars: InternalVars) -> np.ndarray:
+                   internal_vars: InternalVars, sv=None) -> np.ndarray:
     """The un-Dirichlet-applied global residual as a flat vector of ``sol_flat``."""
     return jax.flatten_util.ravel_pytree(
-        get_res(problem, problem.unflatten_fn_sol_list(sol_flat), internal_vars))[0]
+        get_res(problem, problem.unflatten_fn_sol_list(sol_flat), internal_vars, sv))[0]
 
 
 def create_matfree_res_J_parametric(problem: 'Problem', symmetric: bool = True) -> Callable:
@@ -1592,15 +1666,15 @@ def create_matfree_res_J_parametric(problem: 'Problem', symmetric: bool = True) 
     """
     from feax.DCboundary import apply_boundary_to_res
 
-    def build(sol_flat, internal_vars: InternalVars, bc):
-        res_flat = _residual_flat(problem, sol_flat, internal_vars)
+    def build(sol_flat, internal_vars: InternalVars, bc, sv=None):
+        res_flat = _residual_flat(problem, sol_flat, internal_vars, sv)
         res_bc = apply_boundary_to_res(bc, res_flat, sol_flat)
 
         def matvec(v):
             # Symmetric elimination zeros BC columns by masking the input.
             v_in = np.where(bc.bc_mask, 0.0, v) if symmetric else v
             _, Kv = jax.jvp(
-                lambda s: _residual_flat(problem, s, internal_vars),
+                lambda s: _residual_flat(problem, s, internal_vars, sv),
                 (sol_flat,), (v_in,))
             # BC rows become identity: J_bc @ v has v on BC rows, K@v on free rows.
             return np.where(bc.bc_mask, v, Kv)
@@ -1618,9 +1692,9 @@ def create_matfree_Kt_parametric(problem: 'Problem') -> Callable:
     ``jax.vjp`` of the residual — used to recover the correct ``bc_vals``
     gradient without assembling the bulk Jacobian.
     """
-    def build(sol_flat, internal_vars: InternalVars):
+    def build(sol_flat, internal_vars: InternalVars, sv=None):
         _, vjp_fn = jax.vjp(
-            lambda s: _residual_flat(problem, s, internal_vars), sol_flat)
+            lambda s: _residual_flat(problem, s, internal_vars, sv), sol_flat)
         return lambda w: vjp_fn(w)[0]
 
     return build
@@ -1682,9 +1756,9 @@ def create_res_bc_parametric(problem: 'Problem') -> Callable:
     """
     from feax.DCboundary import apply_boundary_to_res
 
-    def res_bc_func(sol_flat, internal_vars: InternalVars, bc):
+    def res_bc_func(sol_flat, internal_vars: InternalVars, bc, sv=None):
         sol_list = problem.unflatten_fn_sol_list(sol_flat)
-        res = get_res(problem, sol_list, internal_vars)
+        res = get_res(problem, sol_list, internal_vars, sv)
         res_flat = jax.flatten_util.ravel_pytree(res)[0]
         return apply_boundary_to_res(bc, res_flat, sol_flat)
 

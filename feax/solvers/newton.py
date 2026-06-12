@@ -220,7 +220,7 @@ def _create_differentiable_newton_solver(
 
     differentiable_solve.defvjp(f_fwd, f_bwd)
 
-    def solver_with_bc(internal_vars, initial_guess, bc=None):
+    def solver_with_bc(internal_vars, initial_guess, bc=None, static_vars=None):
         """Differentiable Newton solver with optional BC override.
 
         Parameters
@@ -234,7 +234,15 @@ def _create_differentiable_newton_solver(
             solve uses this BC instead of the one captured at construction.
             The ``bc_rows`` / ``bc_mask`` must match the original BC
             (same constrained DOFs); only ``bc_vals`` should differ.
+        static_vars : StaticVars, optional
+            Not supported on the hybrid (extra_residual_fn) path, whose
+            Newton loop runs eagerly on the host — there is no user-facing
+            jit trace to keep mesh-sized constants out of.
         """
+        if static_vars is not None:
+            raise NotImplementedError(
+                "static_vars is not supported on the hybrid Newton path "
+                "(extra_residual_fn). Use the standard Newton or linear path.")
         from ..DCboundary import DirichletBC
         effective_bc = bc if isinstance(bc, DirichletBC) else _default_bc
         return differentiable_solve(internal_vars, initial_guess, effective_bc)
@@ -553,12 +561,28 @@ def create_callback_newton_solver(
 
     x0_param = create_x0_parametric()
 
+    # Pre-warm direct solve closures with concrete CSR structure (outside any
+    # trace). Required for the StaticVars path: the traced adjoint sees
+    # tracer-valued CSR structure, so the cuDSS closure cannot initialize
+    # lazily there. No-op when internal_vars is None or no direct solver is used.
+    if _fwd_direct or _adj_direct:
+        prewarm_direct_solvers(
+            problem=problem,
+            bc=bc,
+            internal_vars=internal_vars,
+            J_bc_func=create_J_bc_csr_function(problem, bc, symmetric=symmetric_bc),
+            forward_options=linear_options,
+            adjoint_options=adjoint_linear_options,
+            forward_solve_fn=linear_solve_fn,
+            adjoint_solve_fn=adjoint_linear_solve_fn,
+        )
+
     tol = newton_options.tol
     rel_tol = newton_options.rel_tol
     max_iter = newton_options.max_iter
 
-    # Vectorizable (scan-based) Armijo line search keyed on (iv, bc).
-    _res_for_armijo = lambda s, ivbc: res_param(s, ivbc[0], ivbc[1])
+    # Vectorizable (scan-based) Armijo line search keyed on (iv, bc, sv).
+    _res_for_armijo = lambda s, ivbc: res_param(s, ivbc[0], ivbc[1], ivbc[2])
     armijo = create_armijo_line_search_scan(
         _res_for_armijo,
         c1=newton_options.line_search_c1,
@@ -570,32 +594,32 @@ def create_callback_newton_solver(
 
     _fwd_res_J = res_J_param if _fwd_direct else matfree_res_J_param
 
-    def one_step(sol, iv, bc_):
+    def one_step(sol, iv, bc_, sv):
         """One Newton step (fully traceable → vmaps natively).
 
         Returns ``(new_sol, new_res_norm, line_search_found)``.
         """
         # Residual + operator: assembled CSRMatrix (direct) or matrix-free
         # matvec (Krylov). ``J`` is whatever the linear solver consumes.
-        res, J = _fwd_res_J(sol, iv, bc_)
+        res, J = _fwd_res_J(sol, iv, bc_, sv)
         res_norm = np.linalg.norm(res)
         x0 = x0_param(sol, bc_)
         du = linear_solve_fn(J, -res, x0)
         new_sol, new_norm, _alpha, found = armijo(
-            sol, du, res, res_norm, internal_vars=(iv, bc_))
+            sol, du, res, res_norm, internal_vars=(iv, bc_, sv))
         return new_sol, new_norm, found
 
     # ---- host loops (run inside pure_callback, concrete arrays) ----------
-    def _res_norm_single(sol, iv, bc_):
-        return np.linalg.norm(res_param(sol, iv, bc_))
+    def _res_norm_single(sol, iv, bc_, sv):
+        return np.linalg.norm(res_param(sol, iv, bc_, sv))
 
-    def host_single(iv, sol0, bc_):
+    def host_single(iv, sol0, bc_, sv):
         sol = sol0
-        res0 = float(_res_norm_single(sol, iv, bc_))
+        res0 = float(_res_norm_single(sol, iv, bc_, sv))
         for it in range(max_iter):
             if res0 <= tol:
                 break
-            sol, rn, found = one_step(sol, iv, bc_)
+            sol, rn, found = one_step(sol, iv, bc_, sv)
             if _raise_on_ls_fail and not bool(found):
                 raise NewtonLineSearchError(
                     f"Newton iter {it}: Armijo line search failed after "
@@ -608,14 +632,16 @@ def create_callback_newton_solver(
                 break
         return sol
 
-    _vstep = jax.vmap(one_step)
-    _vnorm0 = jax.vmap(_res_norm_single)
+    # sv (StaticVars) is problem structure — shared across the batch, never
+    # carrying a batch axis.
+    _vstep = jax.vmap(one_step, in_axes=(0, 0, 0, None))
+    _vnorm0 = jax.vmap(_res_norm_single, in_axes=(0, 0, 0, None))
 
-    def host_batched(iv, sol0, bc_):
+    def host_batched(iv, sol0, bc_, sv):
         sol = sol0
-        res0 = np.asarray(_vnorm0(sol, iv, bc_))           # (B,)
+        res0 = np.asarray(_vnorm0(sol, iv, bc_, sv))       # (B,)
         for it in range(max_iter):
-            sol, rn, found = _vstep(sol, iv, bc_)          # rn (B,), found (B,)
+            sol, rn, found = _vstep(sol, iv, bc_, sv)      # rn (B,), found (B,)
             rn = np.asarray(rn)
             if _raise_on_ls_fail and not bool(np.all(found)):
                 n_fail = int(np.sum(~np.asarray(found)))
@@ -628,18 +654,62 @@ def create_callback_newton_solver(
                 break
         return sol
 
-    # ---- forward as a single pure_callback, with a batched vmap rule -----
-    @custom_batching.custom_vmap
-    def _forward(iv, sol0, bc_):
-        rshape = jax.ShapeDtypeStruct(sol0.shape, sol0.dtype)
-        return jax.pure_callback(host_single, rshape, iv, sol0, bc_)
+    # ---- forward -----------------------------------------------------------
+    # Two interchangeable implementations:
+    #
+    # * traced ``lax.while_loop`` — used when the forward linear solver is
+    #   cuDSS. The cuDSS FFI call is registered for the CUDA platform only;
+    #   inside a ``pure_callback`` the computation is placed on Host, where no
+    #   handler exists (and dispatching GPU work from a host callback can
+    #   deadlock the stream). A traced loop keeps the FFI call in an ordinary
+    #   CUDA trace. It vmaps natively (batched while_loop), at the cost of
+    #   host-side conveniences: ``raise_on_line_search_failure`` cannot raise
+    #   (a failed line search just stops the iteration) and there is no
+    #   per-iteration host logging.
+    #
+    # * host loop in a single ``pure_callback`` — all other backends (the CPU
+    #   direct solvers run on the host anyway). Preserves the host-side
+    #   line-search error and adaptive early exit.
+    _traced_forward = _fwd_direct and getattr(linear_options, "solver", None) == "cudss"
 
-    @_forward.def_vmap
-    def _forward_vmap(axis_size, in_batched, iv, sol0, bc_):
-        # ``in_batched`` mirrors the (iv, sol0, bc_) structure with a bool per
-        # leaf: True → that leaf already carries the batch axis at position 0,
-        # False → it must be broadcast so every leaf is uniformly batched.
-        iv_b, sol_b, bc_b = in_batched
+    def _forward_traced(iv, sol0, bc_, sv):
+        res00 = _res_norm_single(sol0, iv, bc_, sv)
+
+        def cond(state):
+            sol, rn, it, found = state
+            not_converged = (rn > tol) & ((rn / np.maximum(res00, 1e-30)) > rel_tol)
+            return (it < max_iter) & not_converged & found
+
+        def body(state):
+            sol, rn, it, found = state
+            new_sol, new_norm, f = one_step(sol, iv, bc_, sv)
+            return (new_sol, new_norm, it + 1, f)
+
+        init = (sol0, res00, np.array(0, dtype=np.int32), np.array(True))
+        sol, _, _, _ = jax.lax.while_loop(cond, body, init)
+        return sol
+
+    @custom_batching.custom_vmap
+    def _forward_callback(iv, sol0, bc_, sv):
+        rshape = jax.ShapeDtypeStruct(sol0.shape, sol0.dtype)
+        return jax.pure_callback(host_single, rshape, iv, sol0, bc_, sv)
+
+    def _forward(iv, sol0, bc_, sv):
+        if _traced_forward:
+            return _forward_traced(iv, sol0, bc_, sv)
+        return _forward_callback(iv, sol0, bc_, sv)
+
+    @_forward_callback.def_vmap
+    def _forward_vmap(axis_size, in_batched, iv, sol0, bc_, sv):
+        # ``in_batched`` mirrors the (iv, sol0, bc_, sv) structure with a bool
+        # per leaf: True → that leaf already carries the batch axis at position
+        # 0, False → it must be broadcast so every leaf is uniformly batched.
+        # sv is problem structure and stays shared (unbatched) across the batch.
+        iv_b, sol_b, bc_b, sv_b = in_batched
+        if any(jax.tree_util.tree_leaves(sv_b)):
+            raise NotImplementedError(
+                "vmap over StaticVars is not supported — the problem structure "
+                "must be shared across the batch.")
 
         def _bcast(x, xb):
             return jax.tree_util.tree_map(
@@ -651,29 +721,30 @@ def create_callback_newton_solver(
         sol0 = _bcast(sol0, sol_b)
         bc_ = _bcast(bc_, bc_b)
         rshape = jax.ShapeDtypeStruct(sol0.shape, sol0.dtype)
-        out = jax.pure_callback(host_batched, rshape, iv, sol0, bc_)
+        out = jax.pure_callback(host_batched, rshape, iv, sol0, bc_, sv)
         return out, True
 
     # ---- adjoint (single traced linear solve; vmaps natively) ------------
     _needs_bc_correction = symmetric_bc
 
-    def _adjoint(internal_vars, sol, effective_bc, v):
+    def _adjoint(internal_vars, sol, effective_bc, v, sv):
         v_vec = v
+        src = sv if sv is not None else problem
         use_transpose = problem.matrix_view not in (MatrixView.UPPER, MatrixView.LOWER)
 
         # Adjoint operator Jᵀ.
         if _adj_direct:
-            J = J_csr_param(sol, internal_vars, effective_bc)
+            J = J_csr_param(sol, internal_vars, effective_bc, sv)
             J_adjoint = transpose_with_maps(
-                J, problem.csr_T_perm, problem.csr_T_indptr, problem.csr_T_indices
+                J, src.csr_T_perm, src.csr_T_indptr, src.csr_T_indices
             ) if use_transpose else J
         elif symmetric_bc:
             # Symmetric BC ⇒ J is symmetric ⇒ Jᵀ = J (matrix-free matvec).
-            _, J_adjoint = matfree_res_J_param(sol, internal_vars, effective_bc)
+            _, J_adjoint = matfree_res_J_param(sol, internal_vars, effective_bc, sv)
         else:
             # Non-symmetric BC: Jᵀ is the VJP of the BC-applied residual.
             _, _vjp = jax.vjp(
-                lambda s: res_param(s, internal_vars, effective_bc), sol)
+                lambda s: res_param(s, internal_vars, effective_bc, sv), sol)
             J_adjoint = lambda w: _vjp(w)[0]
 
         adjoint_vec = linear_solve_adjoint(
@@ -688,12 +759,12 @@ def create_callback_newton_solver(
             lambda_free = adjoint_vec.at[effective_bc.bc_rows].set(0.0)
             if _adj_direct:
                 sol_list = problem.unflatten_fn_sol_list(sol)
-                kdata, kindptr, kindices = _get_J_csr(problem, sol_list, internal_vars)
+                kdata, kindptr, kindices = _get_J_csr(problem, sol_list, internal_vars, sv)
                 K_bulk = CSRMatrix(kdata, kindptr, kindices,
                                    (problem.num_total_dofs_all_vars,) * 2)
                 ktw = K_bulk.rmatvec(lambda_free)
             else:
-                ktw = matfree_Kt_param(sol, internal_vars)(lambda_free)
+                ktw = matfree_Kt_param(sol, internal_vars, sv)(lambda_free)
             correction = ktw[effective_bc.bc_rows]
             adjoint_vec = adjoint_vec.at[effective_bc.bc_rows].set(
                 v_vec[effective_bc.bc_rows] - correction)
@@ -701,27 +772,27 @@ def create_callback_newton_solver(
         return adjoint_vec
 
     @jax.custom_vjp
-    def differentiable_solve(internal_vars, initial_guess, effective_bc):
-        return _forward(internal_vars, initial_guess, effective_bc)
+    def differentiable_solve(internal_vars, initial_guess, effective_bc, sv):
+        return _forward(internal_vars, initial_guess, effective_bc, sv)
 
-    def f_fwd(internal_vars, initial_guess, effective_bc):
-        sol = differentiable_solve(internal_vars, initial_guess, effective_bc)
-        return sol, (internal_vars, sol, effective_bc)
+    def f_fwd(internal_vars, initial_guess, effective_bc, sv):
+        sol = differentiable_solve(internal_vars, initial_guess, effective_bc, sv)
+        return sol, (internal_vars, sol, effective_bc, sv)
 
     def f_bwd(res, v):
-        internal_vars, sol, effective_bc = res
-        adjoint_vec = _adjoint(internal_vars, sol, effective_bc, v)
+        internal_vars, sol, effective_bc, sv = res
+        adjoint_vec = _adjoint(internal_vars, sol, effective_bc, v, sv)
 
         def res_fn(iv, bc_arg):
             return problem.unflatten_fn_sol_list(
-                res_param(sol, iv, bc_arg))
+                res_param(sol, iv, bc_arg, sv))
 
         adjoint_list = problem.unflatten_fn_sol_list(adjoint_vec)
         _, f_vjp = jax.vjp(res_fn, internal_vars, effective_bc)
         vjp_iv, vjp_bc = f_vjp(adjoint_list)
         vjp_iv = jax.tree_util.tree_map(_safe_negate, vjp_iv)
         vjp_bc = jax.tree_util.tree_map(_safe_negate, vjp_bc)
-        return (vjp_iv, None, vjp_bc)
+        return (vjp_iv, None, vjp_bc, None)
 
     differentiable_solve.defvjp(f_fwd, f_bwd)
 
@@ -729,10 +800,10 @@ def create_callback_newton_solver(
     default_initial_guess = zero_like_initial_guess(problem, bc)
     _default_bc = bc
 
-    def solver(internal_vars, initial_guess=None, bc=None):
+    def solver(internal_vars, initial_guess=None, bc=None, static_vars=None):
         from ..DCboundary import DirichletBC
         effective_bc = bc if isinstance(bc, DirichletBC) else _default_bc
         ig = default_initial_guess if initial_guess is None else initial_guess
-        return differentiable_solve(internal_vars, ig, effective_bc)
+        return differentiable_solve(internal_vars, ig, effective_bc, static_vars)
 
     return solver

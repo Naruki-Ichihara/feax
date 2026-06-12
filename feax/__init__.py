@@ -67,6 +67,7 @@ from .DCboundary import (
     dirichlet_bc_config,
 )
 from .internal_vars import InternalVars
+from .static_vars import StaticVars
 from .mesh import Mesh
 from .problem import MatrixView, Problem
 from .solver import (

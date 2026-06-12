@@ -40,7 +40,8 @@
       "Bash(pkill -9 -f \"isotropic_microstructure_opt.py\")",
       "Bash(pkill -9 -f \"python.*examples\")",
       "Read(//tmp/**)",
-      "Bash(PYTHONPATH=/workspace timeout 600 python /tmp/val_cbnewton.py)"
+      "Bash(PYTHONPATH=/workspace timeout 600 python /tmp/val_cbnewton.py)",
+      "Bash(pdfinfo /workspace/1-s2.0-S0045782526003919-main.pdf)"
     ],
     "deny": [],
     "ask": [],

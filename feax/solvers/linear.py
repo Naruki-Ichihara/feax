@@ -327,14 +327,14 @@ def create_linear_solver(
     )
 
     @jax.custom_vjp
-    def differentiable_solve(internal_vars, initial_guess, effective_bc):
+    def differentiable_solve(internal_vars, initial_guess, effective_bc, sv):
         # Operator follows the solve method: direct assembles a CSR matrix;
         # Krylov uses the matrix-free (residual JVP) matvec — no assembly.
         if _fwd_direct:
-            res = res_bc_parametric(initial_guess, internal_vars, effective_bc)
-            op = J_bc_csr_parametric(initial_guess, internal_vars, effective_bc)
+            res = res_bc_parametric(initial_guess, internal_vars, effective_bc, sv)
+            op = J_bc_csr_parametric(initial_guess, internal_vars, effective_bc, sv)
         else:
-            res, op = matfree_res_J_param(initial_guess, internal_vars, effective_bc)
+            res, op = matfree_res_J_param(initial_guess, internal_vars, effective_bc, sv)
 
         b = -res
         x0 = None
@@ -355,12 +355,12 @@ def create_linear_solver(
 
         return initial_guess + delta_sol
 
-    def f_fwd(internal_vars, initial_guess, effective_bc):
-        sol = differentiable_solve(internal_vars, initial_guess, effective_bc)
-        return sol, (internal_vars, sol, effective_bc)
+    def f_fwd(internal_vars, initial_guess, effective_bc, sv):
+        sol = differentiable_solve(internal_vars, initial_guess, effective_bc, sv)
+        return sol, (internal_vars, sol, effective_bc, sv)
 
     def f_bwd(res, v):
-        internal_vars, sol, effective_bc = res
+        internal_vars, sol, effective_bc, sv = res
 
         # Adjoint solve: J^T @ adjoint = v
         use_transpose = problem.matrix_view not in (MatrixView.UPPER, MatrixView.LOWER)
@@ -368,17 +368,18 @@ def create_linear_solver(
             # CSR-direct adjoint: assemble J, then form J^T via precomputed
             # transpose maps (a pure gather, no sort). UPPER/LOWER store a
             # symmetric view so no transpose is applied.
-            J = J_bc_csr_parametric(sol, internal_vars, effective_bc)
+            src = sv if sv is not None else problem
+            J = J_bc_csr_parametric(sol, internal_vars, effective_bc, sv)
             J_adjoint = transpose_with_maps(
-                J, problem.csr_T_perm, problem.csr_T_indptr, problem.csr_T_indices
+                J, src.csr_T_perm, src.csr_T_indptr, src.csr_T_indices
             ) if use_transpose else J
         elif symmetric_bc:
             # Symmetric BC ⇒ J is symmetric ⇒ Jᵀ = J (matrix-free matvec).
-            _, J_adjoint = matfree_res_J_param(sol, internal_vars, effective_bc)
+            _, J_adjoint = matfree_res_J_param(sol, internal_vars, effective_bc, sv)
         else:
             # Non-symmetric BC: Jᵀ is the VJP of the BC-applied residual.
             _, _vjp = jax.vjp(
-                lambda s: res_bc_parametric(s, internal_vars, effective_bc), sol)
+                lambda s: res_bc_parametric(s, internal_vars, effective_bc, sv), sol)
             J_adjoint = lambda w: _vjp(w)[0]
         adjoint_vec = linear_solve_adjoint(
             J_adjoint, v, adjoint_solver_options, problem.matrix_view,
@@ -389,7 +390,7 @@ def create_linear_solver(
         # VJP of residual w.r.t. internal_vars and bc
         def res_fn(iv, bc_arg):
             return problem.unflatten_fn_sol_list(
-                res_bc_parametric(sol, iv, bc_arg)
+                res_bc_parametric(sol, iv, bc_arg, sv)
             )
 
         adjoint_list = problem.unflatten_fn_sol_list(adjoint_vec)
@@ -398,7 +399,7 @@ def create_linear_solver(
         vjp_iv = jax.tree_util.tree_map(_safe_negate, vjp_iv)
         vjp_bc = jax.tree_util.tree_map(_safe_negate, vjp_bc)
 
-        return (vjp_iv, None, vjp_bc)
+        return (vjp_iv, None, vjp_bc, None)
 
     differentiable_solve.defvjp(f_fwd, f_bwd)
 
@@ -409,11 +410,11 @@ def create_linear_solver(
 
     default_initial_guess = zero_like_initial_guess(problem, bc)
 
-    def solver_wrapper(internal_vars, initial_guess=None, bc=None):
+    def solver_wrapper(internal_vars, initial_guess=None, bc=None, static_vars=None):
         effective_bc = bc if isinstance(bc, DirichletBC) else _default_bc
         ig = default_initial_guess if (can_omit_initial_guess and initial_guess is None) else initial_guess
         if ig is None:
             ig = default_initial_guess
-        return differentiable_solve(internal_vars, ig, effective_bc)
+        return differentiable_solve(internal_vars, ig, effective_bc, static_vars)
 
     return solver_wrapper
