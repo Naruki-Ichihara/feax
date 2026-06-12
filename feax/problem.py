@@ -175,13 +175,18 @@ class Problem:
                        + onp.arange(vec_i)[None, None, :]  # (1, 1, vec)
                        + self.offset[i])              # scalar
                 parts.append(dof.reshape(len(c), -1))  # (E, nn*vec)
-            return np.array(onp.concatenate(parts, axis=1))  # (E, total_dofs)
+            # DOF indices fit in int32 (num_total_dofs < 2^31); the COO index
+            # arrays built from these are the largest structures in feax, so
+            # int32 halves their memory and bandwidth.
+            return onp.concatenate(parts, axis=1).astype(onp.int32)  # (E, total_dofs)
 
-        # (num_cells, total_dofs_per_elem)
+        # (num_cells, total_dofs_per_elem). I / J are nnz_raw-sized and used
+        # only for structure setup and the BCOO path — kept on the HOST as
+        # numpy int32 (never as device arrays).
         inds = _build_inds(self.cells_list)
         ndof = inds.shape[1]
-        self.I = np.array(onp.repeat(onp.asarray(inds)[:, :, None], ndof, axis=2).reshape(-1))
-        self.J = np.array(onp.repeat(onp.asarray(inds)[:, None, :], ndof, axis=1).reshape(-1))
+        self.I = onp.repeat(inds[:, :, None], ndof, axis=2).reshape(-1)
+        self.J = onp.repeat(inds[:, None, :], ndof, axis=1).reshape(-1)
 
         # Residual scatter: the global DOF of each per-element residual entry,
         # in the same volume-then-boundary order get_res produces values. Lets
@@ -198,13 +203,13 @@ class Problem:
             cells_list_face = [cells[boundary_inds[:, 0]] for cells in self.cells_list]
             inds_face = _build_inds(cells_list_face)
             nf = inds_face.shape[1]
-            I_face = np.array(onp.repeat(onp.asarray(inds_face)[:, :, None], nf, axis=2).reshape(-1))
-            J_face = np.array(onp.repeat(onp.asarray(inds_face)[:, None, :], nf, axis=1).reshape(-1))
+            I_face = onp.repeat(inds_face[:, :, None], nf, axis=2).reshape(-1)
+            J_face = onp.repeat(inds_face[:, None, :], nf, axis=1).reshape(-1)
 
-            self.I = np.hstack((self.I, I_face))
-            self.J = np.hstack((self.J, J_face))
+            self.I = onp.hstack((self.I, I_face))
+            self.J = onp.hstack((self.J, J_face))
             self.cells_list_face_list.append(cells_list_face)
-            _res_dofs.append(onp.asarray(inds_face).reshape(-1))
+            _res_dofs.append(inds_face.reshape(-1))
 
         self._res_scatter_dofs_np = onp.concatenate(_res_dofs)  # (total residual entries,)
 
@@ -212,12 +217,12 @@ class Problem:
         # Store integer indices instead of boolean mask to enable JIT compilation
         if self.matrix_view == MatrixView.UPPER:
             mask = self.J >= self.I
-            self.filter_indices = np.where(mask)[0]
+            self.filter_indices = onp.where(mask)[0].astype(onp.int32)
             self.I_filtered = self.I[mask]
             self.J_filtered = self.J[mask]
         elif self.matrix_view == MatrixView.LOWER:
             mask = self.J <= self.I
-            self.filter_indices = np.where(mask)[0]
+            self.filter_indices = onp.where(mask)[0].astype(onp.int32)
             self.I_filtered = self.I[mask]
             self.J_filtered = self.J[mask]
         else:  # FULL
@@ -423,50 +428,57 @@ class Problem:
         structurally_symmetric = bool(
             onp.array_equal(csr_cols, t_cols) and onp.array_equal(indptr, t_indptr))
 
+        # Index dtype policy: every index/permutation value here is bounded by
+        # nnz_raw (< 2^31), so int32 is exact and halves memory + bandwidth —
+        # these are the largest static arrays in feax. nnz_raw-sized maps that
+        # the solve path never touches (csr_perm / csr_seg_ids / csr_slot /
+        # csr_full_slot / csr_volume_slots / res_volume_dofs) stay on the HOST
+        # as numpy; only nse- and residual-sized maps live on the device.
         self.csr_nse = nse
         self.csr_indptr = np.array(indptr)
         self.csr_indices = np.array(csr_cols)
         self.csr_row_of_slot = np.array(csr_rows)         # (nse,) row index per slot
-        self.csr_perm = np.array(order)
-        self.csr_seg_ids = np.array(seg_ids_sorted)
-        self.csr_slot = np.array(slot)
-        self.csr_diag_slots = np.array(diag_slot)         # (num_dofs,) slot of (d,d)
-        self.csr_T_perm = np.array(t_order)               # (nse,) slot -> transposed slot
+        self.csr_perm = order.astype(onp.int32)           # host: reference path only
+        self.csr_seg_ids = seg_ids_sorted.astype(onp.int32)   # host: reference path only
+        self.csr_slot = slot.astype(onp.int32)            # host: scatter-add form only
+        self.csr_diag_slots = np.array(diag_slot.astype(onp.int32))  # (num_dofs,) slot of (d,d)
+        self.csr_T_perm = np.array(t_order.astype(onp.int32))  # (nse,) slot -> transposed slot
         self.csr_T_indptr = np.array(t_indptr)
         self.csr_T_indices = np.array(t_cols.astype(onp.int32))
         self.csr_structurally_symmetric = structurally_symmetric
         # Per-batch CSR assembly maps (memory-efficient path).
-        self.csr_full_slot = np.array(full_slot)          # (len(I),) unfiltered -> slot|nse
+        self.csr_full_slot = full_slot.astype(onp.int32)  # host: (len(I),) unfiltered -> slot|nse
         self.csr_vol_len = vol_len                        # length of the volume block in (I, J)
         self.csr_ndof_vol = ndof_vol                      # total dofs per element
-        # (num_cells, ndof_vol^2): each cell's local entries -> CSR slot|nse
-        self.csr_volume_slots = np.array(
-            full_slot[:vol_len].reshape(self.num_cells, ndof_vol * ndof_vol))
+        # (num_cells, ndof_vol^2): each cell's local entries -> CSR slot|nse.
+        # Host-only: consumed by the slot-sort precompute (assembler._vol_slot_sort).
+        self.csr_volume_slots = self.csr_full_slot[:vol_len].reshape(
+            self.num_cells, ndof_vol * ndof_vol)
         # Surface block: a static slot-sorted permutation so the per-solve face
         # segment_sum is deterministic (ascending segment ids).
         face_slots_np = full_slot[vol_len:]
         face_perm = onp.argsort(face_slots_np, kind='stable')
-        self.csr_face_perm = np.array(face_perm)
-        self.csr_face_sorted_slots = np.array(face_slots_np[face_perm])
+        self.csr_face_perm = np.array(face_perm.astype(onp.int32))
+        self.csr_face_sorted_slots = np.array(face_slots_np[face_perm].astype(onp.int32))
 
         # Residual scatter: sorted DOF permutation for the deterministic
         # single-pass residual segment_sum (volume + all boundaries combined).
         res_dofs = self._res_scatter_dofs_np
         res_perm = onp.argsort(res_dofs, kind='stable')
-        self.res_perm = np.array(res_perm)
-        self.res_sorted_dofs = np.array(res_dofs[res_perm])
+        self.res_perm = np.array(res_perm.astype(onp.int32))
+        self.res_sorted_dofs = np.array(res_dofs[res_perm].astype(onp.int32))
 
         # Split for the fused residual+Jacobian path (#5): the volume residual
         # is accumulated in the assembly scan (per-cell DOF block), boundaries
         # added separately. ``num_total_dofs_all_vars`` is the discard DOF for
-        # padded cells.
+        # padded cells. Host-only (consumed by assembler._res_vol_slot_sort).
         res_vol_len = self.num_cells * ndof_vol
-        self.res_volume_dofs = np.array(
-            res_dofs[:res_vol_len].reshape(self.num_cells, ndof_vol))  # (num_cells, ndof)
+        self.res_volume_dofs = res_dofs[:res_vol_len].reshape(
+            self.num_cells, ndof_vol).astype(onp.int32)   # (num_cells, ndof)
         res_face_dofs = res_dofs[res_vol_len:]
         res_face_perm = onp.argsort(res_face_dofs, kind='stable')
-        self.res_face_perm = np.array(res_face_perm)
-        self.res_face_sorted_dofs = np.array(res_face_dofs[res_face_perm])
+        self.res_face_perm = np.array(res_face_perm.astype(onp.int32))
+        self.res_face_sorted_dofs = np.array(res_face_dofs[res_face_perm].astype(onp.int32))
 
     def custom_init(self, *args: Any) -> None:
         """Custom initialization for problem-specific setup.

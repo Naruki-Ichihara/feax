@@ -1155,7 +1155,7 @@ def _vol_slot_sort(problem: 'Problem') -> Tuple[onp.ndarray, onp.ndarray]:
     if num_cuts <= 1:
         flat = vslots.reshape(-1)
         perm = onp.argsort(flat, kind='stable')
-        out = (perm, flat[perm])
+        out = (perm.astype(onp.int32), flat[perm].astype(onp.int32))
     else:
         # Pad cells up to n_padded; padded cells' slots are the discard bucket
         # (nse) so their Jacobians never reach the matrix.
@@ -1164,7 +1164,8 @@ def _vol_slot_sort(problem: 'Problem') -> Tuple[onp.ndarray, onp.ndarray]:
             [vslots, onp.full((pad, ndof2), nse, dtype=vslots.dtype)], axis=0)
         vslots_batched = vslots_pad.reshape(num_cuts, bs * ndof2)
         perm = onp.argsort(vslots_batched, axis=1, kind='stable')
-        out = (perm, onp.take_along_axis(vslots_batched, perm, axis=1))
+        out = (perm.astype(onp.int32),
+               onp.take_along_axis(vslots_batched, perm, axis=1).astype(onp.int32))
 
     problem._vol_slot_sort_cache = out
     return out
@@ -1190,14 +1191,15 @@ def _res_vol_slot_sort(problem: 'Problem') -> Tuple[onp.ndarray, onp.ndarray]:
     if num_cuts <= 1:
         flat = rdofs.reshape(-1)
         perm = onp.argsort(flat, kind='stable')
-        out = (perm, flat[perm])
+        out = (perm.astype(onp.int32), flat[perm].astype(onp.int32))
     else:
         pad = n_padded - problem.num_cells
         rdofs_pad = onp.concatenate(
             [rdofs, onp.full((pad, ndof), ndof_total, dtype=rdofs.dtype)], axis=0)
         rdofs_b = rdofs_pad.reshape(num_cuts, bs * ndof)
         perm = onp.argsort(rdofs_b, axis=1, kind='stable')
-        out = (perm, onp.take_along_axis(rdofs_b, perm, axis=1))
+        out = (perm.astype(onp.int32),
+               onp.take_along_axis(rdofs_b, perm, axis=1).astype(onp.int32))
 
     problem._res_vol_slot_sort_cache = out
     return out
