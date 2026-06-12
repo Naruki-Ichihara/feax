@@ -129,7 +129,7 @@ class ThermomechOpt(Pipeline):
         self._solver_mech = fe.create_solver(
             prob_mech, bc_mech, solver_options=solver_opts,
             adjoint_solver_options=solver_opts,
-            iter_num=1, internal_vars=sample_iv_mech)
+            linear=True, internal_vars=sample_iv_mech)
 
         # Thermal: volume_vars = (rho,)
         sample_iv_therm = fe.InternalVars(
@@ -138,7 +138,7 @@ class ThermomechOpt(Pipeline):
         self._solver_therm = fe.create_solver(
             prob_therm, bc_therm, solver_options=solver_opts,
             adjoint_solver_options=solver_opts,
-            iter_num=1, internal_vars=sample_iv_therm)
+            linear=True, internal_vars=sample_iv_therm)
 
         # ── Filter ────────────────────────────────────────────────────
         self._filter_fn = gene.create_density_filter(mesh, radius=filter_radius)
@@ -276,7 +276,7 @@ solver_opts_r = fe.DirectSolverOptions()
 solver_therm_r = fe.create_solver(
     prob_therm_r, bc_therm_r, solver_options=solver_opts_r,
     adjoint_solver_options=solver_opts_r,
-    iter_num=1, internal_vars=iv_therm_r)
+    linear=True, internal_vars=iv_therm_r)
 
 init_therm_r = fe.zero_like_initial_guess(prob_therm_r, bc_therm_r)
 sol_therm_r = solver_therm_r(iv_therm_r, init_therm_r)
@@ -311,7 +311,7 @@ iv_mech_r = fe.InternalVars(
 solver_mech_r = fe.create_solver(
     prob_mech_r, bc_mech_r, solver_options=solver_opts_r,
     adjoint_solver_options=solver_opts_r,
-    iter_num=1, internal_vars=iv_mech_r)
+    linear=True, internal_vars=iv_mech_r)
 
 init_mech_r = fe.zero_like_initial_guess(prob_mech_r, bc_mech_r)
 sol_mech_r = solver_mech_r(iv_mech_r, init_mech_r)

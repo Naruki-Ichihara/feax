@@ -70,8 +70,8 @@ def test_cg_solver_grad(
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG
-    solver_opts = fe.IterativeSolverOptions(solver="cg")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.KrylovSolverOptions(solver="cg")
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate: norm of solution
@@ -110,8 +110,8 @@ def test_bicgstab_solver_grad(
     bc = bc_config.create_bc(problem)
 
     # Create solver with BICGSTAB
-    solver_opts = fe.IterativeSolverOptions(solver="bicgstab")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.KrylovSolverOptions(solver="bicgstab")
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
@@ -149,8 +149,8 @@ def test_gmres_solver_grad(
     bc = bc_config.create_bc(problem)
 
     # Create solver with GMRES
-    solver_opts = fe.IterativeSolverOptions(solver="gmres")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.KrylovSolverOptions(solver="gmres")
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
@@ -194,7 +194,7 @@ def test_cudss_solver_grad_full(
 
     # Create solver with cuDSS
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
@@ -237,7 +237,7 @@ def test_cudss_solver_grad_upper(
 
     # Create solver with cuDSS for UPPER matrix
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
@@ -283,8 +283,8 @@ def test_gradient_consistency_cg_bicgstab(
     # Create CG solver and compute gradient
     solver_cg = fe.create_solver(
         problem, bc,
-        solver_options=fe.IterativeSolverOptions(solver="cg"),
-        iter_num=1
+        solver_options=fe.KrylovSolverOptions(solver="cg"),
+        linear=True
     )
 
     def loss_cg(internal_vars):
@@ -296,8 +296,8 @@ def test_gradient_consistency_cg_bicgstab(
     # Create BICGSTAB solver and compute gradient
     solver_bicgstab = fe.create_solver(
         problem, bc,
-        solver_options=fe.IterativeSolverOptions(solver="bicgstab"),
-        iter_num=1
+        solver_options=fe.KrylovSolverOptions(solver="bicgstab"),
+        linear=True
     )
 
     def loss_bicgstab(internal_vars):
@@ -339,8 +339,8 @@ def test_grad_jit_compatibility_cg(
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG
-    solver_opts = fe.IterativeSolverOptions(solver="cg")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.KrylovSolverOptions(solver="cg")
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
@@ -378,8 +378,8 @@ def test_grad_jit_compatibility_bicgstab(
     bc = bc_config.create_bc(problem)
 
     # Create solver with BICGSTAB
-    solver_opts = fe.IterativeSolverOptions(solver="bicgstab")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.KrylovSolverOptions(solver="bicgstab")
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
@@ -417,8 +417,8 @@ def test_grad_jit_compatibility_gmres(
     bc = bc_config.create_bc(problem)
 
     # Create solver with GMRES
-    solver_opts = fe.IterativeSolverOptions(solver="gmres")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.KrylovSolverOptions(solver="gmres")
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
@@ -459,7 +459,7 @@ def test_grad_jit_compatibility_cudss(
     # Create solver with cuDSS (pass internal_vars to pre-warm CuDSSSolver
     # with concrete values, required for JIT+grad composition)
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1,
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True,
                               internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -502,8 +502,8 @@ def test_jit_grad_composition_order_cg(
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG
-    solver_opts = fe.IterativeSolverOptions(solver="cg")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.KrylovSolverOptions(solver="cg")
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
@@ -554,7 +554,7 @@ def test_jit_grad_composition_order_cudss(
     # Create solver with cuDSS (pass internal_vars to pre-warm CuDSSSolver
     # with concrete values, required for JIT+grad composition)
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1,
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True,
                               internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -627,7 +627,7 @@ def test_gradient_consistency_upper_vs_full(
         problem_full, bc_full,
         solver_options=solver_opts_full,
         adjoint_solver_options=solver_opts_full,
-        iter_num=1, internal_vars=internal_vars
+        linear=True, internal_vars=internal_vars
     )
     initial_full = fe.zero_like_initial_guess(problem_full, bc_full)
 
@@ -647,7 +647,7 @@ def test_gradient_consistency_upper_vs_full(
         problem_upper, bc_upper,
         solver_options=solver_opts_upper,
         adjoint_solver_options=solver_opts_upper,
-        iter_num=1, internal_vars=internal_vars
+        linear=True, internal_vars=internal_vars
     )
     initial_upper = fe.zero_like_initial_guess(problem_upper, bc_upper)
 

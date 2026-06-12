@@ -149,9 +149,10 @@ class ThirdMediumContact(fe.Problem):
 
     # ── HuHu-LuLu biharmonic regularization ────────────────────────
 
-    def get_universal_kernel(self):
-        """Regularization kernel applied only on medium cells.
+    def get_extra_kernel(self):
+        """Additive biharmonic regularization, applied only on medium cells.
 
+        Added on top of the Neo-Hookean base (``get_energy_density``):
         E_reg = kr_coeff ∫_medium (H:::H − (1/d) L·L) dΩ
         """
         dim = self.dim

@@ -36,6 +36,7 @@
         {
           "items": [
             "reference/feax/mechanics/cohesive",
+            "reference/feax/mechanics/copv",
             "reference/feax/mechanics/layered_solid_element",
             "reference/feax/mechanics/orientation",
             "reference/feax/mechanics/shell",
@@ -57,8 +58,8 @@
               "type": "category"
             },
             "reference/feax/solvers/common",
+            "reference/feax/solvers/eigen",
             "reference/feax/solvers/linear",
-            "reference/feax/solvers/matrix_free",
             "reference/feax/solvers/newton",
             "reference/feax/solvers/options",
             "reference/feax/solvers/reduced",
@@ -71,6 +72,7 @@
         "reference/feax/__init__",
         "reference/feax/assembler",
         "reference/feax/basis",
+        "reference/feax/csr",
         "reference/feax/fe",
         "reference/feax/internal_vars",
         "reference/feax/mesh",

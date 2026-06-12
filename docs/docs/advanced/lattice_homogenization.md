@@ -168,7 +168,7 @@ to a per-cell array.
 Use `flat.solver.create_homogenization_solver()` to compute $\mathbf{C}_{\text{hom}}$:
 
 ```python
-solver_options = fe.IterativeSolverOptions(
+solver_options = fe.KrylovSolverOptions(
     solver="cg", tol=1e-10, atol=1e-10, maxiter=10000, verbose=True
 )
 
@@ -346,7 +346,7 @@ nu_field = fe.internal_vars.InternalVars.create_cell_var(problem, nu)
 internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
 
 # Homogenization
-solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-10, atol=1e-10, maxiter=10000, verbose=True)
+solver_options = fe.KrylovSolverOptions(solver="cg", tol=1e-10, atol=1e-10, maxiter=10000, verbose=True)
 compute_C_hom = flat.solver.create_homogenization_solver(
     problem, bc, P, mesh, solver_options=solver_options, dim=3
 )

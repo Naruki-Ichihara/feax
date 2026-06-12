@@ -37,7 +37,9 @@ import numpy as onp
 
 import feax as fe
 
-from .layered_solid_element import _tabulate_reference, rotate_stiffness_3d
+from .layered_solid_element import (
+    _tabulate_reference, rotate_stiffness_3d, rotate_cte_3d,
+)
 
 # Radial zone labels (per cell).
 ZONE_INNER_SHELL = 0
@@ -459,6 +461,62 @@ def create_winding_ply_stiffness(copv_mesh: DoubleWallCopvMesh,
     return jnp.where(is_shell, C_shell, C_fill_plies[None])
 
 
+def create_winding_cte(copv_mesh: DoubleWallCopvMesh,
+                       ply_alpha: jnp.ndarray,
+                       layup: Sequence[Tuple[str, float]],
+                       fill_alpha: jnp.ndarray = None,
+                       drop_dome_hoop: bool = True) -> jnp.ndarray:
+    """Per-cell, per-ply thermal-expansion (CTE) tensor with Clairaut winding.
+
+    Thermal analogue of :func:`create_winding_ply_stiffness`: each shell ply's CTE
+    is rotated into the **same** wall triad / winding frame used for the stiffness,
+    so the anisotropic contraction (small ``α₁`` along the fibre, large ``α₂``
+    transverse) follows the winding direction. Fill cells (if ``fill_alpha`` is
+    given) take the isotropic ``fill_alpha`` for every ply.
+
+    The result feeds the layered-solid thermal eigenstrain: expand it to quadrature
+    points and multiply by the temperature change ``ΔT`` to get ``ε_th = α·ΔT``
+    (see :func:`feax.mechanics.expand_cte_to_quad`).
+
+    Parameters
+    ----------
+    copv_mesh : DoubleWallCopvMesh
+        The generated mesh (provides cell geometry and zone labels).
+    ply_alpha : (3, 3) array
+        Single-ply CTE tensor in ply (material) axes, fibre = 1-axis, e.g.
+        ``transverse_isotropic_cte_3d(alpha_1, alpha_2)``.
+    layup : sequence of ``(kind, sign)``
+        Per-ply stacking, identical to :func:`create_winding_ply_stiffness` so the
+        CTE and stiffness frames stay in lock-step.
+    fill_alpha : (3, 3) array, optional
+        Isotropic fill CTE. If ``None`` every cell is treated as a shell.
+    drop_dome_hoop : bool
+        Re-orient hoop plies on the dome as helical continuations (default
+        ``True``); must match the value used for the stiffness.
+
+    Returns
+    -------
+    cte_cell_ply : (n_cells, n_ply, 3, 3) array
+        Rotated CTE per cell and ply, in **global** axes.
+    """
+    geom = copv_mesh.geom
+    axis = jnp.asarray(geom.axis)
+    r_p = geom.polar_radius
+    n_ply = len(layup)
+
+    def cell_shell(cell_nodes, is_dome):
+        frames = _cell_ply_frames(cell_nodes, is_dome, axis, r_p, layup, drop_dome_hoop)
+        return jax.vmap(lambda R: rotate_cte_3d(ply_alpha, R))(frames)
+
+    is_dome = jnp.asarray(copv_mesh.dome_cell_mask())
+    A_shell = jax.vmap(cell_shell)(copv_mesh.cell_nodes, is_dome)
+    if fill_alpha is None:
+        return A_shell
+    A_fill_plies = jnp.broadcast_to(fill_alpha, (n_ply, 3, 3))
+    is_shell = jnp.asarray(copv_mesh.cell_zone != ZONE_FILL)[:, None, None, None]
+    return jnp.where(is_shell, A_shell, A_fill_plies[None])
+
+
 def cell_fiber_directions(copv_mesh: DoubleWallCopvMesh,
                           layup: Sequence[Tuple[str, float]],
                           drop_dome_hoop: bool = True,
@@ -558,6 +616,7 @@ __all__ = [
     "build_meridian",
     "create_double_wall_copv_mesh",
     "create_winding_ply_stiffness",
+    "create_winding_cte",
     "cell_fiber_directions",
     "cell_winding_angle_deg",
     "cell_triads",

@@ -15,9 +15,6 @@ from .common import (
 from .linear import create_linear_solver, linear_solve
 from .newton import (
     create_newton_solver,
-    newton_solve,
-    newton_solve_fori,
-    newton_solve_py,
 )
 from .options import (
     AbstractSolverOptions,
@@ -25,7 +22,7 @@ from .options import (
     CUDSSMatrixView,
     CUDSSOptions,
     DirectSolverOptions,
-    IterativeSolverOptions,
+    KrylovSolverOptions,
     MatrixProperty,
     NewtonOptions,
     SKSPARSEOptions,
@@ -33,14 +30,6 @@ from .options import (
     detect_matrix_property,
     resolve_direct_solver,
     resolve_iterative_solver,
-)
-from .matrix_free import (
-    LinearSolverOptions,
-    MatrixFreeOptions,
-    NewtonInfo,
-    create_energy_fn,
-    create_matrix_free_solver,
-    newton_solve as matrix_free_newton_solve,
 )
 from .reduced import create_reduced_solver
 from .time_solver import (
@@ -70,7 +59,7 @@ __all__ = [
     "CUDSSMatrixView",
     "CUDSSOptions",
     "DirectSolverOptions",
-    "IterativeSolverOptions",
+    "KrylovSolverOptions",
     "MatrixProperty",
     "NewtonOptions",
     "SKSPARSEOptions",
@@ -87,16 +76,7 @@ __all__ = [
     "create_linear_solver",
     "linear_solve",
     "create_newton_solver",
-    "newton_solve",
-    "newton_solve_fori",
-    "newton_solve_py",
     "create_reduced_solver",
-    "LinearSolverOptions",
-    "MatrixFreeOptions",
-    "NewtonInfo",
-    "create_energy_fn",
-    "create_matrix_free_solver",
-    "matrix_free_newton_solve",
     "cholmod_solve",
     "spsolve",
     "umfpack_solve",

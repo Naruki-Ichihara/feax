@@ -61,8 +61,8 @@ internal_vars  = fe.InternalVars(volume_vars=(), surface_vars=[(traction_array,)
 
 solver_option = fe.DirectSolverOptions()
 
-solver_no_jit = fe.create_solver(problem, bc, solver_option, iter_num=1, internal_vars=internal_vars)
-solver_jit    = jax.jit(fe.create_solver(problem, bc, solver_option, iter_num=1, internal_vars=internal_vars))
+solver_no_jit = fe.create_solver(problem, bc, solver_option, linear=True, internal_vars=internal_vars)
+solver_jit    = jax.jit(fe.create_solver(problem, bc, solver_option, linear=True, internal_vars=internal_vars))
 
 initial = fe.zero_like_initial_guess(problem, bc)
 ```

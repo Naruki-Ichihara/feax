@@ -44,7 +44,7 @@ def create_helmholtz_filter(mesh, radius, P=None, solver_options=None):
         mesh: Mesh object
         radius: Filter radius (controls smoothness - larger = smoother)
         P: Optional prolongation matrix for periodic boundary conditions (default None)
-        solver_options: Optional IterativeSolverOptions (default: cg, tol=1e-8)
+        solver_options: Optional KrylovSolverOptions (default: cg, tol=1e-8)
 
     Returns:
         filter_fn: A pure function (rho_source) -> rho_filtered that can be
@@ -72,7 +72,7 @@ def create_helmholtz_filter(mesh, radius, P=None, solver_options=None):
     """
     # Default solver options
     if solver_options is None:
-        solver_options = fe.IterativeSolverOptions(
+        solver_options = fe.KrylovSolverOptions(
             solver="cg",
             tol=1e-8,
             verbose=False,
@@ -104,7 +104,7 @@ def create_helmholtz_filter(mesh, radius, P=None, solver_options=None):
     # Create solver (done once)
     solver = fe.solver.create_solver(
         problem, bc, solver_options,
-        iter_num=1,  # Linear problem
+        linear=True,  # Linear problem
         P=P  # Optional periodic boundary conditions
     )
 
@@ -151,7 +151,7 @@ def helmholtz_filter(rho_source, mesh, radius, P=None, solver_options=None):
         mesh: Mesh object
         radius: Filter radius (controls smoothness - larger = smoother)
         P: Optional prolongation matrix for periodic boundary conditions (default None)
-        solver_options: Optional IterativeSolverOptions (default: cg, tol=1e-8)
+        solver_options: Optional KrylovSolverOptions (default: cg, tol=1e-8)
 
     Returns:
         (num_nodes,) array of filtered node-based density field

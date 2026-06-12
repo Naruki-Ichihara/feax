@@ -72,7 +72,7 @@ internal_vars = fe.internal_vars.InternalVars(
 bc = bc_config.create_bc(feax_problem)
 
 solver_options = fe.solver.DirectSolverOptions(verbose=True)
-newton_options = fe.NewtonOptions(internal_jit=True)
+newton_options = fe.NewtonOptions()
 solver = fe.solver.create_solver(
     feax_problem,
     bc,

@@ -52,7 +52,7 @@ traction = fe.InternalVars.create_uniform_surface_var(problem, 1e-3)
 internal_vars = fe.InternalVars(volume_vars=(), surface_vars=[(traction,)])
 
 solver = fe.create_solver(problem, bc,
-    solver_options=fe.DirectSolverOptions(), iter_num=1,
+    solver_options=fe.DirectSolverOptions(), linear=True,
     internal_vars=internal_vars)
 initial = fe.zero_like_initial_guess(problem, bc)
 

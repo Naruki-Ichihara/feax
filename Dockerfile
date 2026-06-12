@@ -5,7 +5,10 @@ RUN apt upgrade -y
 
 RUN apt -y install gmsh python3-gmsh libsuitesparse-dev swig libnlopt-dev
 RUN pip install --upgrade pip
-RUN pip install --no-build-isolation nlopt
+# nlopt's PyPI sdist pins cmake_minimum_required(VERSION <3.5); CMake 4.x dropped
+# compat for policy versions <3.5 and hard-errors. CMAKE_POLICY_VERSION_MINIMUM=3.5
+# tells CMake to configure anyway.
+RUN CMAKE_POLICY_VERSION_MINIMUM=3.5 pip install --no-build-isolation nlopt
 
 # Copy feax source code
 COPY . /workspace

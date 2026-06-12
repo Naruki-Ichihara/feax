@@ -85,8 +85,8 @@ thermal_bc = fe.DCboundary.DirichletBCConfig([
 
 thermal_solver = fe.create_solver(
     thermal_problem, thermal_bc,
-    solver_options=fe.IterativeSolverOptions(solver='cg'),
-    iter_num=1,
+    solver_options=fe.KrylovSolverOptions(solver='cg'),
+    linear=True,
     internal_vars=fe.InternalVars(volume_vars=(np.full(num_nodes, T0),)),
 )
 
@@ -127,8 +127,8 @@ H_field = np.zeros((num_cells, num_quads))
 
 pf_solver = fe.create_solver(
     pf_problem, pf_bc,
-    solver_options=fe.IterativeSolverOptions(solver='cg'),
-    iter_num=1,  # Linear in d when H is fixed
+    solver_options=fe.KrylovSolverOptions(solver='cg'),
+    linear=True,  # Linear in d when H is fixed
     internal_vars=fe.InternalVars(volume_vars=(H_field,)),
 )
 
@@ -164,8 +164,8 @@ mech_bc = fe.DCboundary.DirichletBCConfig([
 
 mech_solver = fe.create_solver(
     mech_problem, mech_bc,
-    solver_options=fe.IterativeSolverOptions(solver='cg'),
-    iter_num=1,
+    solver_options=fe.KrylovSolverOptions(solver='cg'),
+    linear=True,
     internal_vars=fe.InternalVars(volume_vars=(
         np.zeros(num_nodes),        # d
         np.full(num_nodes, T0),     # T

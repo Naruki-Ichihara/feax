@@ -99,8 +99,8 @@ bc = fe.DirichletBCConfig([bc_fixed, bc_move]).create_bc(problem)
 solver = fe.create_solver(
     problem, bc,
     solver_options=fe.DirectSolverOptions(solver='umfpack', verbose=True),
-    newton_options=fe.NewtonOptions(tol=1e-6, rel_tol=1e-8, max_iter=100, internal_jit=True),
-    iter_num=None,
+    newton_options=fe.NewtonOptions(tol=1e-6, rel_tol=1e-8, max_iter=100),
+    linear=False,
     internal_vars=iv,
     symmetric_bc=False,
 )

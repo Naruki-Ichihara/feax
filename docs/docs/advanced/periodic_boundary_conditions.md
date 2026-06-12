@@ -103,8 +103,8 @@ internal_vars = fe.InternalVars(volume_vars=(theta_array,), surface_vars=())
 ### Step 6: Solver
 
 ```python
-solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-8)
-solver = fe.create_solver(problem, bc, solver_options, iter_num=1, P=P)
+solver_options = fe.KrylovSolverOptions(solver="cg", tol=1e-8)
+solver = fe.create_solver(problem, bc, solver_options, linear=True, P=P)
 ```
 
 Pass prolongation matrix `P` to `create_solver()`.
@@ -208,8 +208,8 @@ theta_array = fe.InternalVars.create_uniform_volume_var(problem, theta)
 internal_vars = fe.InternalVars(volume_vars=(theta_array,), surface_vars=())
 
 # Solver
-solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-8)
-solver = fe.create_solver(problem, bc, solver_options=solver_options, iter_num=1, P=P)
+solver_options = fe.KrylovSolverOptions(solver="cg", tol=1e-8)
+solver = fe.create_solver(problem, bc, solver_options=solver_options, linear=True, P=P)
 
 # Solve
 initial_guess = np.zeros(problem.num_total_dofs_all_vars)

@@ -113,12 +113,12 @@ def test_neohookean_solver_convergence(
     internal_vars = fe.InternalVars((), [(surf_var,)])
 
     # Create Newton solver with CG for linear solve
-    solver_opts = fe.IterativeSolverOptions(
+    solver_opts = fe.KrylovSolverOptions(
         solver="cg",
         maxiter=20,
         tol=1e-6
     )
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=20)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=False)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve
@@ -180,12 +180,12 @@ def test_neohookean_residual_convergence(
     surf_var = fe.InternalVars.create_uniform_surface_var(problem, traction)
     internal_vars = fe.InternalVars((), [(surf_var,)])
 
-    solver_opts = fe.IterativeSolverOptions(
+    solver_opts = fe.KrylovSolverOptions(
         solver="cg",
         maxiter=20,
         tol=1e-6
     )
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=20)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=False)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve
@@ -250,12 +250,12 @@ def test_neohookean_different_solvers(
     solutions = []
 
     for solver_name in solvers:
-        solver_opts = fe.IterativeSolverOptions(
+        solver_opts = fe.KrylovSolverOptions(
             solver=solver_name,
             maxiter=20,
             tol=1e-6
         )
-        solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=20)
+        solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=False)
         initial = fe.zero_like_initial_guess(problem, bc)
 
         solution = solver(internal_vars, initial)

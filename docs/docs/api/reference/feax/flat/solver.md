@@ -83,7 +83,7 @@ def create_homogenization_solver(problem: Any,
                                  bc: Any,
                                  P: Any,
                                  mesh: Any,
-                                 solver_options: IterativeSolverOptions = None,
+                                 solver_options: KrylovSolverOptions = None,
                                  dim: int = 3)
 ```
 
@@ -103,7 +103,7 @@ Parameters
 - **bc** (*FEAX DirichletBC (typically empty for periodic unit cells).*)
 - **P** (*Prolongation matrix from ``feax.flat.pbc.prolongation_matrix``.*): Shape ``(num_dofs, num_reduced_dofs)``.
 - **mesh** (*FEAX mesh of the unit cell.*)
-- **solver_options** (*IterativeSolverOptions, optional*): Iterative solver configuration.
+- **solver_options** (*KrylovSolverOptions, optional*): Iterative solver configuration.
 - **dim** (*int*): Problem dimension. ``2`` or ``3``. Default: ``3``.
 
 

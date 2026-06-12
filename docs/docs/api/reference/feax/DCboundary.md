@@ -93,42 +93,41 @@ Examples
 ... ])
 ```
 
-#### apply\_boundary\_to\_J
+#### apply\_boundary\_to\_J\_csr
 
 ```python
-def apply_boundary_to_J(bc: DirichletBC,
-                        J: BCOO,
-                        symmetric: bool = True) -> BCOO
+def apply_boundary_to_J_csr(bc: DirichletBC,
+                            problem: 'Problem',
+                            csr_data: np.ndarray,
+                            symmetric: bool = True) -> np.ndarray
 ```
 
-Apply Dirichlet boundary conditions to Jacobian matrix J.
+Apply Dirichlet BCs directly to a CSR ``data`` array (no BCOO).
 
-This function modifies the Jacobian matrix to enforce Dirichlet boundary conditions
-by zeroing out entries in boundary condition rows (and optionally columns), and setting
-diagonal entries to 1.0 for those rows.
+The CSR *structure* (``problem.csr_indptr`` / ``csr_indices``) is fixed, and
+the canonical pattern already contains every diagonal slot ``(d, d)``, so BC
+enforcement is a pure value transform on ``csr_data``:
 
-The algorithm:
-1. Zero out BC row entries (and BC column entries if symmetric=True)
-2. Set diagonal entries to 1.0 for all BC rows
-3. Handle potential duplicates by concatenation (JAX sparse solvers handle this)
+1. Zero every entry whose row (and, when ``symmetric``, column) is a BC DOF.
+2. Set the diagonal slot of each BC row to 1.
+
+This matches textbook symmetric/non-symmetric Dirichlet elimination: the
+single canonical diagonal slot is zeroed then set to ``1``. The transform
+depends only on ``bc_rows`` / ``bc_mask`` (DOF locations), never on
+``bc_vals``, and is fully JIT/trace compatible.
 
 Parameters
 ----------
-- **bc** (*DirichletBC*): Pre-computed boundary condition information containing: - bc_rows: DOF indices where BCs are applied - bc_mask: Boolean mask for fast BC row identification - bc_vals: Prescribed values (not used in Jacobian modification) - total_dofs: Total number of DOFs in the system
-- **J** (*jax.experimental.sparse.BCOO*): The sparse Jacobian matrix in BCOO format with shape (total_dofs, total_dofs)
-- **symmetric** (*bool, default True*): If True, zero both BC rows and columns (symmetric elimination). Preserves matrix symmetry, allowing use of symmetric solvers like CG. If False, zero only BC rows (non-symmetric elimination). Keeps the off-diagonal coupling K_10 in BC columns, which is required for the partitioned/incremental Newton approach where BC DOFs are driven to their values through the modified residual rather than being pre-applied to the initial guess.
+- **bc** (*DirichletBC*): Boundary condition (only ``bc_mask`` / ``bc_rows`` are used).
+- **problem** (*Problem*): Provides the precomputed CSR structure (``csr_row_of_slot``, ``csr_indices``, ``csr_diag_slots``).
+- **csr_data** (*np.ndarray*): CSR value array of length ``problem.csr_nse`` (e.g. from :func:``2).
+- **symmetric** (*bool, default True*): Symmetric elimination (zero BC rows **and** columns) vs non-symmetric (zero BC rows only, keep columns / K10 coupling).
 
 
 Returns
 -------
-- **J_bc** (*jax.experimental.sparse.BCOO*): The Jacobian matrix with boundary conditions applied, same shape as input
-
-
-Notes
------
-This function is JAX-JIT compatible and designed for efficient use in Newton solvers.
-The returned matrix may have duplicate entries (original zeros + new diagonal ones),
-but JAX sparse solvers handle this correctly by summing duplicates.
+np.ndarray
+    BC-applied CSR value array (same shape as ``csr_data``).
 
 #### apply\_boundary\_to\_res
 

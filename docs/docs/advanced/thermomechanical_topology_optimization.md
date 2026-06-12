@@ -267,7 +267,7 @@ sample_iv_mech = fe.InternalVars(volume_vars=(
 self._solver_mech = fe.create_solver(
     prob_mech, bc_mech, solver_options=fe.DirectSolverOptions(),
     adjoint_solver_options=fe.DirectSolverOptions(),
-    iter_num=1, internal_vars=sample_iv_mech)
+    linear=True, internal_vars=sample_iv_mech)
 
 # Thermal: volume_vars = (rho,)
 sample_iv_therm = fe.InternalVars(volume_vars=(
@@ -276,7 +276,7 @@ sample_iv_therm = fe.InternalVars(volume_vars=(
 self._solver_therm = fe.create_solver(
     prob_therm, bc_therm, solver_options=fe.DirectSolverOptions(),
     adjoint_solver_options=fe.DirectSolverOptions(),
-    iter_num=1, internal_vars=sample_iv_therm)
+    linear=True, internal_vars=sample_iv_therm)
 ```
 
 ### Objective Function

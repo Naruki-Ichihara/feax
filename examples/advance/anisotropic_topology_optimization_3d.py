@@ -206,7 +206,7 @@ def main():
         problem, bc=bc,
         solver_options=solver_opts,
         adjoint_solver_options=solver_opts,
-        iter_num=1, internal_vars=sample_iv,
+        linear=True, internal_vars=sample_iv,
     )
 
     n_nodes = mesh.points.shape[0]

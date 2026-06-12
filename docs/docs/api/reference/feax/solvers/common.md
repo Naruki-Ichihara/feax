@@ -7,33 +7,6 @@ Shared solver helpers.
 
 Small stateless utilities used across linear/newton/reduced solver modules.
 
-## CachedBCOOToCSR Objects
-
-```python
-class CachedBCOOToCSR()
-```
-
-One-shot index analysis, repeated value-only conversion.
-
-On the first call the full ``sum_duplicates`` + ``BCSR.from_bcoo``
-path is executed with concrete arrays.  From that result we extract
-a scatter mapping (``_target_indices``) that maps each raw BCOO data
-entry to the correct position in the deduplicated CSR ``data`` array.
-
-Subsequent calls only perform ``zeros().at[mapping].add(data)`` —
-an O(nnz) operation with no sort.
-
-#### convert
-
-```python
-def convert(A: BCOO)
-```
-
-Return (csr_data, csr_indptr, csr_indices).
-
-First call: full analysis (concrete).
-Subsequent calls: value-only scatter (JIT-friendly).
-
 #### create\_x0
 
 ```python
@@ -74,7 +47,7 @@ Create a direct linear solve function.
 #### create\_iterative\_solve\_fn
 
 ```python
-def create_iterative_solve_fn(options: IterativeSolverOptions)
+def create_iterative_solve_fn(options: KrylovSolverOptions)
 ```
 
 Create an iterative linear solve function.

@@ -29,8 +29,9 @@ Kinematics & constitutive law
 
 .. code-block:: text
 
-    ε   = sym(∇u)          (3×3 small strain)
-    σ_k = C_k : ε          (per-ply stress)
+    ε   = sym(∇u)              (3×3 small strain)
+    σ_k = C_k : (ε − ε_th,k)   (per-ply stress; ε_th = α·ΔT, optional thermal
+                                eigenstrain — zero unless thermal coupling is on)
 """
 from __future__ import annotations
 
@@ -163,6 +164,30 @@ def transverse_isotropic_stiffness_3d(
 
 
 # ---------------------------------------------------------------------------
+# Thermal-expansion (CTE) tensors — material axes (fibre = local 1-axis)
+# ---------------------------------------------------------------------------
+# The CTE α is a symmetric 2nd-order tensor; the thermal eigenstrain at a quad
+# point is ``ε_th = α · ΔT`` and the constitutive law becomes
+# ``σ = C : (ε − ε_th)``. These builders return α in *material* axes; rotate
+# them into global axes with :func:`rotate_cte_3d` (same frame as the stiffness).
+
+def isotropic_cte_3d(alpha: float) -> np.ndarray:
+    """Isotropic thermal-expansion tensor ``α_ij = α δ_ij`` of shape ``(3, 3)``."""
+    return alpha * np.eye(3)
+
+
+def transverse_isotropic_cte_3d(alpha_1: float, alpha_2: float) -> np.ndarray:
+    """CTE tensor of a UD lamina in material axes (fibre = 1-axis).
+
+    Transverse isotropy in the 2-3 plane gives ``α = diag(α₁, α₂, α₂)``. For CFRP
+    the fibre-direction ``α₁`` is small (often slightly negative) while the
+    transverse ``α₂`` is large — the source of large cool-down eigenstrains and
+    inter-ply stresses in cryogenic laminates.
+    """
+    return np.diag(np.array([alpha_1, alpha_2, alpha_2], dtype=np.float64))
+
+
+# ---------------------------------------------------------------------------
 # Rotation of a 4th-order stiffness tensor
 # ---------------------------------------------------------------------------
 
@@ -189,6 +214,17 @@ def rotate_stiffness_3d(C: np.ndarray, R: np.ndarray) -> np.ndarray:
     .. math:: \\bar C_{ijkl} = R_{ip} R_{jq} R_{kr} R_{ls} C_{pqrs}.
     """
     return np.einsum("ip,jq,kr,ls,pqrs->ijkl", R, R, R, R, C)
+
+
+def rotate_cte_3d(alpha: np.ndarray, R: np.ndarray) -> np.ndarray:
+    """Rotate a ``(3, 3)`` symmetric CTE tensor by rotation matrix ``R``.
+
+    .. math:: \\bar\\alpha_{ij} = R_{ip} R_{jq} \\alpha_{pq}.
+
+    Use the **same** ``R`` as :func:`rotate_stiffness_3d` so the ply's stiffness
+    and thermal expansion are expressed in a consistent (global) frame.
+    """
+    return np.einsum("ip,jq,pq->ij", R, R, alpha)
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +303,46 @@ def _tabulate_reference(ele_type: str, ref_points: onp.ndarray) -> np.ndarray:
     tab = element.tabulate(1, pts)[:, :, re_order, :]   # (deriv, q, node, val)
     dNdxi = onp.transpose(tab[1:, :, :, 0], axes=(1, 2, 0))  # (q, node, dim)
     return np.asarray(dNdxi)
+
+
+def _tabulate_reference_vals(ele_type: str, ref_points: onp.ndarray) -> np.ndarray:
+    """Reference-space shape-function **values** ``N_a`` at ``ref_points``.
+
+    Companion to :func:`_tabulate_reference` (which returns gradients). Returns
+    ``(nq, num_nodes)`` in feax node ordering.
+    """
+    family, basix_ele, _, _, degree, re_order = get_elements(ele_type)
+    element = basix.create_element(family, basix_ele, degree)
+    pts = onp.ascontiguousarray(ref_points, dtype=onp.float64)
+    tab = element.tabulate(0, pts)[:, :, re_order, :]   # (1, q, node, val)
+    return np.asarray(tab[0, :, :, 0])                  # (q, node)
+
+
+def interpolate_nodal_to_layered_quad(
+    nodal_cells: np.ndarray,
+    ply_thicknesses: Sequence[float],
+    *,
+    ele_type: str = "HEX8",
+    n_inplane: int = 2,
+    n_thick_per_ply: int = 2,
+) -> np.ndarray:
+    """Interpolate a per-cell nodal field to the layered-solid quadrature points.
+
+    Maps a scalar nodal field gathered per cell — e.g. a solved temperature
+    ``T[cells]`` of shape ``(num_cells, n_nodes)`` — onto the **same** per-ply
+    through-thickness quadrature as :func:`create_oriented_layered_solid`, giving
+    ``(num_cells, nq)``. Combine with :func:`expand_cte_to_quad` to form the
+    thermal eigenstrain at each quad point::
+
+        T_quad   = interpolate_nodal_to_layered_quad(T[cells], ply_thicknesses)
+        cte_quad = expand_cte_to_quad(cte_cell_ply, ply_thicknesses)
+        eps_th   = cte_quad * (T_quad - T_ref)[..., None, None]
+    """
+    thick = onp.asarray(ply_thicknesses, dtype=onp.float64)
+    ref_pts, _, _ = layered_reference_quadrature(
+        thick, n_inplane=n_inplane, n_thick_per_ply=n_thick_per_ply)
+    N = _tabulate_reference_vals(ele_type, ref_pts)     # (nq, n_nodes)
+    return np.einsum("qa,ca->cq", N, np.asarray(nodal_cells))
 
 
 class LayeredSolid(fe.Problem):
@@ -414,43 +490,88 @@ class OrientedLayeredSolid(fe.Problem):
     quadrature point is supplied **per cell** as a volume internal variable rather
     than shared across the mesh. Build it with :func:`create_oriented_layered_solid`.
 
-    Volume internal variables (in order): ``(cell_nodes, C_quad)`` where
+    Volume internal variables (in order): ``(cell_nodes, C_quad)`` — or, when the
+    element is built with ``with_thermal=True``, ``(cell_nodes, C_quad, eps_th)`` —
+    where
 
     * ``cell_nodes`` : ``(num_cells, num_nodes, 3)`` physical node coordinates,
-    * ``C_quad``     : ``(num_cells, nq, 3,3,3,3)`` rotated stiffness per quad point.
+    * ``C_quad``     : ``(num_cells, nq, 3,3,3,3)`` rotated stiffness per quad point,
+    * ``eps_th``     : ``(num_cells, nq, 3, 3)`` thermal eigenstrain per quad point
+      (``= α·ΔT`` in global axes). Only present when ``with_thermal=True``; the
+      stress is then ``σ = C : (ε − ε_th)``, which adds a constant cool-down
+      thermal load to the residual.
 
-    ``additional_info = (dNdxi_ref, weights)`` carries the reference shape gradients
-    ``(nq, num_nodes, 3)`` and quadrature weights ``(nq,)``.
+    ``additional_info = (dNdxi_ref, weights, with_thermal)`` carries the reference
+    shape gradients ``(nq, num_nodes, 3)``, quadrature weights ``(nq,)`` and the
+    thermal-coupling flag.
     """
 
-    def custom_init(self, dNdxi_ref, weights):
+    def custom_init(self, dNdxi_ref, weights, with_thermal=False):
         self._dNdxi_ref = dNdxi_ref
         self._weights = weights
+        self._with_thermal = with_thermal
 
     def get_universal_kernel(self) -> Callable:
         dNdxi = self._dNdxi_ref      # (nq, n_nodes, 3)
         w = self._weights            # (nq,)
         unflatten = self.unflatten_fn_dof
 
-        def kernel(cell_sol_flat, physical_quad_points, cell_shape_grads,
-                   cell_JxW, cell_v_grads_JxW, cell_nodes, cell_C_quad):
-            # cell_nodes: (n_nodes, 3); cell_C_quad: (nq, 3,3,3,3)
+        def _kinematics(cell_sol_flat, cell_nodes):
             cell_sol = unflatten(cell_sol_flat)[0]          # (n_nodes, vec)
-
             J = np.einsum("ai,qaI->qiI", cell_nodes, dNdxi)  # (nq, 3, 3)
-            Jinv = np.linalg.inv(J)
             detJ = np.linalg.det(J)
-            dNdx = np.einsum("qaI,qIi->qai", dNdxi, Jinv)    # (nq, n_nodes, 3)
-
+            dNdx = np.einsum("qaI,qIi->qai", dNdxi, np.linalg.inv(J))  # (nq, n_nodes, 3)
             grad_u = np.einsum("ai,qaj->qij", cell_sol, dNdx)   # (nq, 3, 3)
             eps = 0.5 * (grad_u + np.transpose(grad_u, (0, 2, 1)))
-            sigma = np.einsum("qijkl,qkl->qij", cell_C_quad, eps)  # (nq, 3, 3)
+            return eps, dNdx, detJ
 
+        def _residual(sigma, dNdx, detJ):
             JxW = w * detJ
             R = np.einsum("q,qij,qaj->ai", JxW, sigma, dNdx)
             return jax.flatten_util.ravel_pytree(R)[0]
 
+        if self._with_thermal:
+            def kernel(cell_sol_flat, physical_quad_points, cell_shape_grads,
+                       cell_JxW, cell_v_grads_JxW, cell_nodes, cell_C_quad, cell_eps_th):
+                # cell_eps_th: (nq, 3, 3) thermal eigenstrain α·ΔT in global axes
+                eps, dNdx, detJ = _kinematics(cell_sol_flat, cell_nodes)
+                sigma = np.einsum("qijkl,qkl->qij", cell_C_quad, eps - cell_eps_th)
+                return _residual(sigma, dNdx, detJ)
+        else:
+            def kernel(cell_sol_flat, physical_quad_points, cell_shape_grads,
+                       cell_JxW, cell_v_grads_JxW, cell_nodes, cell_C_quad):
+                # cell_nodes: (n_nodes, 3); cell_C_quad: (nq, 3,3,3,3)
+                eps, dNdx, detJ = _kinematics(cell_sol_flat, cell_nodes)
+                sigma = np.einsum("qijkl,qkl->qij", cell_C_quad, eps)  # (nq, 3, 3)
+                return _residual(sigma, dNdx, detJ)
+
         return kernel
+
+
+def expand_cte_to_quad(
+    cte_cell_ply: np.ndarray,
+    ply_thicknesses: Sequence[float],
+    *,
+    n_inplane: int = 2,
+    n_thick_per_ply: int = 2,
+) -> np.ndarray:
+    """Per-cell, per-ply CTE (global axes) -> per-quad CTE ``(num_cells, nq, 3, 3)``.
+
+    Uses the **same** per-ply through-thickness quadrature as
+    :func:`create_oriented_layered_solid`, so the result lines up with ``C_quad``.
+    Multiply by the temperature change to get the thermal eigenstrain to feed the
+    element / :func:`layered_quad_stress`::
+
+        cte_quad = expand_cte_to_quad(cte_cell_ply, ply_thicknesses)
+        eps_th   = cte_quad * dT                       # (num_cells, nq, 3, 3)
+
+    ``dT`` may be a scalar, a per-cell array (broadcast as ``dT[:, None, None, None]``)
+    or any field — keep it separate so the temperature can be a load/design input.
+    """
+    thick = onp.asarray(ply_thicknesses, dtype=onp.float64)
+    _, _, ply_of = layered_reference_quadrature(
+        thick, n_inplane=n_inplane, n_thick_per_ply=n_thick_per_ply)
+    return np.asarray(cte_cell_ply)[:, np.asarray(ply_of)]
 
 
 def create_oriented_layered_solid(
@@ -463,6 +584,8 @@ def create_oriented_layered_solid(
     n_thick_per_ply: int = 2,
     location_fns: Optional[Iterable[Callable]] = None,
     problem_class: type = OrientedLayeredSolid,
+    with_thermal: bool = False,
+    cte_cell_ply: Optional[np.ndarray] = None,
 ) -> Tuple[OrientedLayeredSolid, InternalVars]:
     """Build an :class:`OrientedLayeredSolid` from *already-rotated*, per-cell,
     per-ply stiffness tensors (global axes).
@@ -486,12 +609,25 @@ def create_oriented_layered_solid(
         Per-ply thicknesses, bottom → top (length ``n_ply``).
     ele_type, n_inplane, n_thick_per_ply, location_fns
         As in :func:`create_layered_solid`.
+    with_thermal : bool
+        Enable thermal coupling. When ``True`` the element uses
+        ``σ = C : (ε − ε_th)`` and expects a **third** volume internal variable,
+        the per-quad thermal eigenstrain ``eps_th`` ``(num_cells, nq, 3, 3)``.
+        The returned ``internal_vars`` carry a default ``eps_th`` (zero, or
+        ``cte_quad · 1`` from ``cte_cell_ply``); recompute it per solve as
+        ``cte_quad * dT`` and rebuild :class:`InternalVars` with it.
+    cte_cell_ply : array, optional
+        ``(num_cells, n_ply, 3, 3)`` per-ply CTE in **global** axes (rotate with
+        :func:`rotate_cte_3d` using the same frame as the stiffness). Only used
+        when ``with_thermal=True`` to seed the default ``eps_th`` at ``ΔT = 1``;
+        if omitted the default ``eps_th`` is zero.
 
     Returns
     -------
     problem : OrientedLayeredSolid
     internal_vars : feax.InternalVars
-        ``volume_vars = (cell_nodes, C_quad)``.
+        ``volume_vars = (cell_nodes, C_quad)``, or
+        ``(cell_nodes, C_quad, eps_th)`` when ``with_thermal=True``.
     """
     if ele_type != "HEX8":
         raise NotImplementedError(
@@ -510,6 +646,7 @@ def create_oriented_layered_solid(
     ref_pts, weights, ply_of = layered_reference_quadrature(
         thick, n_inplane=n_inplane, n_thick_per_ply=n_thick_per_ply)
     dNdxi = _tabulate_reference(ele_type, ref_pts)          # (nq, n_nodes, 3)
+    nq = ref_pts.shape[0]
 
     # Expand per-ply stiffness to per-quad: (num_cells, nq, 3,3,3,3)
     C_quad = C_cell_ply[:, np.asarray(ply_of)]
@@ -517,10 +654,23 @@ def create_oriented_layered_solid(
     location_fns = tuple(location_fns) if location_fns is not None else None
     problem = problem_class(
         mesh, vec=3, dim=3, ele_type=ele_type, location_fns=location_fns,
-        additional_info=(dNdxi, np.asarray(weights)),
+        additional_info=(dNdxi, np.asarray(weights), with_thermal),
     )
     cell_nodes = np.asarray(mesh.points)[np.asarray(mesh.cells)]
-    internal_vars = InternalVars(volume_vars=(cell_nodes, C_quad))
+    if with_thermal:
+        if cte_cell_ply is not None:
+            cte = np.asarray(cte_cell_ply)
+            if cte.shape[:2] != (num_cells, n_ply):
+                raise ValueError(
+                    f"cte_cell_ply must be (num_cells, n_ply, 3, 3) = "
+                    f"({num_cells}, {n_ply}, 3, 3); got {tuple(cte.shape)}"
+                )
+            eps_th = cte[:, np.asarray(ply_of)]            # ΔT = 1 seed
+        else:
+            eps_th = np.zeros((num_cells, nq, 3, 3))
+        internal_vars = InternalVars(volume_vars=(cell_nodes, C_quad, eps_th))
+    else:
+        internal_vars = InternalVars(volume_vars=(cell_nodes, C_quad))
     return problem, internal_vars
 
 
@@ -541,7 +691,7 @@ class GeometricStiffnessSolid(fe.Problem):
 
     Volume internal variables: ``(cell_nodes, sigma0)`` with
     ``sigma0`` of shape ``(num_cells, nq, 3, 3)``. ``additional_info = (dNdxi_ref,
-    weights)``. Assemble ``K_g`` by calling :func:`feax.assembler._get_J` at ``u = 0``
+    weights)``. Assemble ``K_g`` by calling :func:`feax.assembler.get_jacobian` at ``u = 0``
     (the residual is linear in ``u``, so the Jacobian is exact and constant).
     """
 
@@ -623,8 +773,14 @@ def layered_quad_stress(
     cell_nodes: np.ndarray,
     u_cells: np.ndarray,
     C_quad: np.ndarray,
+    eps_th_quad: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Per-cell, per-quad Cauchy stress ``σ = C : ε(u)`` for a layered solid.
+    """Per-cell, per-quad Cauchy stress for a layered solid.
+
+    With no thermal field this is the purely-mechanical ``σ = C : ε(u)``; passing
+    ``eps_th_quad`` gives ``σ = C : (ε(u) − ε_th)`` so the prestress fed to the
+    geometric-stiffness / buckling solve includes the cool-down thermal stress
+    (the same constitutive law as the ``with_thermal=True`` element).
 
     Parameters
     ----------
@@ -637,19 +793,29 @@ def layered_quad_stress(
     C_quad : array
         ``(num_cells, nq, 3,3,3,3)`` per-quad stiffness (``internal_vars`` from
         :func:`create_oriented_layered_solid`).
+    eps_th_quad : array, optional
+        ``(num_cells, nq, 3, 3)`` thermal eigenstrain ``α·ΔT`` in global axes
+        (e.g. ``expand_cte_to_quad(...) * dT``). ``None`` → no thermal term.
 
     Returns
     -------
     sigma : array
         ``(num_cells, nq, 3, 3)`` stress at each quadrature point.
     """
-    def one_cell(nodes, u, C):
+    def _eps(nodes, u):
         J = np.einsum("ai,qaI->qiI", nodes, dNdxi_ref)
         dNdx = np.einsum("qaI,qIi->qai", dNdxi_ref, np.linalg.inv(J))
         grad_u = np.einsum("ai,qaj->qij", u, dNdx)
-        eps = 0.5 * (grad_u + np.transpose(grad_u, (0, 2, 1)))
-        return np.einsum("qijkl,qkl->qij", C, eps)
-    return jax.vmap(one_cell)(cell_nodes, u_cells, C_quad)
+        return 0.5 * (grad_u + np.transpose(grad_u, (0, 2, 1)))
+
+    if eps_th_quad is None:
+        def one_cell(nodes, u, C):
+            return np.einsum("qijkl,qkl->qij", C, _eps(nodes, u))
+        return jax.vmap(one_cell)(cell_nodes, u_cells, C_quad)
+
+    def one_cell_th(nodes, u, C, eth):
+        return np.einsum("qijkl,qkl->qij", C, _eps(nodes, u) - eth)
+    return jax.vmap(one_cell_th)(cell_nodes, u_cells, C_quad, eps_th_quad)
 
 
 __all__ = [
@@ -658,13 +824,18 @@ __all__ = [
     "isotropic_stiffness_3d",
     "orthotropic_stiffness_3d",
     "transverse_isotropic_stiffness_3d",
+    "isotropic_cte_3d",
+    "transverse_isotropic_cte_3d",
     "rotation_matrix_axis",
     "rotate_stiffness_3d",
+    "rotate_cte_3d",
     "layered_reference_quadrature",
     "LayeredSolid",
     "create_layered_solid",
     "OrientedLayeredSolid",
     "create_oriented_layered_solid",
+    "expand_cte_to_quad",
+    "interpolate_nodal_to_layered_quad",
     "GeometricStiffnessSolid",
     "create_layered_solid_geometric_stiffness",
     "layered_quad_stress",

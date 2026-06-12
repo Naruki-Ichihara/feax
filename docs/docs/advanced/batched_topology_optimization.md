@@ -166,7 +166,7 @@ solver = fe.create_solver(
     problem, bc=bc,
     solver_options=fe.DirectSolverOptions(solver="cudss"),
     adjoint_solver_options=fe.DirectSolverOptions(solver="cudss"),
-    iter_num=1,
+    linear=True,
     internal_vars=sample_internal_vars,
 )
 ```

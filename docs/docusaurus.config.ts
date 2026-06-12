@@ -8,7 +8,7 @@ import rehypeKatex from 'rehype-katex';
 
 const config: Config = {
   title: 'FEAX',
-  tagline: 'Fully Differentiable Finite Element Engine',
+  tagline: 'A simulation node in your JAX workflow',
   favicon: 'img/favicon.svg',
 
   // Custom head tags for multiple favicon formats

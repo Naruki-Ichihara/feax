@@ -54,7 +54,7 @@ internal_vars = fe.InternalVars(volume_vars=(), surface_vars=[(traction,)])
 
 # Create solver (auto-selects cuDSS on GPU, sparse direct on CPU)
 solver = fe.create_solver(problem, bc,
-    solver_options=fe.DirectSolverOptions(), iter_num=1,
+    solver_options=fe.DirectSolverOptions(), linear=True,
     internal_vars=internal_vars)
 initial = fe.zero_like_initial_guess(problem, bc)
 

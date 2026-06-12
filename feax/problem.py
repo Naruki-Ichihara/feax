@@ -183,6 +183,12 @@ class Problem:
         self.I = np.array(onp.repeat(onp.asarray(inds)[:, :, None], ndof, axis=2).reshape(-1))
         self.J = np.array(onp.repeat(onp.asarray(inds)[:, None, :], ndof, axis=1).reshape(-1))
 
+        # Residual scatter: the global DOF of each per-element residual entry,
+        # in the same volume-then-boundary order get_res produces values. Lets
+        # the residual be assembled with one sorted segment_sum (deterministic)
+        # instead of per-region scatter-adds.
+        _res_dofs = [onp.asarray(inds).reshape(-1)]
+
         # Note: I and J are kept as FULL for assembly
         # Filtering to UPPER/LOWER happens in get_J() after computing values
 
@@ -198,6 +204,9 @@ class Problem:
             self.I = np.hstack((self.I, I_face))
             self.J = np.hstack((self.J, J_face))
             self.cells_list_face_list.append(cells_list_face)
+            _res_dofs.append(onp.asarray(inds_face).reshape(-1))
+
+        self._res_scatter_dofs_np = onp.concatenate(_res_dofs)  # (total residual entries,)
 
         # Pre-compute filtering indices for UPPER/LOWER views (for JIT compatibility)
         # Store integer indices instead of boolean mask to enable JIT compilation
@@ -229,6 +238,25 @@ class Problem:
         dumb_dofs, self.unflatten_fn_sol_list = jax.flatten_util.ravel_pytree(dumb_sol_list)
         self.num_total_dofs_all_vars = len(dumb_dofs)
 
+        # Precompute the COO-value -> CSR-slot mapping for fast, sort-free,
+        # deterministic Jacobian assembly. Requires num_total_dofs_all_vars and
+        # the filtered index pairs (set above).
+        self._build_csr_assembly_structure()
+
+        # All variables must share the same volume quadrature (the assembler
+        # interpolates every variable's solution and internal vars onto one set
+        # of quad points, and stacks per-variable JxW). Element *type* (and node
+        # count) may differ per variable, but num_quads must match. Checked
+        # before the stacks below so the failure message is clear.
+        _nq0 = self.fes[0].num_quads
+        for i, fe in enumerate(self.fes):
+            if fe.num_quads != _nq0:
+                raise ValueError(
+                    f"All FE variables must share the same number of volume "
+                    f"quadrature points; variable 0 has {_nq0} but variable {i} "
+                    f"has {fe.num_quads}. Use a matching gauss_order across "
+                    f"variables.")
+
         self.num_nodes_cumsum = np.cumsum(np.array([0] + [fe.num_nodes for fe in self.fes]))
         # (num_cells, num_vars, num_quads)
         self.JxW = np.transpose(np.stack([fe.JxW for fe in self.fes]), axes=(1, 0, 2))
@@ -237,7 +265,6 @@ class Problem:
         # (num_cells, num_quads, num_nodes + ..., 1, dim)
         self.v_grads_JxW = np.concatenate([fe.v_grads_JxW for fe in self.fes], axis=2)
 
-        # TODO: assert all vars quad points be the same
         # (num_cells, num_quads, dim)
         self.physical_quad_points = self.fes[0].get_physical_quad_points()
 
@@ -277,6 +304,169 @@ class Problem:
 
         # Validate multi-variable problem setup
         self._validate_multi_variable_setup()
+
+    def _build_csr_assembly_structure(self) -> None:
+        """Precompute the COO-value → CSR-slot mapping for assembly.
+
+        The sparsity *pattern* of the assembled Jacobian — the filtered index
+        pairs ``(I_filtered, J_filtered)`` — is fixed for the life of the
+        Problem; only the *values* change between solves. Computing the
+        deduplicated CSR structure once, in numpy, lets every subsequent
+        assembly turn the raw per-element value array ``V`` into the cuDSS CSR
+        value array with a single sorted segment-sum::
+
+            V_f      = V if filter_indices is None else V[filter_indices]
+            csr_data = segment_sum(V_f[csr_perm], csr_seg_ids,
+                                   num_segments=csr_nse, indices_are_sorted=True)
+
+        This eliminates the per-solve ``BCOO.sum_duplicates`` sort and the
+        intermediate BCOO entirely, and — unlike scatter-add — is deterministic
+        (no atomics).
+
+        Attributes set
+        --------------
+        csr_nse : int
+            Number of unique (row, col) entries (CSR ``nnz``).
+        csr_indptr : ndarray (num_dofs + 1,), int32
+            CSR row pointer.
+        csr_indices : ndarray (csr_nse,), int32
+            CSR column indices (within-row sorted by column).
+        csr_perm : ndarray (nnz_filtered,), int
+            Permutation that sorts the filtered raw entries by (row, col).
+        csr_seg_ids : ndarray (nnz_filtered,), int
+            Segment id (target CSR slot) of each *sorted* raw entry; sorted
+            ascending, so ``indices_are_sorted=True`` is valid.
+        csr_slot : ndarray (nnz_filtered,), int
+            Target CSR slot of each *raw* (unsorted) filtered entry — the
+            scatter-add form ``zeros(nse).at[csr_slot].add(V_f)``.
+
+        Notes
+        -----
+        The deduplicated ordering (lexicographic by row then col) matches
+        ``BCSR.from_bcoo(BCOO(...).sum_duplicates())``, so the produced CSR is
+        byte-compatible with what a BCOO→CSR conversion would yield.
+        """
+        rows = onp.asarray(self.I_filtered).astype(onp.int64)
+        cols = onp.asarray(self.J_filtered).astype(onp.int64)
+        n = int(self.num_total_dofs_all_vars)
+        nnz_raw = rows.shape[0]
+
+        # Encode each (row, col) as a single key so a 1-D sort gives the
+        # lexicographic (row, col) order used by CSR.
+        keys = rows * n + cols
+        order = onp.argsort(keys, kind='stable')         # raw position -> sorted rank
+        sorted_keys = keys[order]
+
+        # Mark the first occurrence of each unique key; cumsum gives the CSR
+        # slot of every sorted entry.
+        is_new = onp.ones(nnz_raw, dtype=bool)
+        if nnz_raw > 1:
+            is_new[1:] = sorted_keys[1:] != sorted_keys[:-1]
+        seg_ids_sorted = (onp.cumsum(is_new) - 1).astype(onp.int64)
+        nse = int(seg_ids_sorted[-1]) + 1 if nnz_raw > 0 else 0
+
+        # Unique (row, col) -> CSR indptr / indices.
+        unique_keys = sorted_keys[is_new]
+        csr_rows = (unique_keys // n).astype(onp.int32)   # row of each CSR slot
+        csr_cols = (unique_keys % n).astype(onp.int32)
+        indptr = onp.zeros(n + 1, dtype=onp.int64)
+        onp.add.at(indptr, csr_rows + 1, 1)
+        indptr = onp.cumsum(indptr).astype(onp.int32)
+
+        # Raw (unsorted) entry -> CSR slot, for the scatter-add form.
+        slot = onp.empty(nnz_raw, dtype=onp.int64)
+        slot[order] = seg_ids_sorted
+
+        # Diagonal CSR slot of each row (for BC enforcement and diagonal/Jacobi
+        # extraction). FEM always has a (d, d) entry for every dof; rows without
+        # one keep the sentinel -1.
+        diag_slot = onp.full(n, -1, dtype=onp.int64)
+        is_diag = csr_rows == csr_cols
+        diag_positions = onp.where(is_diag)[0]
+        diag_slot[csr_rows[diag_positions]] = diag_positions
+
+        # Unfiltered COO entry -> CSR slot, or `nse` (a discard bucket) for
+        # entries dropped by the UPPER/LOWER filter. This is the per-entry map
+        # used by the memory-efficient per-batch CSR assembly: each element's
+        # local Jacobian entries scatter directly to their CSR slots, so the
+        # full element-Jacobian array is never materialized.
+        rows_all = onp.asarray(self.I).astype(onp.int64)
+        cols_all = onp.asarray(self.J).astype(onp.int64)
+        keys_all = rows_all * n + cols_all
+        if nse > 0:
+            pos_all = onp.searchsorted(unique_keys, keys_all)
+            pos_safe = onp.minimum(pos_all, nse - 1)
+            matched = unique_keys[pos_safe] == keys_all
+            full_slot = onp.where(matched, pos_all, nse).astype(onp.int64)
+        else:
+            full_slot = onp.zeros(keys_all.shape[0], dtype=onp.int64)
+        # Volume block: the first num_cells * ndof_vol^2 entries of (I, J) are
+        # the volume element Jacobians (ndof_vol = total dofs per element),
+        # assembled volume-first in Problem.__post_init__.
+        ndof_vol = int(sum(fe.num_nodes * fe.vec for fe in self.fes))
+        vol_len = self.num_cells * ndof_vol * ndof_vol
+
+        # Transpose structure (static): the CSR layout of A^T, plus a permutation
+        # mapping this matrix's slots to the transposed order. Lets the adjoint
+        # solve assemble J^T in CSR form as ``data[csr_T_perm]`` with structure
+        # ``(csr_T_indptr, csr_T_indices)`` — no per-solve sort. Sort slots by
+        # (col, row) = transpose lexicographic order.
+        t_keys = csr_cols.astype(onp.int64) * n + csr_rows.astype(onp.int64)
+        t_order = onp.argsort(t_keys, kind='stable')
+        t_rows = csr_cols[t_order]            # transposed row = original col
+        t_cols = csr_rows[t_order]            # transposed col = original row
+        t_indptr = onp.zeros(n + 1, dtype=onp.int64)
+        onp.add.at(t_indptr, t_rows.astype(onp.int64) + 1, 1)
+        t_indptr = onp.cumsum(t_indptr).astype(onp.int32)
+        # Structural symmetry: pattern equals its transpose (then J^T reuses the
+        # forward structure and a symmetric matrix needs no transpose at all).
+        structurally_symmetric = bool(
+            onp.array_equal(csr_cols, t_cols) and onp.array_equal(indptr, t_indptr))
+
+        self.csr_nse = nse
+        self.csr_indptr = np.array(indptr)
+        self.csr_indices = np.array(csr_cols)
+        self.csr_row_of_slot = np.array(csr_rows)         # (nse,) row index per slot
+        self.csr_perm = np.array(order)
+        self.csr_seg_ids = np.array(seg_ids_sorted)
+        self.csr_slot = np.array(slot)
+        self.csr_diag_slots = np.array(diag_slot)         # (num_dofs,) slot of (d,d)
+        self.csr_T_perm = np.array(t_order)               # (nse,) slot -> transposed slot
+        self.csr_T_indptr = np.array(t_indptr)
+        self.csr_T_indices = np.array(t_cols.astype(onp.int32))
+        self.csr_structurally_symmetric = structurally_symmetric
+        # Per-batch CSR assembly maps (memory-efficient path).
+        self.csr_full_slot = np.array(full_slot)          # (len(I),) unfiltered -> slot|nse
+        self.csr_vol_len = vol_len                        # length of the volume block in (I, J)
+        self.csr_ndof_vol = ndof_vol                      # total dofs per element
+        # (num_cells, ndof_vol^2): each cell's local entries -> CSR slot|nse
+        self.csr_volume_slots = np.array(
+            full_slot[:vol_len].reshape(self.num_cells, ndof_vol * ndof_vol))
+        # Surface block: a static slot-sorted permutation so the per-solve face
+        # segment_sum is deterministic (ascending segment ids).
+        face_slots_np = full_slot[vol_len:]
+        face_perm = onp.argsort(face_slots_np, kind='stable')
+        self.csr_face_perm = np.array(face_perm)
+        self.csr_face_sorted_slots = np.array(face_slots_np[face_perm])
+
+        # Residual scatter: sorted DOF permutation for the deterministic
+        # single-pass residual segment_sum (volume + all boundaries combined).
+        res_dofs = self._res_scatter_dofs_np
+        res_perm = onp.argsort(res_dofs, kind='stable')
+        self.res_perm = np.array(res_perm)
+        self.res_sorted_dofs = np.array(res_dofs[res_perm])
+
+        # Split for the fused residual+Jacobian path (#5): the volume residual
+        # is accumulated in the assembly scan (per-cell DOF block), boundaries
+        # added separately. ``num_total_dofs_all_vars`` is the discard DOF for
+        # padded cells.
+        res_vol_len = self.num_cells * ndof_vol
+        self.res_volume_dofs = np.array(
+            res_dofs[:res_vol_len].reshape(self.num_cells, ndof_vol))  # (num_cells, ndof)
+        res_face_dofs = res_dofs[res_vol_len:]
+        res_face_perm = onp.argsort(res_face_dofs, kind='stable')
+        self.res_face_perm = np.array(res_face_perm)
+        self.res_face_sorted_dofs = np.array(res_face_dofs[res_face_perm])
 
     def custom_init(self, *args: Any) -> None:
         """Custom initialization for problem-specific setup.

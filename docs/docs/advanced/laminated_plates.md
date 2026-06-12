@@ -177,7 +177,7 @@ layout for you:
 problem = shell.make_mindlin_plate(
     mesh, A, D, G_s,
     ele_type="QUAD4",
-    nonlinear="von_karman",   # requires iter_num != 1
+    nonlinear="von_karman",   # requires Newton (linear=False)
     B=B, N_T=N_T, M_T=M_T,
 )
 
@@ -186,7 +186,7 @@ bc = fe.DirichletBCConfig([
     fe.DirichletBCSpec(location=clamped_edge, component="all", value=0.0, variable_index=1),
 ]).create_bc(problem)
 
-solver = fe.create_solver(problem, bc, iter_num=30)   # Newton for von Kármán
+solver = fe.create_solver(problem, bc, linear=False)   # Newton for von Kármán
 sol = solver(fe.InternalVars(volume_vars=()), fe.zero_like_initial_guess(problem, bc))
 ```
 
@@ -277,8 +277,8 @@ class ThermalRampPipeline(ImplicitPipeline):
         self.solver = fe.create_solver(
             self.problem, bc=self.bc,
             solver_options=fe.DirectSolverOptions(solver="umfpack"),
-            newton_options=fe.NewtonOptions(tol=1e-6, rel_tol=1e-8, max_iter=30, internal_jit=True),
-            iter_num=30,
+            newton_options=fe.NewtonOptions(tol=1e-6, rel_tol=1e-8, max_iter=30),
+            linear=False,
             internal_vars=fe.InternalVars(volume_vars=(jnp.zeros(self._n_nodes),)),
         )
 

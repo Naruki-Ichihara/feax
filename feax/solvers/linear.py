@@ -20,11 +20,12 @@ import jax
 import jax.numpy as np
 
 from ..assembler import (
-    create_J_bc_function,
-    create_J_bc_parametric,
-    create_res_bc_function,
+    create_J_bc_csr_function,
+    create_J_bc_csr_parametric,
+    create_matfree_res_J_parametric,
     create_res_bc_parametric,
 )
+from ..csr import transpose_with_maps
 from ..DCboundary import DirichletBC
 from ..problem import MatrixView, Problem
 from .common import (
@@ -37,7 +38,7 @@ from .common import (
 from .options import (
     AbstractSolverOptions,
     DirectSolverOptions,
-    IterativeSolverOptions,
+    KrylovSolverOptions,
     MatrixProperty,
     SolverOptions,
     resolve_direct_solver,
@@ -63,7 +64,7 @@ def linear_solve_adjoint(
         The transposed Jacobian matrix (J^T)
     b : jax.numpy.ndarray
         Right-hand side vector (cotangent vector from VJP)
-    solver_options : SolverOptions or DirectSolverOptions or IterativeSolverOptions
+    solver_options : SolverOptions or DirectSolverOptions or KrylovSolverOptions
         Solver configuration for adjoint solve
     matrix_view : MatrixView
         Matrix storage format from the problem
@@ -124,7 +125,7 @@ def linear_solve(
     linear_solve_fn: Optional[Callable] = None,
     x0_fn: Optional[Callable] = None,
 ):
-    """Single-step linear solve used by create_solver(iter_num=1)."""
+    """Single-step linear solve used by create_solver(linear=True)."""
 
     if linear_solve_fn is None:
         linear_solve_fn = create_linear_solve_fn(solver_options)
@@ -165,10 +166,11 @@ def create_linear_solver(
     solver_options: Optional[AbstractSolverOptions] = None,
     adjoint_solver_options: Optional[AbstractSolverOptions] = None,
     internal_vars=None,
+    symmetric_bc: bool = True,
 ) -> Callable[[Any, np.ndarray], np.ndarray]:
     """Create a differentiable solver for linear FE problems.
 
-    Simpler and more focused alternative to ``create_solver(iter_num=1)``
+    Simpler and more focused alternative to ``create_solver(linear=True)``
     when the problem is known to be linear (e.g. linear elasticity).
     The returned function supports ``jax.grad`` via a custom VJP based on
     the adjoint method.
@@ -179,15 +181,19 @@ def create_linear_solver(
         The feax Problem instance.
     bc : DirichletBC
         Boundary conditions.
-    solver_options : DirectSolverOptions or IterativeSolverOptions, optional
-        Options for the forward linear solve (defaults to IterativeSolverOptions()).
-    adjoint_solver_options : DirectSolverOptions or IterativeSolverOptions, optional
+    solver_options : DirectSolverOptions or KrylovSolverOptions, optional
+        Options for the forward linear solve (defaults to KrylovSolverOptions()).
+    adjoint_solver_options : DirectSolverOptions or KrylovSolverOptions, optional
         Options for the adjoint solve used in the backward pass.
         Defaults to the same options as the forward solve.
     internal_vars : InternalVars, optional
         Sample internal variables used to pre-warm cuDSS with concrete CSR
         structure before any JAX tracing. Recommended when using cuDSS and
         composing ``jax.jit`` with ``jax.grad``.
+    symmetric_bc : bool, default True
+        Use symmetric Dirichlet elimination (zero BC rows *and* columns). Linear
+        FE operators are symmetric after symmetric elimination, so the Krylov
+        adjoint reuses the forward matvec (``Jᵀ = J``).
 
     Returns
     -------
@@ -197,6 +203,12 @@ def create_linear_solver(
 
     Notes
     -----
+    The operator representation follows the solve method: ``DirectSolverOptions``
+    assembles the Jacobian straight into CSR (for factorization), while
+    ``KrylovSolverOptions`` (cg/bicgstab/gmres) is fully **matrix-free** — the
+    forward and adjoint matvecs are residual JVPs, so the element Jacobian is
+    never materialized.
+
     Forward pass performs a single linear solve:
 
     ```python
@@ -229,7 +241,7 @@ def create_linear_solver(
     default_matrix_property = MatrixProperty.SPD
 
     if solver_options is None:
-        solver_options = IterativeSolverOptions()
+        solver_options = KrylovSolverOptions()
     if adjoint_solver_options is None:
         adjoint_solver_options = solver_options
 
@@ -238,20 +250,20 @@ def create_linear_solver(
     if isinstance(solver_options, SolverOptions) or isinstance(adjoint_solver_options, SolverOptions):
         raise RuntimeError(
             "SolverOptions has been removed. "
-            "Use DirectSolverOptions or IterativeSolverOptions."
+            "Use DirectSolverOptions or KrylovSolverOptions."
         )
-    if not isinstance(solver_options, (DirectSolverOptions, IterativeSolverOptions)):
+    if not isinstance(solver_options, (DirectSolverOptions, KrylovSolverOptions)):
         raise TypeError(
             "Unsupported solver_options type. "
-            f"Expected DirectSolverOptions or IterativeSolverOptions, got {type(solver_options).__name__}."
+            f"Expected DirectSolverOptions or KrylovSolverOptions, got {type(solver_options).__name__}."
         )
-    if not isinstance(adjoint_solver_options, (DirectSolverOptions, IterativeSolverOptions)):
+    if not isinstance(adjoint_solver_options, (DirectSolverOptions, KrylovSolverOptions)):
         raise TypeError(
             "Unsupported adjoint_solver_options type. "
-            f"Expected DirectSolverOptions or IterativeSolverOptions, got {type(adjoint_solver_options).__name__}."
+            f"Expected DirectSolverOptions or KrylovSolverOptions, got {type(adjoint_solver_options).__name__}."
         )
 
-    if isinstance(solver_options, IterativeSolverOptions):
+    if isinstance(solver_options, KrylovSolverOptions):
         solver_options = resolve_iterative_solver(solver_options, default_matrix_property)
     elif isinstance(solver_options, DirectSolverOptions):
         solver_options = resolve_direct_solver(
@@ -263,7 +275,7 @@ def create_linear_solver(
     if shared_opts:
         adjoint_solver_options = solver_options
     else:
-        if isinstance(adjoint_solver_options, IterativeSolverOptions):
+        if isinstance(adjoint_solver_options, KrylovSolverOptions):
             adjoint_solver_options = resolve_iterative_solver(adjoint_solver_options, default_matrix_property)
         elif isinstance(adjoint_solver_options, DirectSolverOptions):
             adjoint_solver_options = resolve_direct_solver(
@@ -274,9 +286,17 @@ def create_linear_solver(
 
     _default_bc = bc
 
-    J_bc_func = create_J_bc_function(problem, bc)
-    J_bc_parametric = create_J_bc_parametric(problem)
-    res_bc_func = create_res_bc_function(problem, bc)
+    # Operator representation follows the solve method: direct factorizes the
+    # assembled CSR matrix; Krylov (cg/bicgstab/gmres) needs only a matvec, so
+    # it uses the matrix-free operator (a residual JVP) — no assembly at all.
+    _fwd_direct = isinstance(solver_options, DirectSolverOptions)
+    _adj_direct = isinstance(adjoint_solver_options, DirectSolverOptions)
+
+    # CSR-direct operators (only built when a direct solver is on either path).
+    J_bc_csr_func = create_J_bc_csr_function(problem, bc, symmetric=symmetric_bc) if (_fwd_direct or _adj_direct) else None
+    J_bc_csr_parametric = create_J_bc_csr_parametric(problem, symmetric=symmetric_bc) if (_fwd_direct or _adj_direct) else None
+    # Matrix-free operator (fused BC-applied residual + JVP matvec) for Krylov.
+    matfree_res_J_param = create_matfree_res_J_parametric(problem, symmetric=symmetric_bc)
     res_bc_parametric = create_res_bc_parametric(problem)
     linear_solve_fn = create_linear_solve_fn(
         solver_options,
@@ -289,13 +309,17 @@ def create_linear_solver(
             adjoint_solver_options,
             cache_namespace="adjoint",
         )
-    x0_fn = solver_options.x0_fn if isinstance(solver_options, IterativeSolverOptions) else None
+    x0_fn = solver_options.x0_fn if isinstance(solver_options, KrylovSolverOptions) else None
 
+    # Pre-warm with the CSR Jacobian when a direct solver is used so the cuDSS
+    # symbolic structure matches the canonical CSR fed at solve time. (FEM
+    # patterns are structurally symmetric, so J and J^T share structure and the
+    # adjoint reuses the same warmup.)
     prewarm_direct_solvers(
         problem=problem,
         bc=bc,
         internal_vars=internal_vars,
-        J_bc_func=J_bc_func,
+        J_bc_func=J_bc_csr_func,
         forward_options=solver_options,
         adjoint_options=adjoint_solver_options,
         forward_solve_fn=linear_solve_fn,
@@ -304,22 +328,32 @@ def create_linear_solver(
 
     @jax.custom_vjp
     def differentiable_solve(internal_vars, initial_guess, effective_bc):
-        # Use parametric versions so bc flows as data (vmap-compatible).
-        _J_fn = lambda sol, iv: J_bc_parametric(sol, iv, effective_bc)
-        _res_fn = lambda sol, iv: res_bc_parametric(sol, iv, effective_bc)
+        # Operator follows the solve method: direct assembles a CSR matrix;
+        # Krylov uses the matrix-free (residual JVP) matvec — no assembly.
+        if _fwd_direct:
+            res = res_bc_parametric(initial_guess, internal_vars, effective_bc)
+            op = J_bc_csr_parametric(initial_guess, internal_vars, effective_bc)
+        else:
+            res, op = matfree_res_J_param(initial_guess, internal_vars, effective_bc)
 
-        sol, _ = linear_solve(
-            _J_fn,
-            _res_fn,
-            initial_guess,
-            effective_bc,
-            solver_options,
-            problem.matrix_view,
-            internal_vars=internal_vars,
-            linear_solve_fn=linear_solve_fn,
-            x0_fn=x0_fn,
-        )
-        return sol
+        b = -res
+        x0 = None
+        if solver_options.uses_x0():
+            _x0_fn = x0_fn if x0_fn is not None else create_x0(
+                bc_rows=effective_bc.bc_rows, bc_vals=effective_bc.bc_vals)
+            x0 = _x0_fn(initial_guess)
+
+        delta_sol = linear_solve_fn(op, b, x0)
+
+        if solver_options.check_convergence:
+            delta_sol = check_convergence(
+                A=op, x=delta_sol, b=b,
+                solver_options=solver_options,
+                matrix_view=problem.matrix_view,
+                solver_label="Linear solver",
+            )
+
+        return initial_guess + delta_sol
 
     def f_fwd(internal_vars, initial_guess, effective_bc):
         sol = differentiable_solve(internal_vars, initial_guess, effective_bc)
@@ -329,9 +363,23 @@ def create_linear_solver(
         internal_vars, sol, effective_bc = res
 
         # Adjoint solve: J^T @ adjoint = v
-        J = J_bc_parametric(sol, internal_vars, effective_bc)
         use_transpose = problem.matrix_view not in (MatrixView.UPPER, MatrixView.LOWER)
-        J_adjoint = J.transpose() if use_transpose else J
+        if _adj_direct:
+            # CSR-direct adjoint: assemble J, then form J^T via precomputed
+            # transpose maps (a pure gather, no sort). UPPER/LOWER store a
+            # symmetric view so no transpose is applied.
+            J = J_bc_csr_parametric(sol, internal_vars, effective_bc)
+            J_adjoint = transpose_with_maps(
+                J, problem.csr_T_perm, problem.csr_T_indptr, problem.csr_T_indices
+            ) if use_transpose else J
+        elif symmetric_bc:
+            # Symmetric BC ⇒ J is symmetric ⇒ Jᵀ = J (matrix-free matvec).
+            _, J_adjoint = matfree_res_J_param(sol, internal_vars, effective_bc)
+        else:
+            # Non-symmetric BC: Jᵀ is the VJP of the BC-applied residual.
+            _, _vjp = jax.vjp(
+                lambda s: res_bc_parametric(s, internal_vars, effective_bc), sol)
+            J_adjoint = lambda w: _vjp(w)[0]
         adjoint_vec = linear_solve_adjoint(
             J_adjoint, v, adjoint_solver_options, problem.matrix_view,
             effective_bc,

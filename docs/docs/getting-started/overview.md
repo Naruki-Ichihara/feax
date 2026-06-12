@@ -33,7 +33,7 @@ internal_vars = fe.InternalVars(volume_vars=(), surface_vars=[])
 # 5. Solver
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(),
-    iter_num=1, internal_vars=internal_vars)
+    linear=True, internal_vars=internal_vars)
 initial = fe.zero_like_initial_guess(problem, bc)
 
 # 6. Solve
@@ -112,12 +112,12 @@ class Elasticity(fe.problem.Problem):
         return psi
 ```
 
-`get_energy_density()` works with **both** solver paths:
+`get_energy_density()` feeds the solver in two ways:
 
-- **Assembly path** — when `get_tensor_map()` returns `None`, the assembler automatically computes `σ = jax.grad(ψ)` and uses it for residual/Jacobian assembly, exactly as if you had defined `get_tensor_map()` yourself.
-- **Matrix-free path** — `create_energy_fn(problem)` integrates $\psi$ over the domain to build the total energy function for `MatrixFreeOptions`.
+- **Residual/Jacobian assembly** — when `get_tensor_map()` returns `None`, the assembler automatically computes `σ = jax.grad(ψ)` and uses it for residual and Jacobian assembly, exactly as if you had defined `get_tensor_map()` yourself.
+- **Scalar energy evaluation** — `fe.create_energy_fn(problem)` integrates $\psi$ over the domain to build the total stored-energy function, useful for objective evaluation (e.g. compliance) and post-processing.
 
-If both `get_tensor_map()` and `get_energy_density()` are defined, `get_tensor_map()` takes precedence for the assembly path.
+If both `get_tensor_map()` and `get_energy_density()` are defined, `get_tensor_map()` takes precedence for assembly.
 
 ### Surface Loads
 
@@ -417,10 +417,10 @@ from feax.flat.pbc import prolongation_matrix
 
 P = prolongation_matrix(mesh, problem)
 solver = fe.create_solver(problem, bc, P=P,
-    solver_options=fe.IterativeSolverOptions())
+    solver_options=fe.KrylovSolverOptions())
 ```
 
-The reduced system is solved matrix-free (matvec via `P^T K P`), so `P` requires `IterativeSolverOptions`.
+The reduced system is solved matrix-free (matvec via `P^T K P`), so `P` requires `KrylovSolverOptions`.
 
 See [Periodic Boundary Conditions](../advanced/periodic_boundary_conditions.md) for details.
 
@@ -485,60 +485,48 @@ grads = grad_fn(internal_vars)
 
 ### Solver Options
 
-FEAX provides three solver paths via `fe.create_solver`. When `solver_options` is omitted, a direct solver is selected automatically (cuDSS on GPU, cholmod/umfpack/spsolve on CPU). See the [Solver Guide](./solver.md) for the full selection logic.
+FEAX has two solver-option classes for `fe.create_solver`. When `solver_options` is omitted, a direct solver is selected automatically (cuDSS on GPU, cholmod/umfpack/spsolve on CPU). See the [Solver Guide](./solver.md) for the full selection logic.
 
-| Solver Options | Method | Best for |
-|---|---|---|
-| `fe.DirectSolverOptions()` | Sparse direct (cuDSS on GPU, spsolve on CPU) | Small-medium problems |
-| `fe.IterativeSolverOptions()` | Iterative (CG/BiCGSTAB/GMRES) | Large problems, periodic BCs |
-| `fe.MatrixFreeOptions()` | Matrix-free Newton (JVP-based) | Custom energy, no assembly needed |
+| Solver Options | Method | Operator | Best for |
+|---|---|---|---|
+| `fe.DirectSolverOptions()` | Sparse direct (cuDSS on GPU, cholmod/umfpack/spsolve on CPU) | Assembled CSR | Default; robust when memory permits |
+| `fe.KrylovSolverOptions()` | Iterative (CG/BiCGSTAB/GMRES) | Matrix-free (residual JVP) | Large/memory-bound problems, periodic BCs |
 
-### `iter_num` Parameter
+### `linear` Flag
 
-The `iter_num` parameter controls the Newton iteration strategy:
+The `linear` flag selects the solve path:
 
-| `iter_num` | Behavior | `jax.vmap` compatible |
-|---|---|---|
-| `1` | Single linear solve (linear problems) | Yes |
-| `> 1` | Fixed N Newton iterations | Yes |
-| `None` (default) | Adaptive Newton with while loop | No |
+| `linear` | Behavior |
+|---|---|
+| `True` | A single linear solve (linear problems). |
+| `False` (default) | Adaptive Newton iteration with line search. |
 
 ```python
-# Linear problem — one solve, vmappable
+# Linear problem — one solve
 solver = fe.create_solver(problem, bc, solver_options=fe.DirectSolverOptions(),
-    iter_num=1, internal_vars=internal_vars)
+    linear=True, internal_vars=internal_vars)
 
-# Nonlinear problem — adaptive Newton (not vmappable)
+# Nonlinear problem — adaptive Newton (the default)
 solver = fe.create_solver(problem, bc, solver_options=fe.DirectSolverOptions(),
     internal_vars=internal_vars)
-
-# Nonlinear problem — fixed iterations (vmappable)
-solver = fe.create_solver(problem, bc, solver_options=fe.DirectSolverOptions(),
-    iter_num=10, internal_vars=internal_vars)
 ```
 
-### Matrix-Free Solver
+Both paths compose with `jax.jit`, `jax.vmap`, and `jax.grad`. The Newton loop runs on the host inside a single `jax.pure_callback`, so adaptive convergence stays trace-compatible.
 
-For problems with custom energy contributions (e.g., cohesive zones), use `MatrixFreeOptions`:
+### Custom Residual Contributions
+
+For an additional residual term that does not come from the standard element weak form (e.g. a cohesive-zone traction), pass `extra_residual_fn` together with `KrylovSolverOptions`. FEAX assembles the bulk Jacobian and applies the extra term's tangent matrix-free via `jax.jvp`:
 
 ```python
-from feax.solvers.matrix_free import MatrixFreeOptions, LinearSolverOptions, create_energy_fn
-
-elastic_energy = create_energy_fn(problem)  # from get_energy_density()
-
-def total_energy(u_flat, delta_max):
-    return elastic_energy(u_flat) + cohesive_energy(u_flat, delta_max)
+def cohesive_residual(u_flat):
+    return jax.grad(lambda u: cohesive_energy(u, delta_max))(u_flat)
 
 solver = fe.create_solver(problem, bc,
-    solver_options=MatrixFreeOptions(
-        newton_tol=1e-8,
-        newton_max_iter=200,
-        linear_solver=LinearSolverOptions(solver='cg', atol=1e-8),
-    ),
-    energy_fn=total_energy)
+    solver_options=fe.KrylovSolverOptions(solver='cg'),
+    newton_options=fe.NewtonOptions(tol=1e-8, max_iter=200),
+    extra_residual_fn=cohesive_residual,
+    linear=False)
 ```
-
-The tangent operator is computed via `jax.jvp` (forward-mode AD) of the residual — no sparse matrix is ever assembled.
 
 ### Solver Calling Convention
 
@@ -573,14 +561,14 @@ sol = fast_solver(internal_vars, initial)
 grad_fn = jax.grad(lambda iv: np.sum(solver(iv, initial)**2))
 grads = grad_fn(internal_vars)
 
-# Vectorization — batch parameter studies (requires iter_num != None)
+# Vectorization — batch parameter studies
 batched_solver = jax.vmap(solver, in_axes=(0, None))
 sols = batched_solver(batched_internal_vars, initial)
 ```
 
 **Notes:**
 - `jax.grad` is supported (first-order). `jax.hessian` (second-order) is not, because solvers use `custom_vjp` internally.
-- `jax.vmap` requires fixed iteration count (`iter_num=1` or `iter_num=N`). Adaptive Newton (`iter_num=None`) uses a while loop and is not vmappable.
+- `jax.vmap` works for all solver paths — linear, Newton, and reduced. Batching is over BC **values** and parameters; BC **locations** must be identical within a batch (see the [Solver Guide](./solver.md)).
 
 ## Post-Processing
 

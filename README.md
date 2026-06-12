@@ -17,7 +17,7 @@
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![JAX](https://img.shields.io/badge/JAX-0.7%2B-green.svg)](https://github.com/google/jax) 
 
-**FEAX** (Finite Element Analysis with JAX) is a fully differentiable finite element engine. Every stage — from assembly to solve — runs on XLA and is compatible with `jax.jit`, `jax.grad`, and `jax.vmap`, enabling gradient-based optimization and machine learning directly on PDE simulations.
+**FEAX** (Finite Element Analysis with JAX) is a fully differentiable finite element engine. Every stage — from assembly to solve — runs on XLA and composes with `jax.jit`, `jax.grad`, and `jax.vmap`, so a PDE solve becomes just another differentiable node in your JAX workflow.
 
 ## Why FEAX?
 
@@ -74,7 +74,7 @@ internal_vars = fe.InternalVars(volume_vars=(), surface_vars=[(traction,)])
 
 # Create solver (auto-selects cuDSS on GPU, sparse direct on CPU)
 solver = fe.create_solver(problem, bc,
-    solver_options=fe.DirectSolverOptions(), iter_num=1,
+    solver_options=fe.DirectSolverOptions(), linear=True,
     internal_vars=internal_vars)
 initial = fe.zero_like_initial_guess(problem, bc)
 
@@ -90,8 +90,8 @@ See [examples/](examples/) for more, including topology optimization.
 
 ## Features
 
-- **Assembly-based solvers**: Sparse direct (cuDSS on GPU, spsolve on CPU) and iterative (CG, BiCGSTAB, GMRES) solvers with automatic matrix property detection.
-- **Matrix-free Newton solver**: JVP-based tangent operator for problems with custom energy contributions (cohesive zones, phase-field fracture) — no sparse matrix assembly.
+- **Direct & Krylov solvers**: Sparse direct factorization (cuDSS on GPU, cholmod/umfpack/spsolve on CPU) with automatic matrix property detection, plus matrix-free Krylov solvers (CG, BiCGSTAB, GMRES) — the tangent is a residual JVP, so no Jacobian is assembled — for memory-bound problems.
+- **Custom residual terms**: Add non-standard contributions (e.g. cohesive-zone interfaces) via `extra_residual_fn`, applied matrix-free through a hybrid Newton–Krylov iteration.
 - **Multi-variable problems**: Coupled multi-physics via a high-level weak form interface (`get_weak_form()`), with automatic interpolation and integration.
 - **Multipoint constraints**: Prolongation matrix support for periodic boundary conditions and other constraint types.
 - **Topology optimization**: Built-in `gene` toolkit with MMA optimizer, density filters, Heaviside continuation, and adaptive remeshing.

@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Callable, List, Tuple, Union
 
 import jax
 import jax.numpy as np
-from jax.experimental.sparse import BCOO
 from jax.tree_util import register_pytree_node
 
 if TYPE_CHECKING:
@@ -145,89 +144,54 @@ register_pytree_node(
 )
 
 
-def apply_boundary_to_J(bc: DirichletBC, J: BCOO, symmetric: bool = True) -> BCOO:
-    """Apply Dirichlet boundary conditions to Jacobian matrix J.
+def apply_boundary_to_J_csr(bc: DirichletBC,
+                            problem: 'Problem',
+                            csr_data: np.ndarray,
+                            symmetric: bool = True) -> np.ndarray:
+    """Apply Dirichlet BCs directly to a CSR ``data`` array (no BCOO).
 
-    This function modifies the Jacobian matrix to enforce Dirichlet boundary conditions
-    by zeroing out entries in boundary condition rows (and optionally columns), and setting
-    diagonal entries to 1.0 for those rows.
+    The CSR *structure* (``problem.csr_indptr`` / ``csr_indices``) is fixed, and
+    the canonical pattern already contains every diagonal slot ``(d, d)``, so BC
+    enforcement is a pure value transform on ``csr_data``:
 
-    The algorithm:
-    1. Zero out BC row entries (and BC column entries if symmetric=True)
-    2. Set diagonal entries to 1.0 for all BC rows
-    3. Handle potential duplicates by concatenation (JAX sparse solvers handle this)
+    1. Zero every entry whose row (and, when ``symmetric``, column) is a BC DOF.
+    2. Set the diagonal slot of each BC row to 1.
+
+    This matches textbook symmetric/non-symmetric Dirichlet elimination: the
+    single canonical diagonal slot is zeroed then set to ``1``. The transform
+    depends only on ``bc_rows`` / ``bc_mask`` (DOF locations), never on
+    ``bc_vals``, and is fully JIT/trace compatible.
 
     Parameters
     ----------
     bc : DirichletBC
-        Pre-computed boundary condition information containing:
-        - bc_rows: DOF indices where BCs are applied
-        - bc_mask: Boolean mask for fast BC row identification
-        - bc_vals: Prescribed values (not used in Jacobian modification)
-        - total_dofs: Total number of DOFs in the system
-    J : jax.experimental.sparse.BCOO
-        The sparse Jacobian matrix in BCOO format with shape (total_dofs, total_dofs)
+        Boundary condition (only ``bc_mask`` / ``bc_rows`` are used).
+    problem : Problem
+        Provides the precomputed CSR structure (``csr_row_of_slot``,
+        ``csr_indices``, ``csr_diag_slots``).
+    csr_data : np.ndarray
+        CSR value array of length ``problem.csr_nse`` (e.g. from
+        :func:`feax.assembler._get_J_csr`).
     symmetric : bool, default True
-        If True, zero both BC rows and columns (symmetric elimination).
-        Preserves matrix symmetry, allowing use of symmetric solvers like CG.
-        If False, zero only BC rows (non-symmetric elimination).
-        Keeps the off-diagonal coupling K_10 in BC columns, which is required
-        for the partitioned/incremental Newton approach where BC DOFs are
-        driven to their values through the modified residual rather than
-        being pre-applied to the initial guess.
+        Symmetric elimination (zero BC rows **and** columns) vs non-symmetric
+        (zero BC rows only, keep columns / K10 coupling).
 
     Returns
     -------
-    J_bc : jax.experimental.sparse.BCOO
-        The Jacobian matrix with boundary conditions applied, same shape as input
-
-    Notes
-    -----
-    This function is JAX-JIT compatible and designed for efficient use in Newton solvers.
-    The returned matrix may have duplicate entries (original zeros + new diagonal ones),
-    but JAX sparse solvers handle this correctly by summing duplicates.
+    np.ndarray
+        BC-applied CSR value array (same shape as ``csr_data``).
     """
-    # Get the data and indices from the BCOO matrix
-    data = J.data
-    indices = J.indices
-    shape = J.shape
-    # Get row and column indices from sparse matrix
-    row_indices = indices[:, 0]
-    col_indices = indices[:, 1]
-
-    # Create mask for BC rows and columns using pre-computed bc_mask
-    is_bc_row = bc.bc_mask[row_indices]
-    is_bc_col = bc.bc_mask[col_indices]
-
-    # Step 1: Zero out BC entries
+    is_bc_row = bc.bc_mask[problem.csr_row_of_slot]
     if symmetric:
-        # Symmetric elimination: zero both BC rows and columns
-        bc_mask_entries = is_bc_row | is_bc_col
+        is_bc_col = bc.bc_mask[problem.csr_indices]
+        zero_mask = is_bc_row | is_bc_col
     else:
-        # Non-symmetric elimination: zero only BC rows, keep columns
-        bc_mask_entries = is_bc_row
-    data_modified = np.where(bc_mask_entries, 0.0, data)
+        zero_mask = is_bc_row
 
-    # Step 2: Add diagonal entries for ALL BC rows
-    # Direct approach that works with JIT: always add all BC diagonal entries
-    # This may create duplicates, but most JAX sparse solvers handle this correctly
-
-    bc_diag_indices = np.stack([bc.bc_rows, bc.bc_rows], axis=-1)
-    bc_diag_data = np.ones_like(bc.bc_rows, dtype=data.dtype)
-
-    # Concatenate all data
-    all_indices = np.concatenate([indices, bc_diag_indices], axis=0)
-    all_data = np.concatenate([data_modified, bc_diag_data], axis=0)
-
-    # Create final BCOO matrix
-    J_bc = BCOO((all_data, all_indices), shape=shape)
-
-    # Skip sorting for large matrices to avoid slow compilation
-    # Most JAX sparse solvers can handle unsorted matrices with duplicates
-    # The duplicates will be handled correctly by summing during solve
-    # (BC diagonal entries: 0 + 1 = 1, which is what we want)
-
-    return J_bc
+    data = np.where(zero_mask, 0.0, csr_data)
+    diag_slots = problem.csr_diag_slots[bc.bc_rows]
+    data = data.at[diag_slots].set(1.0)
+    return data
 
 
 def apply_boundary_to_res(bc: DirichletBC, res_vec: np.ndarray, sol_vec: np.ndarray, scale: float = 1.0) -> np.ndarray:

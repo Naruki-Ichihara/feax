@@ -447,7 +447,7 @@ def profile_solver_py(
     prof : SolverProfile
         Per-iteration profile data.
     """
-    from .assembler import create_J_bc_function, create_res_bc_function
+    from .assembler import create_J_bc_csr_function, create_res_bc_function
     from .solvers.common import create_linear_solve_fn
     from .solvers.options import (
         DirectSolverOptions,
@@ -459,7 +459,7 @@ def profile_solver_py(
         solver_options = DirectSolverOptions()
 
     res_bc_fn = create_res_bc_function(problem, bc)
-    J_bc_fn = create_J_bc_function(problem, bc)
+    J_bc_fn = create_J_bc_csr_function(problem, bc)
 
     # Resolve "auto" solver by sampling a Jacobian at the initial guess
     if isinstance(solver_options, DirectSolverOptions) and solver_options.solver == "auto":

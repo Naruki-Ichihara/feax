@@ -70,7 +70,7 @@ try:
 
         # Solve
         solver_opts = fe.DirectSolverOptions()
-        solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
+        solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
         initial = fe.zero_like_initial_guess(problem, bc)
         sol = solver(internal_vars, initial)
 

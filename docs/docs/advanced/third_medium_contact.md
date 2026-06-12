@@ -221,16 +221,15 @@ This problem requires non-symmetric BC elimination for two reasons:
 solver = fe.create_solver(
     problem, bc,
     solver_options=fe.DirectSolverOptions(solver='umfpack', verbose=True),
-    newton_options=fe.NewtonOptions(tol=1e-6, rel_tol=1e-8, max_iter=100, internal_jit=True),
-    iter_num=None,       # adaptive Newton
+    newton_options=fe.NewtonOptions(tol=1e-6, rel_tol=1e-8, max_iter=100),
+    linear=False,        # adaptive Newton (the default)
     internal_vars=iv,
     symmetric_bc=False,
 )
 ```
 
 - **`umfpack`**: CPU direct solver with robust pivoting, necessary for the non-symmetric and ill-conditioned Jacobian arising from the $\gamma_0 \approx 10^{-7}$ stiffness contrast.
-- **`iter_num=None`**: adaptive Newton with Armijo line search and automatic convergence check.
-- **`internal_jit=True`**: each component (residual, Jacobian, linear solve) is JIT-compiled individually, avoiding monolithic compilation of the full Newton loop.
+- **`linear=False`**: adaptive Newton with Armijo line search and automatic convergence check (the default path).
 
 ## Incremental Loading Loop
 

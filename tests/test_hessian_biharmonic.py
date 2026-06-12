@@ -8,7 +8,7 @@ Weak form:
     ∫ ∇u·∇v dΩ + ε ∫ (∇²u)(∇²v) dΩ = ∫ f·v dΩ
 
 The standard Poisson part uses get_tensor_map (gradient-based).
-The Hessian regularization uses get_universal_kernel with shape_hessians.
+The Hessian regularization uses get_extra_kernel (additive) with shape_hessians.
 This mirrors the TMC HuHu-LuLu regularization pattern.
 
 Note: C⁰ elements don't consistently discretize ∇⁴u across element
@@ -51,7 +51,7 @@ def _make_problem_and_bc(epsilon, Nx=4, Ny=4):
                 return -f * np.ones_like(u)
             return mass
 
-        def get_universal_kernel(self):
+        def get_extra_kernel(self):
             op = Operator(self)
 
             def kernel(cell_sol_flat, physical_quad_points, cell_shape_grads,
@@ -94,7 +94,7 @@ def test_hessian_jacobian_symmetric_spd():
     problem, bc, iv, mesh = _make_problem_and_bc(epsilon=0.01)
 
     u_zero = fe.zero_like_initial_guess(problem, bc)
-    J_fn = fe.create_J_bc_function(problem, bc)
+    J_fn = fe.create_J_bc_csr_function(problem, bc)
     J = J_fn(u_zero, iv)
     J_dense = onp.array(J.todense())
 
@@ -140,8 +140,8 @@ def test_hessian_nonzero_contribution():
 
     u_zero = fe.zero_like_initial_guess(std_problem, std_bc)
 
-    J_std = onp.array(fe.create_J_bc_function(std_problem, std_bc)(u_zero, std_iv).todense())
-    J_reg = onp.array(fe.create_J_bc_function(reg_problem, reg_bc)(u_zero, reg_iv).todense())
+    J_std = onp.array(fe.create_J_bc_csr_function(std_problem, std_bc)(u_zero, std_iv).todense())
+    J_reg = onp.array(fe.create_J_bc_csr_function(reg_problem, reg_bc)(u_zero, reg_iv).todense())
 
     diff = onp.max(onp.abs(J_reg - J_std))
     print(f"Max |J_reg - J_std|: {diff:.6e}")
@@ -161,11 +161,11 @@ def test_hessian_solver_converges():
 
     solver = fe.create_solver(
         problem, bc,
-        solver_options=fe.IterativeSolverOptions(
+        solver_options=fe.KrylovSolverOptions(
             solver='cg', maxiter=5000, tol=1e-10,
             use_jacobi_preconditioner=True,
         ),
-        iter_num=1,
+        linear=True,
         internal_vars=iv,
     )
     sol = solver(iv, fe.zero_like_initial_guess(problem, bc))
@@ -207,11 +207,11 @@ def test_hessian_vanishes_with_zero_epsilon():
     std_iv = fe.InternalVars()
     std_solver = fe.create_solver(
         std_problem, std_bc,
-        solver_options=fe.IterativeSolverOptions(
+        solver_options=fe.KrylovSolverOptions(
             solver='cg', maxiter=5000, tol=1e-10,
             use_jacobi_preconditioner=True,
         ),
-        iter_num=1, internal_vars=std_iv,
+        linear=True, internal_vars=std_iv,
     )
     std_sol = std_solver(std_iv, fe.zero_like_initial_guess(std_problem, std_bc))
     u_std = onp.array(std_problem.unflatten_fn_sol_list(std_sol)[0][:, 0])
@@ -221,11 +221,11 @@ def test_hessian_vanishes_with_zero_epsilon():
     problem, bc, iv, _ = _make_problem_and_bc(epsilon=1e-8, Nx=Nx, Ny=Ny)
     solver = fe.create_solver(
         problem, bc,
-        solver_options=fe.IterativeSolverOptions(
+        solver_options=fe.KrylovSolverOptions(
             solver='cg', maxiter=5000, tol=1e-10,
             use_jacobi_preconditioner=True,
         ),
-        iter_num=1, internal_vars=iv,
+        linear=True, internal_vars=iv,
     )
     sol = solver(iv, fe.zero_like_initial_guess(problem, bc))
     u_reg = onp.array(problem.unflatten_fn_sol_list(sol)[0][:, 0])

@@ -120,7 +120,7 @@ solver_options = fe.DirectSolverOptions()
 solver = fe.create_solver(feax_problem, bc, solver_options, internal_vars=internal_vars)
 ```
 
-Omitting `iter_num=1` enables Newton's method for the nonlinear problem.
+The default `linear=False` runs Newton's method for the nonlinear problem.
 
 ## Solving
 
@@ -151,12 +151,12 @@ fe.utils.save_sol(
 
 1. **Energy-based formulation** via `get_energy_density` — FEAX auto-differentiates the scalar energy, eliminating manual stress derivation
 2. **Automatic tangent stiffness** via JAX's automatic differentiation
-3. **Newton's method** for nonlinear problems — omit `iter_num=1`
+3. **Newton's method** for nonlinear problems — the default `linear=False`
 4. **Position-dependent traction** via `surface_quad_point` in `get_surface_maps`
 5. **Geometry defined at top** — `y_c`, `z_c` computed from `Ly`, `Lz` and captured by the traction closure
 
 ## Further Reading
 
-- [Linear Elasticity](./linear_elasticity.md) — linear problems with `iter_num=1`
+- [Linear Elasticity](./linear_elasticity.md) — linear problems with `linear=True`
 - [JIT Transform](./jit_transform.md) — accelerate Newton iterations with `jax.jit`
 - [Vectorization Transform](./vmap_transform.md) — batch parameter studies with `jax.vmap`

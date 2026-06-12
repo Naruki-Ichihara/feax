@@ -30,7 +30,7 @@ vals_batch = np.stack([bc.bc_vals.at[-1].set(0.1), bc.bc_vals.at[-1].set(0.5)])
 print("[Test 1] Sequential bc= override (DirectSolver)")
 solver_direct = fe.create_solver(
     problem, bc, solver_options=fe.DirectSolverOptions(),
-    iter_num=1, internal_vars=iv,
+    linear=True, internal_vars=iv,
 )
 
 s1 = solver_direct(iv, bc=bc1)
@@ -43,8 +43,8 @@ print("  PASS")
 # ── Test 2: vmap (iterative solver — pure JAX, no external C/CUDA) ──────────
 print("\n[Test 2] jax.vmap over bc_vals (IterativeSolver/CG)")
 solver_iter = fe.create_solver(
-    problem, bc, solver_options=fe.IterativeSolverOptions(solver='cg'),
-    iter_num=1, internal_vars=iv,
+    problem, bc, solver_options=fe.KrylovSolverOptions(solver='cg'),
+    linear=True, internal_vars=iv,
 )
 
 s1_iter = solver_iter(iv, bc=bc1)
@@ -65,7 +65,7 @@ except Exception as e:
 print("\n[Test 3] jax.vmap over bc_vals (DirectSolver/cuDSS)")
 solver_cudss = fe.create_solver(
     problem, bc, solver_options=fe.DirectSolverOptions(),
-    iter_num=1, internal_vars=iv,
+    linear=True, internal_vars=iv,
 )
 
 s1_cudss = solver_cudss(iv, bc=bc1)
@@ -87,10 +87,10 @@ print("\n[Test 4] jax.vmap over bc_vals (Newton fori_loop, IterativeSolver/CG)")
 from feax.solvers.options import NewtonOptions
 solver_newton = fe.create_solver(
     problem, bc,
-    solver_options=fe.IterativeSolverOptions(solver='cg'),
-    iter_num=3,
+    solver_options=fe.KrylovSolverOptions(solver='cg'),
+    linear=False,
     internal_vars=iv,
-    newton_options=NewtonOptions(make_jittable=True),
+    newton_options=NewtonOptions(),
 )
 
 initial = fe.zero_like_initial_guess(problem, bc)
@@ -117,8 +117,8 @@ P_identity = BCOO.fromdense(np.eye(n_dofs))
 
 solver_reduced = fe.create_solver(
     problem, bc,
-    solver_options=fe.IterativeSolverOptions(solver='cg'),
-    iter_num=1, P=P_identity,
+    solver_options=fe.KrylovSolverOptions(solver='cg'),
+    linear=True, P=P_identity,
 )
 
 s1_red = solver_reduced(iv, bc=bc1)

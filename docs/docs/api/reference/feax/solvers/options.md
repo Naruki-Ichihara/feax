@@ -129,7 +129,7 @@ Performs numerical checks on the matrix:
 
 Parameters
 ----------
-- **A** (*BCOO sparse matrix*): The assembled system matrix.
+- **A** (*BCOO sparse matrix or feax.csr.CSRMatrix*): The assembled system matrix. Both the legacy BCOO Jacobian and the CSR-direct :class:`~feax.csr.CSRMatrix` are accepted (the symmetry check uses ``A @ x`` / ``A.T @ x``, supported by both).
 - **sym_tol** (*float, default 1e-8*): Relative tolerance for the symmetry check.
 - **matrix_view** (*MatrixView, optional*): Storage format of the matrix.  When UPPER or LOWER, the matrix stores only one triangular half and is symmetric by definition, so the symmetry check is skipped.
 
@@ -301,7 +301,7 @@ class AbstractSolverOptions()
 Base class for all solver option types.
 
 Common parameters shared by DirectSolverOptions,
-IterativeSolverOptions, and SolverOptions.
+KrylovSolverOptions, and SolverOptions.
 
 Parameters
 ----------
@@ -335,8 +335,7 @@ Parameters
 - **line_search_max_backtracks** (*int, default 30*): Maximum Armijo backtracking steps.
 - **line_search_c1** (*float, default 1e-4*): Armijo sufficient decrease constant.
 - **line_search_rho** (*float, default 0.5*): Backtracking shrink factor (alpha *= rho).
-- **internal_jit** (*bool, default False*): JIT-compile the internal linear solve used inside Newton iterations. Ignored for ``iter_num == 1`` (linear-only path).
-- **raise_on_line_search_failure** (*bool, default True*): Raise :class:`NewtonLineSearchError` when the Armijo backtracking exhausts ``line_search_max_backtracks`` without finding a descent step (effectively ``alpha → 0``).  A failed line search indicates the proposed Newton direction is not a descent direction — almost always a sign of a bug elsewhere (e.g. an inconsistent Jacobian or a wrong linear-solve result), so failing loudly is the safer default.  Only used by the Python-loop Newton path; the JAX- traced loops cannot raise from within ``while_loop``/``fori_loop``.
+- **raise_on_line_search_failure** (*bool, default True*): Raise :class:`NewtonLineSearchError` when the Armijo backtracking exhausts ``line_search_max_backtracks`` without finding a descent step (effectively ``alpha → 0``).  A failed line search indicates the proposed Newton direction is not a descent direction — almost always a sign of a bug elsewhere (e.g. an inconsistent Jacobian or a wrong linear-solve result), so failing loudly is the safer default.  Enforced by the unified callback Newton solver (the iteration runs as a host loop, so the error surfaces normally).
 
 
 ## SolverOptions Objects
@@ -355,7 +354,7 @@ behavior difficult to reason about and maintain.
 Use the new option classes instead:
 
 - ``DirectSolverOptions`` for direct linear solvers
-- ``IterativeSolverOptions`` for iterative linear solvers
+- ``KrylovSolverOptions`` for iterative linear solvers
 
 Newton/mode-specific options are being migrated separately.
 
@@ -453,11 +452,11 @@ Returns
 DirectSolverOptions
     Options with solver resolved to a concrete algorithm.
 
-## IterativeSolverOptions Objects
+## KrylovSolverOptions Objects
 
 ```python
 @dataclass(frozen=True)
-class IterativeSolverOptions(AbstractSolverOptions)
+class KrylovSolverOptions(AbstractSolverOptions)
 ```
 
 Configuration for iterative linear solvers (cg, bicgstab, gmres).
@@ -487,8 +486,8 @@ Iterative solvers consume an initial iterate.
 
 ```python
 def resolve_iterative_solver(
-        options: IterativeSolverOptions,
-        matrix_property: MatrixProperty) -> IterativeSolverOptions
+        options: KrylovSolverOptions,
+        matrix_property: MatrixProperty) -> KrylovSolverOptions
 ```
 
 Resolve &quot;auto&quot; to a concrete iterative solver based on matrix property.
@@ -501,13 +500,13 @@ Selection mapping::
 
 Parameters
 ----------
-- **options** (*IterativeSolverOptions*): Options with solver possibly set to &quot;auto&quot;.
+- **options** (*KrylovSolverOptions*): Options with solver possibly set to &quot;auto&quot;.
 - **matrix_property** (*MatrixProperty*): Detected matrix property (SPD, SYMMETRIC, GENERAL).
 
 
 Returns
 -------
-IterativeSolverOptions
+KrylovSolverOptions
     Options with solver resolved to a concrete algorithm.
     If solver != &quot;auto&quot;, returns the input unchanged.
 

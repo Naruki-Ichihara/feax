@@ -12,63 +12,74 @@ import feax as fe
 # 1. Build the solver
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(),
-    iter_num=1,
+    linear=True,
     internal_vars=internal_vars)
 
-# 2. Create initial guess
+# 2. Create an initial guess
 initial = fe.zero_like_initial_guess(problem, bc)
 
 # 3. Solve
 sol = solver(internal_vars, initial)
 ```
 
-The returned `solver` is a callable with a `custom_vjp`, so it works seamlessly with `jax.jit`, `jax.grad`, and `jax.vmap`.
+The returned `solver` is a callable with a `custom_vjp`, so it composes with `jax.jit`, `jax.grad`, and `jax.vmap`.
+
+`create_solver` has two orthogonal choices:
+
+- **How to solve the linear system** — `solver_options`: a **direct** factorization (`DirectSolverOptions`) or a **Krylov** iterative method (`KrylovSolverOptions`).
+- **Linear or nonlinear** — the `linear` flag: a single linear solve (`linear=True`) or an adaptive Newton iteration (`linear=False`, the default).
 
 ## Solver Options
 
-FEAX offers three solver option classes, each suited to different problem types:
+FEAX has two solver-option classes:
 
-| Option class | Method | Best for |
-|---|---|---|
-| `fe.DirectSolverOptions()` | Sparse direct (cuDSS on GPU, cholmod / umfpack / spsolve on CPU) | Default choice; robust and fast when memory permits |
-| `fe.IterativeSolverOptions()` | Iterative (CG / BiCGSTAB / GMRES) | Memory-constrained problems, periodic BCs with `P` |
-| `fe.MatrixFreeOptions()` | Matrix-free Newton via JVP | Custom energy, no assembly |
+| Option class | Method | Operator | Best for |
+|---|---|---|---|
+| `fe.DirectSolverOptions()` | Sparse direct factorization (cuDSS on GPU; cholmod / umfpack / spsolve on CPU) | Assembled CSR matrix | Default choice; robust and fast when memory permits |
+| `fe.KrylovSolverOptions()` | Krylov iterative (CG / BiCGSTAB / GMRES) | **Matrix-free** (residual JVP) | Memory-bound problems, periodic BCs with `P`, custom residual terms |
+
+The distinction is the operator representation:
+
+- **Direct** solvers need the matrix entries (to factorize), so the Jacobian is assembled straight into a deduplicated CSR matrix.
+- **Krylov** solvers need only a matrix–vector product, so FEAX never assembles the Jacobian — the tangent action `J · v` is a forward-mode `jax.jvp` of the residual. This keeps memory low (no element Jacobian is ever materialized) at the cost of having no matrix entries for an entry-based preconditioner.
 
 ### Direct Solvers
 
 ```python
-# Auto-select: cuDSS on GPU, spsolve on CPU
+# Auto-select: cuDSS on GPU, cholmod/umfpack/spsolve on CPU
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(),
-    iter_num=1, internal_vars=internal_vars)
+    linear=True, internal_vars=internal_vars)
 
 # Explicit backend
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(solver="spsolve"),
-    iter_num=1)
+    linear=True)
 ```
 
 Available backends: `"auto"`, `"cudss"`, `"spsolve"`, `"cholmod"`, `"umfpack"`.
 
 :::note cuDSS and `symmetric_bc=False`
-When `symmetric_bc=False` is used, the Jacobian becomes non-symmetric (GENERAL). The auto-selection detects this and configures cuDSS in LU mode automatically. If you manually specify `DirectSolverOptions(solver="cudss")`, ensure that the `CUDSSOptions(matrix_type=...)` matches the actual matrix symmetry.
+When `symmetric_bc=False` is used, the Jacobian becomes non-symmetric (GENERAL). The auto-selection detects this and configures cuDSS in LU mode automatically. If you manually specify `DirectSolverOptions(solver="cudss")`, ensure that `CUDSSOptions(matrix_type=...)` matches the actual matrix symmetry.
 :::
 
-### Iterative Solvers
+### Krylov Solvers
 
 ```python
 solver = fe.create_solver(problem, bc,
-    solver_options=fe.IterativeSolverOptions(solver="cg"),
-    iter_num=1, internal_vars=internal_vars)
+    solver_options=fe.KrylovSolverOptions(solver="cg"),
+    linear=True, internal_vars=internal_vars)
 ```
 
 Available backends: `"auto"`, `"cg"`, `"bicgstab"`, `"gmres"`.
 
 Use `"cg"` for SPD matrices (symmetric problems), `"bicgstab"` or `"gmres"` for general matrices.
 
+Because the Krylov path is matrix-free, there is no assembled matrix to draw a Jacobi (diagonal) preconditioner from on the standard path; convergence relies on the conditioning of the system itself. Reach for a direct solver when the problem is well-conditioned and fits in memory, and Krylov when memory is the binding constraint.
+
 ## Automatic Solver Selection
 
-When `solver_options` is omitted or set to `solver="auto"`, FEAX automatically selects the best solver based on the hardware backend and matrix properties. The selection follows the principle: **try direct solvers first, fall back to iterative only when explicitly requested**.
+When `solver_options` is omitted or set to `solver="auto"`, FEAX selects a concrete solver from the hardware backend and the matrix properties. The default is `DirectSolverOptions(solver="auto")`: **prefer a direct solver, and use Krylov only when explicitly requested.**
 
 ### Selection Flow
 
@@ -76,7 +87,7 @@ When `solver_options` is omitted or set to `solver="auto"`, FEAX automatically s
 solver_options=None  (or DirectSolverOptions(solver="auto"))
         │
         ▼
-  Assemble sample Jacobian
+  Assemble sample Jacobian (needs internal_vars)
         │
         ▼
   detect_matrix_property(J)
@@ -86,7 +97,7 @@ solver_options=None  (or DirectSolverOptions(solver="auto"))
        │           │           │
        ▼           ▼           ▼
   ┌─── GPU available? ───────────────┐
-  │  Yes → cuDSS (Cholesky/LDLT/LU) │  ← highest priority
+  │  Yes → cuDSS (Cholesky/LDLT/LU)  │  ← highest priority
   └──────────────────────────────────┘
        │           │           │
        ▼           ▼           ▼
@@ -98,9 +109,11 @@ solver_options=None  (or DirectSolverOptions(solver="auto"))
   └──────────────────────────────────┘
 ```
 
-### Direct Solver Priority
+:::note Auto-selection assembles a sample Jacobian
+Resolving `"auto"` evaluates the Jacobian once to inspect its properties, so pass `internal_vars` to `create_solver` when you rely on auto-selection (or specify the solver explicitly to skip the probe).
+:::
 
-The direct solver is selected in the following priority order:
+### Direct Solver Priority
 
 | Priority | Solver | Platform | Matrix types | Method |
 |---|---|---|---|---|
@@ -109,14 +122,15 @@ The direct solver is selected in the following priority order:
 | 3 | **umfpack** | CPU | SPD / SYMMETRIC / GENERAL | Multifrontal LU |
 | 4 | **spsolve** | CPU | SPD / SYMMETRIC / GENERAL | SciPy sparse LU |
 
-cuDSS automatically adapts its factorization to the matrix property:
+cuDSS adapts its factorization to the matrix property:
+
 - **SPD** → Cholesky (fastest, lowest memory)
 - **SYMMETRIC** → LDLT (no pivoting overhead)
 - **GENERAL** → LU with partial pivoting
 
-### Iterative Solver Selection
+### Krylov Solver Selection
 
-When `IterativeSolverOptions(solver="auto")` is used, the iterative solver is selected by matrix property:
+With `KrylovSolverOptions(solver="auto")`, the iterative method is chosen by matrix property:
 
 | Matrix property | Solver | Notes |
 |---|---|---|
@@ -126,28 +140,28 @@ When `IterativeSolverOptions(solver="auto")` is used, the iterative solver is se
 
 ### Matrix Property Detection
 
-`detect_matrix_property(J)` performs two numerical checks on the assembled Jacobian:
+`detect_matrix_property(J)` performs two numerical checks on the assembled Jacobian (it accepts both the `CSRMatrix` from the assembled path and a JAX `BCOO`):
 
-1. **Symmetry test**: Compares $\|\mathbf{A}\mathbf{x} - \mathbf{A}^T\mathbf{x}\|$ for a random vector. Skipped when `matrix_view='UPPER'` or `'LOWER'` (symmetry guaranteed by construction).
-2. **Positive-definiteness heuristic**: Checks if all diagonal entries are positive (necessary but not sufficient for SPD).
+1. **Symmetry test** — compares $\|\mathbf{A}\mathbf{x} - \mathbf{A}^T\mathbf{x}\|$ for a random vector. Skipped when `matrix_view='UPPER'` or `'LOWER'` (symmetry guaranteed by construction).
+2. **Positive-definiteness heuristic** — checks that all diagonal entries are positive (necessary but not sufficient for SPD).
 
 ### When to Override Auto Selection
 
 | Situation | Recommendation |
 |---|---|
-| Problem is too large for direct solver (out of memory) | `IterativeSolverOptions()` |
-| Need symmetric solver but using `symmetric_bc=False` | `DirectSolverOptions(solver="spsolve")` or `"umfpack"` |
-| Periodic BCs with prolongation matrix `P` | `IterativeSolverOptions()` (required) |
-| Custom energy with matrix-free Newton | `MatrixFreeOptions()` |
+| Problem too large for a direct solver (out of memory) | `KrylovSolverOptions()` |
+| Need a symmetric solver but using `symmetric_bc=False` | `DirectSolverOptions(solver="spsolve")` or `"umfpack"` |
+| Periodic BCs with prolongation matrix `P` | `KrylovSolverOptions()` (required) |
+| Extra residual term (e.g. cohesive interface) | `KrylovSolverOptions()` with `extra_residual_fn` |
 | Extreme stiffness contrast (ill-conditioned Jacobian) | `DirectSolverOptions(solver="spsolve")` on CPU |
 
 ### Numerical Stability: cuDSS vs CPU Direct Solvers
 
-cuDSS (GPU) uses LU factorization optimized for throughput, but its pivoting strategy can be less robust than CPU-based solvers for extremely ill-conditioned systems. Problems with large stiffness contrasts (e.g., third-medium contact with γ₀ ≈ 1e-6, multi-material topology optimization) may exhibit:
+cuDSS (GPU) uses LU factorization tuned for throughput, but its pivoting can be less robust than CPU solvers for extremely ill-conditioned systems. Problems with large stiffness contrasts (e.g. third-medium contact with γ₀ ≈ 1e-6, multi-material topology optimization) may show:
 
 - Newton convergence stalling after the first iteration
 - Line search returning very small step sizes (α ≈ 0)
-- Residual not decreasing despite non-zero Newton increment
+- Residual not decreasing despite a non-zero Newton increment
 
 In such cases, switch to a CPU direct solver with more robust pivoting:
 
@@ -159,51 +173,43 @@ solver_options = fe.DirectSolverOptions(solver="spsolve")
 solver_options = fe.DirectSolverOptions(solver="umfpack")
 ```
 
-On GPU, if a direct solver is required, consider running the ill-conditioned part on CPU or using an iterative solver with preconditioning:
+## Linear vs. Nonlinear: the `linear` flag
 
-```python
-# GPU: GMRES with Jacobi preconditioner
-solver_options = fe.IterativeSolverOptions(
-    solver="gmres", use_jacobi_preconditioner=True)
-```
+The `linear` flag selects the solve path:
 
-## Linear vs. Nonlinear: `iter_num`
+| `linear` | Behavior |
+|---|---|
+| `True` | A single linear solve `J · Δu = -r`, then `u = u₀ + Δu`. |
+| `False` (default) | Adaptive Newton iteration with Armijo line search, run to `NewtonOptions.tol` / `rel_tol` (capped at `max_iter`). |
 
-The `iter_num` parameter controls the Newton iteration strategy:
+Both paths are differentiable and compose with `jax.jit` / `jax.vmap` / `jax.grad`.
 
-| `iter_num` | Behavior | `jax.vmap` compatible |
-|---|---|---|
-| `1` | Single linear solve | Yes |
-| `> 1` | Fixed N Newton iterations | Yes |
-| `None` (default) | Adaptive Newton with while loop | No |
-
-### Linear Problems (`iter_num=1`)
+### Linear Problems (`linear=True`)
 
 For linear elasticity and other linear PDEs, one linear solve is sufficient:
 
 ```python
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(),
-    iter_num=1, internal_vars=internal_vars)
+    linear=True, internal_vars=internal_vars)
 sol = solver(internal_vars, initial)
 ```
 
-### Nonlinear Problems (Newton Solver)
+### Nonlinear Problems (`linear=False`)
 
-For hyperelasticity and other nonlinear problems, use the Newton solver:
+For hyperelasticity and other nonlinear problems, use the Newton path (the default):
 
 ```python
-# Adaptive Newton — stops when converged (not vmappable)
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(),
     newton_options=fe.NewtonOptions(tol=1e-8, max_iter=50),
-    iter_num=None, internal_vars=internal_vars)
+    internal_vars=internal_vars)
 
-# Fixed iterations — always runs exactly N steps (vmappable)
-solver = fe.create_solver(problem, bc,
-    solver_options=fe.DirectSolverOptions(),
-    iter_num=10, internal_vars=internal_vars)
+initial = fe.zero_like_initial_guess(problem, bc)
+sol = solver(internal_vars, initial)
 ```
+
+The Newton iteration runs adaptively (it stops as soon as the residual is converged). The loop itself runs on the host inside a single `jax.pure_callback`, so it stays compatible with `jax.jit` and `jax.vmap` while still using data-dependent convergence and line search.
 
 #### Newton Options
 
@@ -211,17 +217,17 @@ solver = fe.create_solver(problem, bc,
 
 ```python
 fe.NewtonOptions(
-    tol=1e-8,                      # absolute residual tolerance
-    rel_tol=1e-8,                  # relative residual tolerance
-    max_iter=50,                   # maximum Newton iterations
-    line_search_c1=1e-4,           # Armijo condition parameter
-    line_search_rho=0.5,           # backtracking factor
-    line_search_max_backtracks=10, # max line search steps
-    internal_jit=True,             # JIT-compile each component separately
+    tol=1e-8,                          # absolute residual tolerance
+    rel_tol=1e-8,                      # relative residual tolerance
+    max_iter=50,                       # maximum Newton iterations
+    line_search_c1=1e-4,               # Armijo sufficient-decrease constant
+    line_search_rho=0.5,               # backtracking shrink factor
+    line_search_max_backtracks=30,     # max line search steps
+    raise_on_line_search_failure=True, # raise if no descent step is found
 )
 ```
 
-Setting `internal_jit=True` JIT-compiles the residual, Jacobian, and linear solve functions individually, avoiding the long monolithic JIT compilation that can occur with large problems. The default is `internal_jit=False`.
+`raise_on_line_search_failure=True` raises `NewtonLineSearchError` when Armijo backtracking exhausts `line_search_max_backtracks` without a descent step (effectively `α → 0`). A failed line search almost always signals an inconsistent Jacobian or a bad linear solve, so failing loudly is the safer default; set it to `False` to let the iteration continue with the best step found.
 
 ## Boundary Condition Elimination: `symmetric_bc`
 
@@ -236,13 +242,13 @@ $$
 $$
 
 - Preserves matrix symmetry → symmetric solvers (CG, Cholesky) can be used
-- Removes K₁₀ coupling between BC DOFs and interior DOFs
-- Suitable for: fixed BCs, linear problems, problems where BC values are pre-applied to the initial guess
+- Removes the K₁₀ coupling between BC DOFs and interior DOFs
+- Suitable for: fixed BCs, linear problems, and problems where BC values are pre-applied to the initial guess
 
 ```python
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(),
-    iter_num=1, symmetric_bc=True)  # default
+    linear=True, symmetric_bc=True)  # default
 ```
 
 ### `symmetric_bc=False` — Non-symmetric Elimination
@@ -262,33 +268,31 @@ The Newton solver drives BC DOFs to their prescribed values through the modified
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(solver="spsolve"),
     newton_options=fe.NewtonOptions(tol=1e-6, max_iter=20),
-    iter_num=None, symmetric_bc=False,
+    symmetric_bc=False,
     internal_vars=internal_vars)
 ```
 
 ### When to Use `symmetric_bc=False`
 
-Use non-symmetric elimination when the K₁₀ coupling is important for Newton convergence:
+Use non-symmetric elimination when the K₁₀ coupling matters for Newton convergence:
 
-1. **Incremental loading** — BC values change per load step and the previous solution is reused as the initial guess. K₁₀ ensures that prescribed displacement changes propagate correctly to interior DOFs.
-
-2. **Large stiffness contrast** — e.g., third-medium contact where background medium stiffness is scaled by γ₀ ≈ 1e-6. Without K₁₀, the first Newton increment overshoots in soft regions, causing divergence.
-
+1. **Incremental loading** — BC values change per load step and the previous solution is reused as the initial guess. K₁₀ ensures prescribed displacement changes propagate correctly to interior DOFs.
+2. **Large stiffness contrast** — e.g. third-medium contact where the background medium stiffness is scaled by γ₀ ≈ 1e-6. Without K₁₀, the first Newton increment overshoots in soft regions, causing divergence.
 3. **Large-deformation nonlinear problems** — where BC DOF displacements are large and strongly coupled to interior DOFs.
 
 :::tip Rule of thumb
-If your Newton solver converges with `symmetric_bc=True`, keep the default — it enables symmetric solvers and is slightly more efficient. Switch to `symmetric_bc=False` when you observe divergence or poor convergence that you suspect is caused by the boundary condition treatment.
+If your Newton solver converges with `symmetric_bc=True`, keep the default — it enables symmetric solvers and is slightly more efficient. Switch to `symmetric_bc=False` when you see divergence or poor convergence you suspect is caused by the boundary-condition treatment.
 :::
 
 ## Incremental Loading
 
-For problems where the prescribed displacement or load is applied gradually over multiple steps, use `bc.replace_vals()` with `symmetric_bc=False`:
+For problems where the prescribed displacement or load is applied gradually over several steps, use `bc.replace_vals()` with `symmetric_bc=False`:
 
 ```python
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(solver="spsolve"),
     newton_options=fe.NewtonOptions(tol=1e-6, max_iter=20),
-    iter_num=None, symmetric_bc=False,
+    symmetric_bc=False,
     internal_vars=internal_vars)
 
 sol = fe.zero_like_initial_guess(problem, bc)
@@ -299,133 +303,88 @@ for step in range(1, num_steps + 1):
     new_vals = bc.bc_vals.at[move_bc_pos].set(max_disp * scale)
     bc_step = bc.replace_vals(new_vals)
 
-    # Solve with updated BCs, reusing previous solution as initial guess
+    # Solve with updated BCs, reusing the previous solution as initial guess
     sol = solver(internal_vars, sol, bc=bc_step)
 ```
 
 Key points:
+
 - `bc.replace_vals(new_vals)` creates a new `DirichletBC` with updated values but the same DOF locations — no solver rebuild needed.
 - The previous solution `sol` is passed as the initial guess, giving Newton a good starting point.
-- The solver's optional `bc=` keyword argument overrides the BC values without re-compiling.
+- The solver's optional `bc=` keyword overrides the BC values without re-compiling.
 
-## Matrix-Free Solver
+## Custom Residual Contributions: `extra_residual_fn`
 
-For problems with custom energy contributions (e.g., cohesive zones), use `MatrixFreeOptions`. The tangent operator is computed via `jax.jvp` — no sparse matrix is ever assembled:
+Some problems add a contribution to the global residual that does not come from the standard element weak form — for example a cohesive-zone traction on an interface, or a penalty/contact term. Supply it as `extra_residual_fn(sol_flat) -> residual_flat`:
 
 ```python
-from feax.solvers.matrix_free import MatrixFreeOptions, LinearSolverOptions, create_energy_fn
-
-elastic_energy = create_energy_fn(problem)
-
-def total_energy(u_flat, delta_max):
-    return elastic_energy(u_flat) + cohesive_energy(u_flat, delta_max)
+def cohesive_residual(u_flat):
+    # e.g. the gradient of an interface potential, ∂Φ/∂u
+    return jax.grad(lambda u: cohesive_energy(u, delta_max))(u_flat)
 
 solver = fe.create_solver(problem, bc,
-    solver_options=MatrixFreeOptions(
-        newton_tol=1e-8,
-        newton_max_iter=200,
-        linear_solver=LinearSolverOptions(solver='cg', atol=1e-8),
-    ),
-    energy_fn=total_energy)
+    solver_options=fe.KrylovSolverOptions(solver='cg', maxiter=200),
+    newton_options=fe.NewtonOptions(tol=1e-6, max_iter=1000),
+    extra_residual_fn=cohesive_residual,
+    linear=False)
 ```
+
+This runs a **hybrid matrix-free Newton–Krylov** iteration: FEAX assembles the bulk Jacobian (a CSR matrix, which also supplies a Jacobi preconditioner), while the extra term's tangent is applied matrix-free via `jax.jvp`. The combined operator is
+
+$$
+\mathbf{J}_\text{total} \cdot \mathbf{v} = \mathbf{J}_\text{bulk} \cdot \mathbf{v} + \mathrm{jvp}(\text{extra\_residual},\, \mathbf{u},\, \mathbf{v}).
+$$
+
+Requirements: `extra_residual_fn` needs `KrylovSolverOptions` and the nonlinear path (`linear=False`). Dirichlet rows of the extra residual are zeroed automatically.
+
+## Periodic Boundary Conditions: the reduced solver
+
+Periodic constraints are imposed with a prolongation matrix `P` that maps a reduced (independent) DOF vector to the full DOF vector, `u = P · u_reduced`. Pass it via `P=`:
+
+```python
+solver = fe.create_solver(problem, bc,
+    solver_options=fe.KrylovSolverOptions(solver='cg'),
+    linear=True, P=P)
+```
+
+The reduced solver is matrix-free: it solves the reduced system `Pᵀ J P · u_reduced = -Pᵀ r` using only Jacobian–vector products, so it requires `KrylovSolverOptions`. See [Periodic Boundary Conditions](../advanced/periodic_boundary_conditions.md) for building `P`.
 
 ## `MatrixView` for Symmetric Problems
 
-When the problem is symmetric (most single-variable problems with `symmetric_bc=True`), set `matrix_view='UPPER'` on the Problem to store only the upper triangle of the stiffness matrix. This reduces memory by ~50% and enables optimized solvers (Cholesky):
+When the problem is symmetric (most single-variable problems with `symmetric_bc=True`), set `matrix_view='UPPER'` on the Problem to store only the upper triangle of the stiffness matrix. This roughly halves memory and enables optimized solvers (Cholesky):
 
 ```python
 problem = MyProblem(mesh, vec=3, dim=3, matrix_view='UPPER')
 ```
 
 :::caution
-Do not use `matrix_view='UPPER'` with `symmetric_bc=False`, as the modified Jacobian is no longer symmetric.
+Do not combine `matrix_view='UPPER'` with `symmetric_bc=False`, as the modified Jacobian is no longer symmetric.
 :::
 
-## `jax.vmap` Compatibility
+## Composing with `jax.jit`, `jax.vmap`, and `jax.grad`
 
-FEAX solvers support `jax.vmap` for batched parameter studies — solving the same problem with different boundary condition values, material parameters, or loads in a single vectorized call. This section details vmap compatibility for each solver path and how to use it.
-
-### Compatibility Matrix
-
-| Solver path | `iter_num` | `make_jittable` | `bc=` override | `jax.vmap` | Notes |
-|---|---|---|---|---|---|
-| **Linear** (Direct) | `1` | — | Yes | Yes | cuDSS, spsolve, cholmod, umfpack all supported |
-| **Linear** (Iterative) | `1` | — | Yes | Yes | CG, BiCGSTAB, GMRES |
-| **Reduced** (`P≠None`) | `1` | — | Yes | Yes | Iterative only (matrix-free matvec) |
-| **Newton** (fori_loop) | `> 1` | `True` | Yes | Yes | Fixed iterations with `make_jittable=True` |
-| **Newton** (while_loop) | `None` | — | Yes | **No** | Python/while loop not traceable by vmap |
-| **Newton** (Python loop) | `> 1` | `False` | Yes | **No** | Python loop not traceable by vmap |
-| **Matrix-free** | `≠ 1` | — | No | **No** | Python while loop, no `bc=` override |
-
-:::tip Key rule
-To use `jax.vmap` with a solver, avoid Python-level control flow. Use `iter_num=1` (linear), `P` (reduced), or `iter_num > 1` with `NewtonOptions(make_jittable=True)` (Newton fori_loop).
-:::
-
-### How `bc=` Override Works
-
-All vmap-compatible solvers accept an optional `bc=` keyword argument. This overrides the boundary condition **values** without rebuilding the solver. Combined with `jax.vmap`, this enables batched solves over different prescribed displacements.
-
-The key mechanism is the `DirichletBC.replace_vals()` method, which creates a new `DirichletBC` with different `bc_vals` but the same DOF locations (`bc_rows`) and mask (`bc_mask`):
+Every solver path — linear, Newton, reduced, and hybrid — is built around a `custom_vjp` and composes with all three JAX transformations. The Newton forward pass runs as a host loop inside a single `jax.pure_callback` with a batched vmap rule, so data-dependent convergence and line search remain compatible with tracing.
 
 ```python
-bc1 = bc.replace_vals(bc.bc_vals.at[-1].set(0.1))
-bc2 = bc.replace_vals(bc.bc_vals.at[-1].set(0.5))
+@jax.jit
+def solve(iv, bc_vals):
+    return solver(iv, initial, bc=bc.replace_vals(bc_vals))
+
+sol = solve(iv, bc.bc_vals)  # first call triggers compilation
 ```
 
-Internally, the solver uses **parametric** Jacobian and residual functions (`create_J_bc_parametric`, `create_res_bc_parametric`) that take `bc` as an explicit argument rather than capturing it in a closure. This allows JAX to trace through the BC values under `jax.vmap`.
+### Batched solves with `jax.vmap`
 
-### Limitation: BC Locations Must Be Identical Within a Batch
-
-:::danger Important constraint
-`jax.vmap` can only batch over BC **values** (`bc_vals`). The BC **locations** (`bc_rows`, `bc_mask`) must be identical across all elements in the batch.
-:::
-
-This is a fundamental constraint, not a temporary limitation:
-
-1. **Jacobian sparsity pattern depends on BC locations** — `apply_boundary_to_J` zeros out rows and columns corresponding to `bc_rows`. Different BC locations produce different sparsity patterns (different `indices` in BCOO, different `indptr`/`indices` in BCSR). JAX's vmap requires all array shapes and structures to be identical across the batch.
-
-2. **Direct solvers require a shared sparsity structure** — cuDSS batched factorization shares a single set of CSR `offsets` and `columns` across the batch; only the `values` and right-hand side `b` vary. Different BC locations would require different CSR structures, which is not supported.
-
-When you need to solve with **different BC locations**, create a separate solver for each location pattern and use vmap within each group:
-
-```python
-# Group A: left edge fixed, right edge loaded
-bc_a = fe.DirichletBCConfig([
-    fe.DirichletBCSpec(location=left_edge, component='all', value=0.),
-    fe.DirichletBCSpec(location=right_edge, component='x', value=0.),
-]).create_bc(problem)
-solver_a = fe.create_solver(problem, bc_a, iter_num=1, ...)
-
-# Group B: bottom edge fixed, top edge loaded
-bc_b = fe.DirichletBCConfig([
-    fe.DirichletBCSpec(location=bottom_edge, component='all', value=0.),
-    fe.DirichletBCSpec(location=top_edge, component='y', value=0.),
-]).create_bc(problem)
-solver_b = fe.create_solver(problem, bc_b, iter_num=1, ...)
-
-# vmap within each group (values vary, locations fixed)
-sols_a = jax.vmap(lambda v: solver_a(iv, bc=bc_a.replace_vals(v)))(vals_batch_a)
-sols_b = jax.vmap(lambda v: solver_b(iv, bc=bc_b.replace_vals(v)))(vals_batch_b)
-```
-
-The solver construction cost (Jacobian assembly, cuDSS symbolic factorization, etc.) is incurred only once per BC location pattern. Within each group, all solves with different `bc_vals` are efficiently batched via vmap. Since the number of distinct BC location patterns is typically small (e.g., a few load cases or boundary condition types), this approach is practical and efficient.
-
-### Basic vmap Example: Linear Solver
+`jax.vmap` batches a solve over different boundary-condition values, material parameters, or loads in one vectorized call. All solver paths support it.
 
 ```python
 import jax
 import jax.numpy as np
 import feax as fe
 
-# Setup
-problem = MyProblem(mesh, vec=2, dim=2, ele_type='QUAD4')
-bc = fe.DirichletBCConfig([...]).create_bc(problem)
-iv = fe.InternalVars(volume_vars=())
-
-# Create solver (any solver backend works)
 solver = fe.create_solver(problem, bc,
-    solver_options=fe.IterativeSolverOptions(solver='cg'),
-    iter_num=1)
+    solver_options=fe.DirectSolverOptions(),
+    linear=True, internal_vars=iv)
 
 # Stack bc_vals into a batch (shape: [batch_size, num_bc_dofs])
 vals_batch = np.stack([
@@ -433,137 +392,60 @@ vals_batch = np.stack([
     bc.bc_vals.at[-1].set(0.5),
 ])
 
-# vmap over bc_vals
 solutions = jax.vmap(
-    lambda v: solver(iv, bc=bc.replace_vals(v))
+    lambda v: solver(iv, initial, bc=bc.replace_vals(v))
 )(vals_batch)
 # solutions.shape = (batch_size, num_dofs)
 ```
 
-### vmap with Direct Solver (cuDSS)
+The `bc=` keyword accepts a `DirichletBC` whose `bc_vals` differ from the original; `bc.replace_vals(v)` produces it. Internally the solver uses **parametric** Jacobian and residual functions that take `bc` as explicit data (rather than capturing it in a closure), so JAX can trace through the BC values under `vmap`.
 
-cuDSS supports vmap natively. When the sparsity pattern (CSR offsets and column indices) is the same across the batch — which is always the case when only `bc_vals` changes — cuDSS uses an efficient batched factorization:
-
-```python
-solver = fe.create_solver(problem, bc,
-    solver_options=fe.DirectSolverOptions(),  # auto-selects cuDSS on GPU
-    iter_num=1, internal_vars=iv)
-
-solutions = jax.vmap(
-    lambda v: solver(iv, bc=bc.replace_vals(v))
-)(vals_batch)
-```
-
-### vmap with Newton Solver (fori_loop)
-
-For nonlinear problems, use fixed iterations with `make_jittable=True` to enable vmap:
-
-```python
-from feax.solvers.options import NewtonOptions
-
-solver = fe.create_solver(problem, bc,
-    solver_options=fe.IterativeSolverOptions(solver='cg'),
-    iter_num=10,
-    internal_vars=iv,
-    newton_options=NewtonOptions(make_jittable=True))
-
-initial = fe.zero_like_initial_guess(problem, bc)
-
-solutions = jax.vmap(
-    lambda v: solver(iv, initial, bc=bc.replace_vals(v))
-)(vals_batch)
-```
-
-:::note Newton solver requires explicit initial guess
-Unlike the linear solver, the Newton solver always requires an explicit `initial_guess` argument. Use `fe.zero_like_initial_guess(problem, bc)` to create a suitable initial guess.
+:::danger BC locations must be identical within a batch
+`jax.vmap` can batch over BC **values** (`bc_vals`) only. The BC **locations** (`bc_rows`, `bc_mask`) must be identical across the batch.
 :::
 
-:::caution Fixed iteration count
-With `make_jittable=True`, the Newton solver runs exactly `iter_num` iterations regardless of convergence. Choose `iter_num` large enough for your problem. The adaptive while-loop path (`iter_num=None`) supports `bc=` override for sequential use but is **not** compatible with `jax.vmap`.
-:::
+This is a structural constraint, not a temporary limitation:
 
-### vmap with Reduced Solver (Periodic BCs)
+1. **The Jacobian sparsity pattern depends on BC locations** — BC elimination zeros the rows/columns at `bc_rows`. Different BC locations give different sparsity patterns, and `vmap` requires identical array shapes/structures across the batch.
+2. **Direct solvers require a shared sparsity structure** — batched cuDSS factorization shares a single set of CSR offsets/columns across the batch; only the values and right-hand side vary.
 
-The reduced solver (activated by passing a prolongation matrix `P`) also supports vmap:
-
-```python
-solver = fe.create_solver(problem, bc,
-    solver_options=fe.IterativeSolverOptions(solver='cg'),
-    iter_num=1, P=P)
-
-solutions = jax.vmap(
-    lambda v: solver(iv, bc=bc.replace_vals(v))
-)(vals_batch)
-```
-
-### What Can Be Vmapped
-
-| Batched input | How to vmap | Example |
-|---|---|---|
-| BC values (`bc_vals`) | `bc.replace_vals(v)` | Parametric displacement studies |
-| Material parameters | Batch `InternalVars` | Material property sweeps |
-| Both | Combine in lambda | Full parameter studies |
-
-Example: vmap over both BC values and material parameters:
+When you need **different BC locations**, build a separate solver per location pattern and `vmap` within each group:
 
 ```python
-def solve_one(bc_vals, material_params):
-    iv = fe.InternalVars(volume_vars=(material_params,))
-    return solver(iv, bc=bc.replace_vals(bc_vals))
+# Group A: left edge fixed, right edge loaded
+bc_a = fe.DirichletBCConfig([
+    fe.DirichletBCSpec(location=left_edge, component='all', value=0.),
+    fe.DirichletBCSpec(location=right_edge, component='x', value=0.),
+]).create_bc(problem)
+solver_a = fe.create_solver(problem, bc_a, linear=True, ...)
 
-solutions = jax.vmap(solve_one)(bc_vals_batch, material_params_batch)
+# Group B: bottom edge fixed, top edge loaded
+bc_b = fe.DirichletBCConfig([
+    fe.DirichletBCSpec(location=bottom_edge, component='all', value=0.),
+    fe.DirichletBCSpec(location=top_edge, component='y', value=0.),
+]).create_bc(problem)
+solver_b = fe.create_solver(problem, bc_b, linear=True, ...)
+
+# vmap within each group (values vary, locations fixed)
+sols_a = jax.vmap(lambda v: solver_a(iv, bc=bc_a.replace_vals(v)))(vals_batch_a)
+sols_b = jax.vmap(lambda v: solver_b(iv, bc=bc_b.replace_vals(v)))(vals_batch_b)
 ```
 
-### Combining vmap with jax.grad
+The construction cost (assembly, symbolic factorization) is paid once per BC-location pattern; within each group all `bc_vals` solves are batched efficiently.
 
-Solvers with `custom_vjp` support both `jax.vmap` and `jax.grad`. A common pattern is to differentiate a batched loss:
+### Gradients with `jax.grad`
 
-```python
-def batched_loss(material_params):
-    iv = fe.InternalVars(volume_vars=(material_params,))
-    # vmap over BC values
-    sols = jax.vmap(
-        lambda v: solver(iv, bc=bc.replace_vals(v))
-    )(vals_batch)
-    return np.sum(sols ** 2)
+All solver paths implement `jax.custom_vjp`. The backward pass uses the **implicit function theorem**: instead of differentiating through the Newton iterations, it solves a single adjoint linear system, giving exact gradients efficiently.
 
-grad = jax.grad(batched_loss)(material_params)
-```
-
-### Solver Paths Not Compatible with vmap
-
-The following solver paths use Python-level control flow that cannot be traced by `jax.vmap`:
-
-- **Newton with `iter_num=None`** (adaptive while loop): Uses `jax.lax.while_loop` with dynamic termination, which is not vmap-compatible.
-- **Newton with `make_jittable=False`** (default): Uses a Python `for` loop with `jax.debug.print` and early stopping — useful for debugging but not traceable.
-- **Matrix-free solver** (`MatrixFreeOptions`): Uses a Python while loop internally for Newton iteration.
-
-These paths still support the `bc=` override for **sequential** use (e.g., incremental loading), but cannot be batched with `jax.vmap`.
-
-## `jax.grad` Compatibility
-
-All FEAX solvers implement `jax.custom_vjp`, enabling `jax.grad` (reverse-mode AD) through the solve. The backward pass uses the **implicit function theorem**: instead of differentiating through Newton iterations, it solves a single adjoint linear system to obtain exact gradients efficiently.
-
-### What Can Be Differentiated
-
-| Parameter | Supported | Solver paths |
+| Parameter | Differentiable | Notes |
 |---|---|---|
 | `InternalVars` (material params, loads) | Yes | All solver paths |
-| `bc_vals` (BC prescribed values) | Yes | All parametric paths (see below) |
+| `bc_vals` (BC prescribed values) | Yes | Pass `bc=bc.replace_vals(...)` |
 | `initial_guess` | No | Gradient is `None` (not meaningful) |
 
-### Differentiating w.r.t. `bc_vals`
-
-To compute gradients through the solver with respect to boundary condition values, pass `bc=` as a keyword argument with a `DirichletBC` created via `replace_vals`:
+To differentiate with respect to BC values, pass `bc=` built from `replace_vals`:
 
 ```python
-solver = fe.create_solver(problem, bc,
-    solver_options=fe.IterativeSolverOptions(solver='cg'),
-    iter_num=3, internal_vars=iv,
-    newton_options=NewtonOptions(make_jittable=True))
-
-initial = fe.zero_like_initial_guess(problem, bc)
-
 def loss(bc_vals_arg):
     sol = solver(iv, initial, bc=bc.replace_vals(bc_vals_arg))
     return np.sum(sol ** 2)
@@ -571,32 +453,16 @@ def loss(bc_vals_arg):
 grad_bc = jax.grad(loss)(bc.bc_vals)
 ```
 
-### Compatibility Matrix
+#### Gradient correctness with `symmetric_bc`
 
-| Solver path | `iter_num` | `make_jittable` | `jax.grad` (iv) | `jax.grad` (bc_vals) |
-|---|---|---|---|---|
-| **Linear** (Direct/Iterative) | `1` | — | Yes | Yes |
-| **Newton** (fori_loop) | `> 1` | `True` | Yes | Yes |
-| **Newton** (Python loop) | `> 1` | `False` | Yes | Yes |
-| **Newton** (while_loop) | `None` | — | Yes | Yes |
-| **Reduced** (`P≠None`) | `1` | — | Yes | Yes |
-| **Matrix-free** | `≠ 1` | — | Yes | No (`bc=` not supported) |
-
-### Gradient Correctness with `symmetric_bc`
-
-When `symmetric_bc=True` (the default), the forward Jacobian uses symmetric elimination which zeros out BC coupling columns (K₁₀). The backward pass automatically applies a correction to the adjoint solution at BC DOFs so that gradients w.r.t. `bc_vals` remain exact. No user action is required — the correction is transparent and preserves compatibility with symmetric solvers (CG, Cholesky).
+With `symmetric_bc=True` (the default), the forward Jacobian uses symmetric elimination, which zeros the BC coupling columns (K₁₀). The backward pass automatically corrects the adjoint solution at BC DOFs so that gradients w.r.t. `bc_vals` stay exact — no user action is required, and the correction preserves compatibility with symmetric solvers (CG, Cholesky).
 
 :::tip Verifying gradients
-For critical applications, you can verify analytic gradients against finite differences:
+For critical applications, check analytic gradients against finite differences:
 
 ```python
-def loss(bc_vals_arg):
-    sol = solver(iv, initial, bc=bc.replace_vals(bc_vals_arg))
-    return np.sum(sol ** 2)
-
 analytic = jax.grad(loss)(bc_vals)
 
-# Central finite difference
 eps = 1e-5
 for i in range(len(bc_vals)):
     p1 = bc_vals.at[i].add(eps)
@@ -606,72 +472,14 @@ for i in range(len(bc_vals)):
 ```
 :::
 
-## `jax.jit` Compatibility
-
-All solver paths can be wrapped with `jax.jit` for compilation:
-
-```python
-solver = fe.create_solver(problem, bc,
-    solver_options=fe.IterativeSolverOptions(solver='cg'),
-    iter_num=3, internal_vars=iv,
-    newton_options=NewtonOptions(make_jittable=True))
-
-initial = fe.zero_like_initial_guess(problem, bc)
-
-@jax.jit
-def solve(iv, bc_vals):
-    return solver(iv, initial, bc=bc.replace_vals(bc_vals))
-
-sol = solve(iv, bc.bc_vals)  # first call triggers compilation
-```
-
-### Compatibility Matrix
-
-| Solver path | `iter_num` | `make_jittable` | `jax.jit` | Notes |
-|---|---|---|---|---|
-| **Linear** (Direct/Iterative) | `1` | — | Yes | Single linear solve, fast compilation |
-| **Newton** (fori_loop) | `> 1` | `True` | Yes | Entire Newton loop compiled into one XLA program |
-| **Newton** (Python loop) | `> 1` | `False` | Partial | Each component (residual, Jacobian, solve) is JIT-compiled individually; Python loop runs on host |
-| **Newton** (while_loop) | `None` | — | Yes | `jax.lax.while_loop` is XLA-traceable |
-| **Reduced** (`P≠None`) | `1` | — | Yes | Matrix-free matvec, iterative only |
-| **Matrix-free** | `≠ 1` | — | Partial | Python while loop on host, inner operations JIT-compiled |
-
-### `make_jittable` and `internal_jit`
-
-The Newton solver offers two JIT strategies via `NewtonOptions`:
-
-| Option | Effect | Use case |
-|---|---|---|
-| `make_jittable=True` | Entire Newton loop is traced into a single XLA program via `jax.lax.fori_loop`. Requires fixed `iter_num`. | Small–medium problems; required for `jax.vmap`. |
-| `make_jittable=False` (default) | Python-level Newton loop; each component (residual, Jacobian, linear solve) compiled separately. | Large 3-D problems where monolithic compilation is too slow. |
-| `internal_jit=False` (default) | When set to `True`, wraps each component with `jax.jit` in the `make_jittable=False` path. | Set `True` to ensure compiled execution even in the Python-loop path. |
-
-:::note JIT compilation time
-For large problems, `make_jittable=True` can cause very long initial compilation times because the entire Newton loop is fused into one XLA graph. In such cases, use the default `make_jittable=False` with `internal_jit=True` to keep compilation fast while still running compiled kernels.
-:::
-
-### Composing `jax.jit` with `jax.grad`
-
-`jax.jit` and `jax.grad` compose naturally:
-
-```python
-@jax.jit
-def loss_and_grad(bc_vals_arg):
-    def loss(v):
-        sol = solver(iv, initial, bc=bc.replace_vals(v))
-        return np.sum(sol ** 2)
-    return jax.value_and_grad(loss)(bc_vals_arg)
-
-val, grad = loss_and_grad(bc.bc_vals)
-```
-
 ## Summary
 
-| Scenario | `iter_num` | `symmetric_bc` | Solver options |
+| Scenario | `linear` | `symmetric_bc` | Solver options |
 |---|---|---|---|
-| Linear, fixed BCs | `1` | `True` | `DirectSolverOptions()` |
-| Nonlinear, fixed BCs | `None` | `True` | `DirectSolverOptions()` |
-| Nonlinear, incremental loading | `None` | `False` | `DirectSolverOptions(solver="spsolve")` |
-| Large problem, periodic BCs | `1` | `True` | `IterativeSolverOptions()` with `P` |
-| Custom energy (cohesive) | — | — | `MatrixFreeOptions()` |
-| Batched parameter study | `1` or `> 1` | `True` | any (must be vmappable) |
+| Linear, fixed BCs | `True` | `True` | `DirectSolverOptions()` |
+| Nonlinear, fixed BCs | `False` | `True` | `DirectSolverOptions()` |
+| Nonlinear, incremental loading | `False` | `False` | `DirectSolverOptions(solver="spsolve")` |
+| Large / memory-bound problem | `True`/`False` | `True` | `KrylovSolverOptions()` |
+| Periodic BCs (prolongation `P`) | `True` | `True` | `KrylovSolverOptions()` with `P` |
+| Extra residual term (cohesive) | `False` | — | `KrylovSolverOptions()` with `extra_residual_fn` |
+| Batched parameter study | `True`/`False` | `True` | any (all paths vmap) |

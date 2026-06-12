@@ -33,7 +33,7 @@ Parameters
 ----------
 - **A** (*BCOO sparse matrix*): The transposed Jacobian matrix (J^T)
 - **b** (*jax.numpy.ndarray*): Right-hand side vector (cotangent vector from VJP)
-- **solver_options** (*SolverOptions or DirectSolverOptions or IterativeSolverOptions*): Solver configuration for adjoint solve
+- **solver_options** (*SolverOptions or DirectSolverOptions or KrylovSolverOptions*): Solver configuration for adjoint solve
 - **matrix_view** (*MatrixView*): Matrix storage format from the problem
 - **bc** (*DirichletBC, optional*): Boundary conditions for computing initial guess
 - **linear_solve_fn** (*callable, optional*): Pre-created linear solve function. If None, one is created from solver_options internally.
@@ -66,7 +66,7 @@ def linear_solve(J_bc_applied,
                  x0_fn: Optional[Callable] = None)
 ```
 
-Single-step linear solve used by create_solver(iter_num=1).
+Single-step linear solve used by create_solver(linear=True).
 
 #### create\_linear\_solver
 
@@ -76,12 +76,13 @@ def create_linear_solver(
         bc: DirichletBC,
         solver_options: Optional[AbstractSolverOptions] = None,
         adjoint_solver_options: Optional[AbstractSolverOptions] = None,
-        internal_vars=None) -> Callable[[Any, np.ndarray], np.ndarray]
+        internal_vars=None,
+        symmetric_bc: bool = True) -> Callable[[Any, np.ndarray], np.ndarray]
 ```
 
 Create a differentiable solver for linear FE problems.
 
-Simpler and more focused alternative to ``create_solver(iter_num=1)``
+Simpler and more focused alternative to ``create_solver(linear=True)``
 when the problem is known to be linear (e.g. linear elasticity).
 The returned function supports ``jax.grad`` via a custom VJP based on
 the adjoint method.
@@ -90,9 +91,10 @@ Parameters
 ----------
 - **problem** (*Problem*): The feax Problem instance.
 - **bc** (*DirichletBC*): Boundary conditions.
-- **solver_options** (*DirectSolverOptions or IterativeSolverOptions, optional*): Options for the forward linear solve (defaults to IterativeSolverOptions()).
-- **adjoint_solver_options** (*DirectSolverOptions or IterativeSolverOptions, optional*): Options for the adjoint solve used in the backward pass. Defaults to the same options as the forward solve.
+- **solver_options** (*DirectSolverOptions or KrylovSolverOptions, optional*): Options for the forward linear solve (defaults to KrylovSolverOptions()).
+- **adjoint_solver_options** (*DirectSolverOptions or KrylovSolverOptions, optional*): Options for the adjoint solve used in the backward pass. Defaults to the same options as the forward solve.
 - **internal_vars** (*InternalVars, optional*): Sample internal variables used to pre-warm cuDSS with concrete CSR structure before any JAX tracing. Recommended when using cuDSS and composing ``jax.jit`` with ``jax.grad``.
+- **symmetric_bc** (*bool, default True*): Use symmetric Dirichlet elimination (zero BC rows *and* columns). Linear FE operators are symmetric after symmetric elimination, so the Krylov adjoint reuses the forward matvec (``Jᵀ = J``).
 
 
 Returns
@@ -102,6 +104,12 @@ Returns
 
 Notes
 -----
+The operator representation follows the solve method: ``DirectSolverOptions``
+assembles the Jacobian straight into CSR (for factorization), while
+``KrylovSolverOptions`` (cg/bicgstab/gmres) is fully **matrix-free** — the
+forward and adjoint matvecs are residual JVPs, so the element Jacobian is
+never materialized.
+
 Forward pass performs a single linear solve:
 
 ```python

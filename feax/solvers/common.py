@@ -8,97 +8,7 @@ import jax.numpy as np
 from jax.experimental.sparse import BCOO
 
 from ..problem import MatrixView
-from .options import DirectSolverOptions, IterativeSolverOptions, SolverOptions
-
-
-# ---------------------------------------------------------------------------
-# Cached BCOO → CSR converter
-# ---------------------------------------------------------------------------
-# The sparsity *pattern* (indices) of the assembled Jacobian never changes
-# across solves — only the *values* change.  The default JAX path
-# ``BCSR.from_bcoo(A.sum_duplicates(nse=A.nse))`` performs a full
-# lexicographic sort + unique-detection every call, which shows up as a
-# ``sort`` + ``scatter`` + ``reduce_window`` chain in the XLA HLO.
-#
-# ``CachedBCOOToCSR`` caches the sort permutation, duplicate-summing
-# mapping, and the resulting CSR indptr/indices on the *first* call,
-# then re-uses them on subsequent calls — reducing the per-solve cost
-# from O(nnz·log nnz) to O(nnz).
-# ---------------------------------------------------------------------------
-
-class CachedBCOOToCSR:
-    """One-shot index analysis, repeated value-only conversion.
-
-    On the first call the full ``sum_duplicates`` + ``BCSR.from_bcoo``
-    path is executed with concrete arrays.  From that result we extract
-    a scatter mapping (``_target_indices``) that maps each raw BCOO data
-    entry to the correct position in the deduplicated CSR ``data`` array.
-
-    Subsequent calls only perform ``zeros().at[mapping].add(data)`` —
-    an O(nnz) operation with no sort.
-    """
-
-    def __init__(self):
-        self._target_indices = None   # raw BCOO data pos → CSR data pos
-        self._csr_indptr = None
-        self._csr_indices = None
-        self._nse_out = None
-
-    def _warmup(self, A: BCOO):
-        """Compute index mapping from raw BCOO entries to deduplicated CSR positions.
-
-        Uses JAX operations (searchsorted) instead of Python loops / numpy
-        so that this method is JIT-compatible and works when A.indices is a
-        traced array.
-        """
-        # 1. Deduplicate and convert to CSR to obtain the sparsity structure.
-        #    ``remove_zeros=False`` is critical: the sparsity pattern must be
-        #    determined by the (row, col) index set alone, not by which values
-        #    happen to be exactly zero at warmup time.  Otherwise positions
-        #    that are zero now but become nonzero later (e.g. von Karman
-        #    geometric-stiffness entries that vanish at the flat reference
-        #    state) would be missing from the cached CSR layout, and the
-        #    scatter-add step would route their values to the wrong slots.
-        A_dedup = A.sum_duplicates(nse=A.nse, remove_zeros=False)   # sorted unique (row, col) indices
-        bcsr = jax.experimental.sparse.BCSR.from_bcoo(A_dedup)
-        self._csr_indptr = bcsr.indptr
-        self._csr_indices = bcsr.indices
-        self._nse_out = int(bcsr.data.shape[0])  # static shape, always concrete
-
-        # 2. Build a mapping: for each raw entry k in A.data, find which
-        #    position in the deduplicated data array it maps to.
-        #
-        #    Encode each (row, col) pair as a single integer key so that
-        #    jnp.searchsorted can locate every raw entry in the sorted
-        #    dedup index array — no Python loops or onp.asarray needed.
-        n_cols = A.shape[1]
-        raw_keys  = A.indices[:, 0] * n_cols + A.indices[:, 1]   # (nnz_raw,)
-        dedup_keys = A_dedup.indices[:, 0] * n_cols + A_dedup.indices[:, 1]  # (nnz_dedup,), sorted
-
-        target = np.searchsorted(dedup_keys, raw_keys)  # (nnz_raw,)
-
-        # Validate: padding / out-of-range entries won't match any dedup key.
-        # Clamp first to avoid out-of-bounds indexing, then check equality.
-        safe = np.minimum(target, self._nse_out - 1)
-        matches = dedup_keys[safe] == raw_keys
-        self._target_indices = np.where(matches, target, self._nse_out)
-
-    def convert(self, A: BCOO):
-        """Return (csr_data, csr_indptr, csr_indices).
-
-        First call: full analysis (concrete).
-        Subsequent calls: value-only scatter (JIT-friendly).
-        """
-        if self._target_indices is None:
-            self._warmup(A)
-
-        # Scatter-add raw data into deduplicated positions.
-        # Extra slot at nse_out catches padding entries and is discarded.
-        data_out = np.zeros(self._nse_out + 1, dtype=A.data.dtype)
-        data_out = data_out.at[self._target_indices].add(A.data)
-        data_out = data_out[:self._nse_out]
-
-        return data_out, self._csr_indptr, self._csr_indices
+from .options import DirectSolverOptions, KrylovSolverOptions, SolverOptions
 
 
 def _safe_negate(x):
@@ -184,6 +94,24 @@ def create_jacobi_preconditioner(A: BCOO, shift: float = 1e-12):
     return matvec
 
 
+def _as_csr_triple(A):
+    """Return ``(csr_data, csr_indptr, csr_indices)`` for a direct backend.
+
+    Direct backends consume the deduplicated CSR produced by the CSR-direct
+    assembly path (:class:`feax.csr.CSRMatrix`, from
+    :func:`create_J_bc_csr_function` / :func:`create_J_bc_csr_parametric`), so no
+    conversion is needed.
+    """
+    from ..csr import CSRMatrix
+    if not isinstance(A, CSRMatrix):
+        raise TypeError(
+            "Direct solvers require a feax.csr.CSRMatrix (the CSR-direct "
+            f"assembly output), got {type(A).__name__}. Assemble the Jacobian "
+            "with create_J_bc_csr_function / create_J_bc_csr_parametric."
+        )
+    return A.data, A.indptr, A.indices
+
+
 def create_direct_solve_fn(
     options: DirectSolverOptions,
     *,
@@ -199,10 +127,8 @@ def create_direct_solve_fn(
 
     if solver == "spsolve":
         from .direct.spsolve import spsolve
-        _cache = CachedBCOOToCSR()
-
         def solve(A, b, x0=None):
-            csr_data, csr_offsets, csr_columns = _cache.convert(A)
+            csr_data, csr_offsets, csr_columns = _as_csr_triple(A)
             x = spsolve(
                 b_values=b,
                 csr_values=csr_data,
@@ -216,10 +142,8 @@ def create_direct_solve_fn(
 
     if solver == "umfpack":
         from .direct.umfpack import umfpack_solve
-        _cache = CachedBCOOToCSR()
-
         def solve(A, b, x0=None):
-            csr_data, csr_offsets, csr_columns = _cache.convert(A)
+            csr_data, csr_offsets, csr_columns = _as_csr_triple(A)
             x = umfpack_solve(
                 b_values=b,
                 csr_values=csr_data,
@@ -234,10 +158,8 @@ def create_direct_solve_fn(
 
     if solver == "cholmod":
         from .direct.cholmod import cholmod_solve
-        _cache = CachedBCOOToCSR()
-
         def solve(A, b, x0=None):
-            csr_data, csr_offsets, csr_columns = _cache.convert(A)
+            csr_data, csr_offsets, csr_columns = _as_csr_triple(A)
             x = cholmod_solve(
                 b_values=b,
                 csr_values=csr_data,
@@ -253,13 +175,12 @@ def create_direct_solve_fn(
 
     if solver == "cudss":
         from spineax.cudss.solver import CuDSSSolver
-        _cache = CachedBCOOToCSR()
         cudss_solver = None
         _actual_nnz = None
 
         def solve(A, b, x0=None):
             nonlocal cudss_solver, _actual_nnz
-            csr_data, csr_offsets, csr_columns = _cache.convert(A)
+            csr_data, csr_offsets, csr_columns = _as_csr_triple(A)
 
             if cudss_solver is None:
                 csr_offsets = csr_offsets.astype(np.int32)
@@ -289,11 +210,11 @@ def create_direct_solve_fn(
     )
 
 
-def create_iterative_solve_fn(options: IterativeSolverOptions):
+def create_iterative_solve_fn(options: KrylovSolverOptions):
     """Create an iterative linear solve function."""
     if options.solver == "auto":
         raise ValueError(
-            "IterativeSolverOptions.solver is 'auto' (unresolved). "
+            "KrylovSolverOptions.solver is 'auto' (unresolved). "
             "Call resolve_iterative_solver() before create_iterative_solve_fn()."
         )
 
@@ -358,7 +279,7 @@ def create_linear_solve_fn(
     if isinstance(solver_options, SolverOptions):
         raise RuntimeError(
             "SolverOptions has been removed. "
-            "Use DirectSolverOptions or IterativeSolverOptions."
+            "Use DirectSolverOptions or KrylovSolverOptions."
         )
 
     if isinstance(solver_options, DirectSolverOptions):
@@ -366,11 +287,11 @@ def create_linear_solve_fn(
             solver_options,
             cache_namespace=cache_namespace,
         )
-    if isinstance(solver_options, IterativeSolverOptions):
+    if isinstance(solver_options, KrylovSolverOptions):
         return create_iterative_solve_fn(solver_options)
     raise TypeError(
         "Unsupported solver option type. "
-        f"Expected DirectSolverOptions or IterativeSolverOptions, got {type(solver_options).__name__}."
+        f"Expected DirectSolverOptions or KrylovSolverOptions, got {type(solver_options).__name__}."
     )
 
 
@@ -417,6 +338,9 @@ def prewarm_direct_solvers(
 
 def _extract_sparse_diagonal(A):
     """Extract sparse matrix diagonal as dense vector."""
+    from ..csr import CSRMatrix
+    if isinstance(A, CSRMatrix):
+        return A.diagonal()
     n = A.shape[0]
     diagonal_mask = A.indices[:, 0] == A.indices[:, 1]
     diagonal_indices = np.where(diagonal_mask, A.indices[:, 0], n)

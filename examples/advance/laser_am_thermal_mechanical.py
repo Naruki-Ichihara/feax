@@ -9,7 +9,7 @@ Physics:
      (POWDER → LIQUID → SOLID based on liquidus temperature)
 
 Staggered scheme:
-  - Solve T at every time step  (linear, iter_num=1)
+  - Solve T at every time step  (linear, linear=True)
   - Solve u every ``MECH_INTERVAL`` thermal steps (nonlinear Newton)
 
 Internal variables for mechanics (quad-point tensors):
@@ -199,8 +199,8 @@ _init_thermal_iv = make_thermal_iv(
 )
 thermal_solver = fe.create_solver(
     thermal_problem, thermal_bc,
-    solver_options=fe.IterativeSolverOptions(solver='cg'),
-    iter_num=1,
+    solver_options=fe.KrylovSolverOptions(solver='cg'),
+    linear=True,
     internal_vars=_init_thermal_iv,
 )
 
@@ -284,7 +284,7 @@ _init_mech_iv = fe.InternalVars(
 
 mech_solver = fe.create_solver(
     mech_problem, mech_bc,
-    solver_options=fe.IterativeSolverOptions(solver='cg'),
+    solver_options=fe.KrylovSolverOptions(solver='cg'),
     internal_vars=_init_mech_iv,
 )
 

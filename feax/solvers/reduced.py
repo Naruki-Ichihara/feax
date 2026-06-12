@@ -8,29 +8,34 @@ import jax
 import jax.numpy as np
 
 from ..assembler import (
-    create_J_bc_parametric,
+    create_matfree_res_J_parametric,
     create_res_bc_parametric,
 )
 from ..DCboundary import DirichletBC
 from .common import _safe_negate, create_iterative_solve_fn
-from .options import IterativeSolverOptions, MatrixProperty, resolve_iterative_solver
+from .options import KrylovSolverOptions, MatrixProperty, resolve_iterative_solver
 
 
 def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options):
     """Create matrix-free reduced solver for periodic boundary conditions."""
 
-    if not isinstance(solver_options, IterativeSolverOptions):
+    if not isinstance(solver_options, KrylovSolverOptions):
         raise TypeError(
-            "Reduced solver requires IterativeSolverOptions for forward solve, "
+            "Reduced solver requires KrylovSolverOptions for forward solve, "
             f"got {type(solver_options).__name__}."
         )
-    if not isinstance(adjoint_solver_options, IterativeSolverOptions):
+    if not isinstance(adjoint_solver_options, KrylovSolverOptions):
         raise TypeError(
-            "Reduced solver requires IterativeSolverOptions for adjoint solve, "
+            "Reduced solver requires KrylovSolverOptions for adjoint solve, "
             f"got {type(adjoint_solver_options).__name__}."
         )
 
-    J_bc_parametric = create_J_bc_parametric(problem)
+    # The reduced problem is always Krylov and never extracts a preconditioner
+    # from the operator, so the BC-applied tangent is supplied matrix-free (a
+    # residual JVP) — no Jacobian assembly. Periodic problems are SPD after
+    # symmetric Dirichlet elimination, so the same matvec serves the adjoint
+    # (Jᵀ = J).
+    matfree_res_J = create_matfree_res_J_parametric(problem, symmetric=True)
     res_bc_parametric = create_res_bc_parametric(problem)
 
     _default_bc = bc
@@ -47,28 +52,16 @@ def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options
     else:
         adj_linear_solve_fn = create_iterative_solve_fn(resolved_adjoint_options)
 
-    def create_reduced_matvec_parametric(sol_full, internal_vars, effective_bc):
-        J_full = J_bc_parametric(sol_full, internal_vars, effective_bc)
-
-        def reduced_matvec(v_reduced):
-            v_full = P @ v_reduced
-            Jv_full = J_full @ v_full
-            Jv_reduced = P.T @ Jv_full
-            return Jv_reduced
-
-        return reduced_matvec
-
-    def compute_reduced_residual_parametric(sol_full, internal_vars, effective_bc):
-        res_full = res_bc_parametric(sol_full, internal_vars, effective_bc)
-        return P.T @ res_full
-
     def reduced_solve_fn(internal_vars, initial_guess_full, effective_bc):
-        res_reduced = compute_reduced_residual_parametric(
+        # One matfree pass returns the BC-applied residual and the tangent
+        # matvec (J_bc @ w via JVP); the reduced operator is Pᵀ J_bc P.
+        res_full, J_matvec = matfree_res_J(
             initial_guess_full, internal_vars, effective_bc
         )
-        J_reduced_matvec = create_reduced_matvec_parametric(
-            initial_guess_full, internal_vars, effective_bc
-        )
+        res_reduced = P.T @ res_full
+
+        def J_reduced_matvec(v_reduced):
+            return P.T @ J_matvec(P @ v_reduced)
 
         x0 = np.zeros(P.shape[1])
         sol_reduced = fwd_linear_solve_fn(J_reduced_matvec, -res_reduced, x0)
@@ -86,14 +79,13 @@ def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options
     def f_bwd(res, v):
         internal_vars, sol, initial_guess, effective_bc = res
 
-        # sol already includes initial_guess (total solution)
-        J_full = J_bc_parametric(sol, internal_vars, effective_bc)
+        # sol already includes initial_guess (total solution). Symmetric BC ⇒
+        # J_bc is symmetric ⇒ Jᵀ = J, so the forward matvec serves the adjoint.
+        _, J_matvec = matfree_res_J(sol, internal_vars, effective_bc)
         rhs_reduced = P.T @ v
 
         def adjoint_matvec(adjoint_reduced):
-            adjoint_full = P @ adjoint_reduced
-            Jt_adjoint_full = J_full.T @ adjoint_full
-            return P.T @ Jt_adjoint_full
+            return P.T @ J_matvec(P @ adjoint_reduced)
 
         x0_reduced = np.zeros_like(rhs_reduced)
         adjoint_reduced = adj_linear_solve_fn(adjoint_matvec, rhs_reduced, x0_reduced)

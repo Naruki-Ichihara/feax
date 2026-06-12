@@ -26,11 +26,6 @@ from feax.mechanics.cohesive import (
     compute_lumped_area_weights,
     exponential_potential,
 )
-from feax.solvers.matrix_free import (
-    LinearSolverOptions,
-    MatrixFreeOptions,
-    create_energy_fn,
-)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -308,9 +303,12 @@ interface = CohesiveInterface(
 
 
 # ============================================================
-# Energy functions
+# Energy functions and cohesive residual
 # ============================================================
-elastic_energy = create_energy_fn(problem)
+# Bulk elastic residual is assembled by feax from get_energy_density; the
+# cohesive interface adds r_coh = ∂Φ_coh/∂u as `extra_residual_fn` (matrix-free
+# tangent via jax.jvp). Scalar energies are kept for force / energy tracking.
+elastic_energy = fe.create_energy_fn(problem)
 cohesive_energy = interface.create_energy_fn(
     exponential_potential, Gamma=Gamma, sigma_c=sigma_c,
 )
@@ -318,6 +316,11 @@ cohesive_energy = interface.create_energy_fn(
 
 def total_energy(u_flat, delta_max):
     return elastic_energy(u_flat) + cohesive_energy(u_flat, delta_max)
+
+
+def cohesive_residual(u_flat, delta_max):
+    """Cohesive residual = ∂Φ_coh/∂u at fixed history δ_max."""
+    return jax.grad(lambda u: cohesive_energy(u, delta_max))(u_flat)
 
 
 # ============================================================
@@ -338,19 +341,23 @@ def make_bc(disp):
     return fe.DCboundary.DirichletBCConfig(specs).create_bc(problem)
 
 
-# Solver options and solver (created once, reused for all steps)
+# Solver (created once, reused for all steps). The cohesive history δ_max is a
+# quasi-static state variable updated between load steps; it flows into the
+# extra residual through a mutable holder so the solver need not be rebuilt.
 bc0 = make_bc(0.0)
-solver_options = MatrixFreeOptions(
-    newton_tol=1e-8,
-    newton_max_iter=200,
-    linear_solver=LinearSolverOptions(solver='cg', atol=1e-8, maxiter=200),
-    verbose=True,
-)
+history = {'delta_max': np.zeros(interface.n_nodes)}
+
 solver = fe.create_solver(
     problem, bc0,
-    solver_options=solver_options,
-    energy_fn=total_energy,
+    solver_options=fe.KrylovSolverOptions(
+        solver='cg', atol=1e-8, maxiter=200,
+        use_jacobi_preconditioner=True, verbose=True,
+    ),
+    newton_options=fe.NewtonOptions(tol=1e-8, max_iter=200),
+    extra_residual_fn=lambda u: cohesive_residual(u, history['delta_max']),
+    linear=False,
 )
+EMPTY_IV = fe.InternalVars()  # bulk elasticity carries no internal variables
 
 
 # ============================================================
@@ -401,7 +408,8 @@ for step in range(1, n_steps + 1):
     # Apply BC values to initial guess, then solve
     bc = make_bc(disp)
     u_flat = u_flat.at[bc.bc_rows].set(bc.bc_vals)
-    u_flat = solver(delta_max, u_flat)
+    history['delta_max'] = delta_max
+    u_flat = solver(EMPTY_IV, u_flat, bc=bc)
 
     delta_current = interface.get_opening(u_flat)
     delta_max = np.maximum(delta_max, delta_current)

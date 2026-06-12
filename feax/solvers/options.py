@@ -197,8 +197,10 @@ def detect_matrix_property(A, sym_tol: float = 1e-8, matrix_view=None) -> Matrix
 
     Parameters
     ----------
-    A : BCOO sparse matrix
-        The assembled system matrix.
+    A : BCOO sparse matrix or feax.csr.CSRMatrix
+        The assembled system matrix. Both the legacy BCOO Jacobian and the
+        CSR-direct :class:`~feax.csr.CSRMatrix` are accepted (the symmetry check
+        uses ``A @ x`` / ``A.T @ x``, supported by both).
     sym_tol : float, default 1e-8
         Relative tolerance for the symmetry check.
     matrix_view : MatrixView, optional
@@ -240,10 +242,15 @@ def detect_matrix_property(A, sym_tol: float = 1e-8, matrix_view=None) -> Matrix
 
     # --- SPD heuristic: diagonal positivity ---
     n = A.shape[0]
-    diag_mask = A.indices[:, 0] == A.indices[:, 1]
-    diag_idx = np.where(diag_mask, A.indices[:, 0], n)
-    diag_val = np.where(diag_mask, A.data, 0.0)
-    diag = np.zeros(n, dtype=A.dtype).at[diag_idx].add(diag_val)
+    from ..csr import CSRMatrix
+    if isinstance(A, CSRMatrix):
+        diag = A.diagonal()
+    else:
+        # BCOO: 2-D (row, col) indices.
+        diag_mask = A.indices[:, 0] == A.indices[:, 1]
+        diag_idx = np.where(diag_mask, A.indices[:, 0], n)
+        diag_val = np.where(diag_mask, A.data, 0.0)
+        diag = np.zeros(n, dtype=A.dtype).at[diag_idx].add(diag_val)
     is_diag_positive = bool(np.all(diag > 0))
 
     if is_diag_positive:
@@ -439,7 +446,7 @@ class AbstractSolverOptions:
     """Base class for all solver option types.
 
     Common parameters shared by DirectSolverOptions,
-    IterativeSolverOptions, and SolverOptions.
+    KrylovSolverOptions, and SolverOptions.
 
     Parameters
     ----------
@@ -478,9 +485,6 @@ class NewtonOptions:
         Armijo sufficient decrease constant.
     line_search_rho : float, default 0.5
         Backtracking shrink factor (alpha *= rho).
-    internal_jit : bool, default False
-        JIT-compile the internal linear solve used inside Newton iterations.
-        Ignored for ``iter_num == 1`` (linear-only path).
     raise_on_line_search_failure : bool, default True
         Raise :class:`NewtonLineSearchError` when the Armijo backtracking
         exhausts ``line_search_max_backtracks`` without finding a descent
@@ -488,8 +492,8 @@ class NewtonOptions:
         the proposed Newton direction is not a descent direction — almost
         always a sign of a bug elsewhere (e.g. an inconsistent Jacobian
         or a wrong linear-solve result), so failing loudly is the safer
-        default.  Only used by the Python-loop Newton path; the JAX-
-        traced loops cannot raise from within ``while_loop``/``fori_loop``.
+        default.  Enforced by the unified callback Newton solver (the
+        iteration runs as a host loop, so the error surfaces normally).
     """
 
     tol: float = 1e-6
@@ -498,8 +502,6 @@ class NewtonOptions:
     line_search_max_backtracks: int = 30
     line_search_c1: float = 1e-4
     line_search_rho: float = 0.5
-    internal_jit: bool = False
-    make_jittable: bool = False
     raise_on_line_search_failure: bool = True
 
 
@@ -514,7 +516,7 @@ class SolverOptions(AbstractSolverOptions):
     Use the new option classes instead:
 
     - ``DirectSolverOptions`` for direct linear solvers
-    - ``IterativeSolverOptions`` for iterative linear solvers
+    - ``KrylovSolverOptions`` for iterative linear solvers
 
     Newton/mode-specific options are being migrated separately.
 
@@ -574,7 +576,7 @@ class SolverOptions(AbstractSolverOptions):
     def __post_init__(self):
         raise RuntimeError(
             "SolverOptions has been removed. "
-            "Migrate to DirectSolverOptions or IterativeSolverOptions."
+            "Migrate to DirectSolverOptions or KrylovSolverOptions."
         )
 
 
@@ -768,7 +770,7 @@ def resolve_direct_solver(
 # ============================================================================
 
 @dataclass(frozen=True)
-class IterativeSolverOptions(AbstractSolverOptions):
+class KrylovSolverOptions(AbstractSolverOptions):
     """Configuration for iterative linear solvers (cg, bicgstab, gmres).
 
     Parameters
@@ -822,9 +824,9 @@ class IterativeSolverOptions(AbstractSolverOptions):
         return True
 
 def resolve_iterative_solver(
-    options: IterativeSolverOptions,
+    options: KrylovSolverOptions,
     matrix_property: MatrixProperty,
-) -> IterativeSolverOptions:
+) -> KrylovSolverOptions:
     """Resolve "auto" to a concrete iterative solver based on matrix property.
 
     Selection mapping::
@@ -835,14 +837,14 @@ def resolve_iterative_solver(
 
     Parameters
     ----------
-    options : IterativeSolverOptions
+    options : KrylovSolverOptions
         Options with solver possibly set to "auto".
     matrix_property : MatrixProperty
         Detected matrix property (SPD, SYMMETRIC, GENERAL).
 
     Returns
     -------
-    IterativeSolverOptions
+    KrylovSolverOptions
         Options with solver resolved to a concrete algorithm.
         If solver != "auto", returns the input unchanged.
     """
@@ -856,7 +858,7 @@ def resolve_iterative_solver(
     }
     solver_name = mp_to_solver[matrix_property]
 
-    resolved = IterativeSolverOptions(
+    resolved = KrylovSolverOptions(
         solver=solver_name,
         tol=options.tol,
         atol=options.atol,

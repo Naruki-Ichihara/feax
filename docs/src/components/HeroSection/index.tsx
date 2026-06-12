@@ -17,12 +17,11 @@ export default function HeroSection(): ReactNode {
         FEAX
       </Heading>
       <p className={styles.heroSubtitle}>
-        A fully differentiable finite element engine built on{' '}
+        A simulation node in your{' '}
         <a href="https://github.com/google/jax" target="_blank" rel="noopener noreferrer">
           JAX
         </a>
-        , designed for gradient-based optimization and machine learning
-        on PDE simulations.
+        {' '}workflow.
       </p>
       <div className={styles.buttons}>
         <Link

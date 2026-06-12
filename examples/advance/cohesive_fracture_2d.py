@@ -1,9 +1,12 @@
-"""Cohesive zone fracture in 2D (Mode I) — Fully matrix-free Newton solver.
+"""Cohesive zone fracture in 2D (Mode I) — hybrid matrix-free Newton-Krylov.
 
-Demonstrates fully matrix-free Newton fracture simulation:
-  - Bulk: 2D plane strain elasticity (QUAD4, energy density via feax)
-  - Interface: exponential cohesive law (pure JAX)
-  - Solver: feax.create_solver with MatrixFreeOptions (JVP-based tangent)
+Demonstrates fracture simulation in the residual paradigm:
+  - Bulk: 2D plane strain elasticity (QUAD4); feax assembles the residual /
+    bulk Jacobian from ``get_energy_density`` (tensor_map = ∂ψ/∂∇u).
+  - Interface: exponential cohesive law (pure JAX), supplied as an
+    ``extra_residual_fn`` (its tangent is applied matrix-free via ``jax.jvp``).
+  - Solver: ``feax.create_solver(..., extra_residual_fn=...)`` with
+    ``KrylovSolverOptions`` (hybrid: sparse bulk Jacobian + JVP cohesive tangent).
 
 The mesh is split along y=0 to create a cohesive interface.
 A pre-crack extends from x=0 to x=a (free surfaces).
@@ -13,6 +16,7 @@ Mode I loading is applied via prescribed displacement at top/bottom.
 import logging
 import os
 
+import jax
 import jax.numpy as np
 import numpy as onp
 
@@ -21,11 +25,6 @@ from feax.mechanics.cohesive import (
     CohesiveInterface,
     compute_trapezoidal_weights,
     exponential_potential,
-)
-from feax.solvers.matrix_free import (
-    LinearSolverOptions,
-    MatrixFreeOptions,
-    create_energy_fn,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -236,17 +235,20 @@ interface = CohesiveInterface.from_axis(
 
 
 # ============================================================
-# Energy functions
+# Cohesive residual (extra residual contribution)
 # ============================================================
-elastic_energy = create_energy_fn(problem)
+# The bulk elastic residual is assembled by feax from get_energy_density.
+# The cohesive interface contributes an additional residual r_coh = ∂Φ_coh/∂u,
+# fed to the solver as `extra_residual_fn` — its tangent is applied
+# matrix-free (jax.jvp) inside the hybrid Newton-Krylov iteration.
 cohesive_energy = interface.create_energy_fn(
     exponential_potential, Gamma=Gamma, sigma_c=sigma_c,
 )
 
 
-def total_energy(u_flat, delta_max):
-    """Total potential energy = elastic + cohesive."""
-    return elastic_energy(u_flat) + cohesive_energy(u_flat, delta_max)
+def cohesive_residual(u_flat, delta_max):
+    """Cohesive residual = ∂Φ_coh/∂u at fixed history δ_max."""
+    return jax.grad(lambda u: cohesive_energy(u, delta_max))(u_flat)
 
 
 # ============================================================
@@ -262,19 +264,24 @@ def make_bc(disp):
     return fe.DCboundary.DirichletBCConfig(specs).create_bc(problem)
 
 
-# Solver options and solver (created once, reused for all steps)
+# Solver (created once, reused for all steps). The cohesive history δ_max is a
+# quasi-static state variable updated between load steps; it flows into the
+# extra residual through a mutable holder so the solver need not be rebuilt
+# (the hybrid Newton loop re-traces the extra residual each solve).
 bc0 = make_bc(0.0)
-solver_options = MatrixFreeOptions(
-    newton_tol=1e-6,
-    newton_max_iter=1000,
-    linear_solver=LinearSolverOptions(solver='cg', atol=1e-8, maxiter=200),
-    verbose=True,
-)
+history = {'delta_max': np.zeros(interface.n_nodes)}
+
 solver = fe.create_solver(
     problem, bc0,
-    solver_options=solver_options,
-    energy_fn=total_energy,
+    solver_options=fe.KrylovSolverOptions(
+        solver='cg', atol=1e-8, maxiter=200,
+        use_jacobi_preconditioner=True, verbose=True,
+    ),
+    newton_options=fe.NewtonOptions(tol=1e-6, max_iter=1000),
+    extra_residual_fn=lambda u: cohesive_residual(u, history['delta_max']),
+    linear=False,
 )
+EMPTY_IV = fe.InternalVars()  # bulk elasticity carries no internal variables
 
 
 # ============================================================
@@ -311,10 +318,12 @@ delta_max = np.zeros(interface.n_nodes)
 for step in range(1, n_steps + 1):
     disp = max_disp * step / n_steps
 
-    # Apply BC values to initial guess, then solve
+    # Apply BC values to initial guess, then solve. Symmetric elimination keeps
+    # the prescribed DOFs fixed at the initial-guess values during Newton.
     bc = make_bc(disp)
     u_flat = u_flat.at[bc.bc_rows].set(bc.bc_vals)
-    u_flat = solver(delta_max, u_flat)
+    history['delta_max'] = delta_max
+    u_flat = solver(EMPTY_IV, u_flat, bc=bc)
 
     # Update state variables
     delta_current = interface.get_opening(u_flat)

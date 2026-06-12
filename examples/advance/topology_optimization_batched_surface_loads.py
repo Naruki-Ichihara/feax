@@ -284,7 +284,7 @@ def main():
         bc=bc,
         solver_options=solver_options,
         adjoint_solver_options=solver_options,
-        iter_num=1,
+        linear=True,
         internal_vars=sample_internal_vars,
     )
 

@@ -114,7 +114,7 @@ class CantileverPipeline(Pipeline):
         self._solver = fe.create_solver(
             problem, bc, solver_options=solver_opts,
             adjoint_solver_options=solver_opts,
-            iter_num=1, internal_vars=sample_iv)
+            linear=True, internal_vars=sample_iv)
 
     def objective(self, rho, beta=1.0):
         rho_f = self._filter_fn(rho)
@@ -323,7 +323,7 @@ class CantileverPipeline(Pipeline):
         self._solver = fe.create_solver(
             problem, bc, solver_options=solver_opts,
             adjoint_solver_options=solver_opts,
-            iter_num=1, internal_vars=sample_iv)
+            linear=True, internal_vars=sample_iv)
 
     def objective(self, rho, beta=1.0):
         rho_f = self._filter_fn(rho)

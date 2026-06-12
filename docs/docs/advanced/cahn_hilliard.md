@@ -138,12 +138,12 @@ class CahnHilliardPipeline(ImplicitPipeline):
         self._c0 = 0.63 + 0.02 * (
             0.5 - random.uniform(random.PRNGKey(42), shape=(num_nodes, 1)))
 
-        solver_opts = fe.IterativeSolverOptions(
+        solver_opts = fe.KrylovSolverOptions(
             solver='auto', tol=1e-10, atol=1e-10,
             maxiter=10000, use_jacobi_preconditioner=True,
         )
         newton_opts = fe.NewtonOptions(
-            tol=1e-6, rel_tol=1e-8, max_iter=25, internal_jit=True,
+            tol=1e-6, rel_tol=1e-8, max_iter=25,
         )
         self.solver = fe.create_solver(
             self.problem, bc,
@@ -215,7 +215,7 @@ result = run(
 The Cahn-Hilliard Jacobian is a $2 \times 2$ block system (coupling $c$ and $\mu$). It is indefinite and non-symmetric, so CG is not applicable. The auto-selection picks `bicgstab` or `gmres` based on matrix property detection:
 
 ```python
-solver_opts = fe.IterativeSolverOptions(
+solver_opts = fe.KrylovSolverOptions(
     solver='auto',
     tol=1e-10, atol=1e-10,
     maxiter=10000,
@@ -231,11 +231,9 @@ The nonlinear system arising from backward Euler + the nonlinear $df/dc$ term is
 
 ```python
 newton_opts = fe.NewtonOptions(
-    tol=1e-6, rel_tol=1e-8, max_iter=25, internal_jit=True,
+    tol=1e-6, rel_tol=1e-8, max_iter=25,
 )
 ```
-
-`internal_jit=True` compiles each Newton component (residual, Jacobian, linear solve) individually, avoiding monolithic compilation overhead.
 
 ## Running the Example
 

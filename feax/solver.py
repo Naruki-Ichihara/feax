@@ -9,7 +9,7 @@ Key Features:
 - Newton-Raphson solvers with line search and convergence control
 - Multiple solver variants: while loop, fixed iterations, and Python debugging
 - Solver configuration via AbstractSolverOptions hierarchy
-  (DirectSolverOptions, IterativeSolverOptions, or legacy SolverOptions)
+  (DirectSolverOptions, KrylovSolverOptions, or legacy SolverOptions)
 - Support for multipoint constraints via prolongation matrices
 
 Linear/backward/newton/reduced implementations live under ``solvers/``.
@@ -20,15 +20,11 @@ from typing import Callable, Optional
 
 from jax.experimental.sparse import BCOO
 
-from .assembler import create_J_bc_function
+from .assembler import create_J_bc_csr_function
 from .DCboundary import DirichletBC
 from .problem import Problem
 from .solvers.linear import (
     create_linear_solver,
-)
-from .solvers.matrix_free import (
-    MatrixFreeOptions,
-    create_matrix_free_solver,
 )
 from .solvers.newton import (
     create_newton_solver,
@@ -36,7 +32,7 @@ from .solvers.newton import (
 from .solvers.options import (
     AbstractSolverOptions,
     DirectSolverOptions,
-    IterativeSolverOptions,
+    KrylovSolverOptions,
     NewtonOptions,
     SolverOptions,
     detect_matrix_property,
@@ -54,11 +50,10 @@ def create_solver(
     solver_options: Optional[AbstractSolverOptions] = None,
     adjoint_solver_options: Optional[AbstractSolverOptions] = None,
     newton_options: Optional[NewtonOptions] = None,
-    iter_num: Optional[int] = None,
+    linear: bool = False,
     P: Optional[BCOO] = None,
     internal_vars=None,
     extra_residual_fn: Optional[Callable] = None,
-    energy_fn: Optional[Callable] = None,
     symmetric_bc: bool = True,
 ) -> Callable:
     """Create a differentiable solver with custom VJP for gradient computation.
@@ -74,26 +69,31 @@ def create_solver(
         ``AbstractSolverOptions``:
 
         - ``DirectSolverOptions``: Direct solvers (cudss, cholmod, umfpack, spsolve).
-        - ``IterativeSolverOptions``: Iterative solvers (cg, bicgstab, gmres).
+        - ``KrylovSolverOptions``: Iterative solvers (cg, bicgstab, gmres).
         When ``solver="auto"`` (or when ``solver_options`` is ``None``), the
         algorithm is selected automatically by assembling the initial Jacobian
         and calling ``detect_matrix_property``.
         If not specified, defaults to ``DirectSolverOptions(solver="auto")``,
         which selects the best available direct solver (cuDSS on GPU,
-        cholmod/umfpack/spsolve on CPU). Use ``IterativeSolverOptions``
+        cholmod/umfpack/spsolve on CPU). Use ``KrylovSolverOptions``
         explicitly when a direct solver is too memory-intensive.
     adjoint_solver_options : AbstractSolverOptions, optional
         Options for the adjoint solve in the backward pass.
         Defaults to same as ``solver_options``.
     newton_options : NewtonOptions, optional
         Newton-specific nonlinear controls (tolerances and line search).
-        Only used when ``iter_num != 1``.
-    iter_num : int, optional
-        Number of Newton iterations:
+        Only used for the nonlinear path (``linear=False``).
+    linear : bool, default False
+        Selects the solve path:
 
-        - ``None``: Adaptive Newton solve with while loop (NOT vmappable).
-        - ``1``: Single linear solve (vmappable). Recommended for linear problems.
-        - ``>1``: Fixed-iteration Newton solve (vmappable).
+        - ``False`` (default): Adaptive nonlinear Newton solve (iterates to
+          ``newton_options.tol`` / ``rel_tol``, capped at ``max_iter``).
+        - ``True``: Single linear solve. Recommended for linear problems
+          (e.g. linear elasticity, steady diffusion).
+
+        Both paths are differentiable and compose with ``jax.jit`` / ``jax.vmap``
+        (the Newton forward runs as a host loop inside a single ``pure_callback``;
+        batched solves use a block-diagonal direct solve).
     P : BCOO matrix, optional
         Prolongation matrix for periodic boundary conditions.
     internal_vars : InternalVars, optional
@@ -104,7 +104,7 @@ def create_solver(
         Combined with feax's bulk residual via hybrid matrix-free Newton-Krylov:
         the bulk Jacobian is assembled (sparse), while the extra contribution's
         Jacobian-vector product is computed via ``jax.jvp`` (forward-mode AD).
-        Requires ``IterativeSolverOptions`` and ``iter_num != 1`` (Newton path).
+        Requires ``KrylovSolverOptions`` and the nonlinear path (``linear=False``).
     symmetric_bc : bool, default True
         Controls how Dirichlet BCs are applied to the Jacobian matrix.
 
@@ -144,7 +144,7 @@ def create_solver(
         When ``DirectSolverOptions`` is used:
             ``solver(internal_vars) -> solution``
             (``initial_guess`` is optional and ignored if provided.)
-        When ``IterativeSolverOptions`` is used:
+        When ``KrylovSolverOptions`` is used:
             ``solver(internal_vars, initial_guess, bc=None) -> solution``
 
         The optional ``bc`` parameter accepts a
@@ -157,24 +157,24 @@ def create_solver(
     --------
     >>> # Direct solver (auto-selects cuDSS on GPU, spsolve on CPU)
     >>> solver = create_solver(problem, bc, solver_options=DirectSolverOptions(),
-    ...                        iter_num=1, internal_vars=internal_vars)
+    ...                        linear=True, internal_vars=internal_vars)
     >>> solution = solver(internal_vars)
     >>>
     >>> # Iterative solver with auto selection
-    >>> solver = create_solver(problem, bc, solver_options=IterativeSolverOptions(),
-    ...                        iter_num=1, internal_vars=internal_vars)
+    >>> solver = create_solver(problem, bc, solver_options=KrylovSolverOptions(),
+    ...                        linear=True, internal_vars=internal_vars)
     >>> solution = solver(internal_vars, initial_guess)
     >>>
     >>> # Explicit solver selection (no internal_vars needed for non-cuDSS)
-    >>> solver = create_solver(problem, bc, solver_options=IterativeSolverOptions(solver="gmres"),
-    ...                        iter_num=1)
+    >>> solver = create_solver(problem, bc, solver_options=KrylovSolverOptions(solver="gmres"),
+    ...                        linear=True)
     >>> solution = solver(internal_vars, initial_guess)
     >>>
     >>> # Incremental loading with non-symmetric BC elimination
     >>> solver = create_solver(problem, bc,
     ...                        solver_options=DirectSolverOptions(solver="spsolve"),
     ...                        newton_options=NewtonOptions(tol=1e-6, max_iter=20),
-    ...                        iter_num=None, symmetric_bc=False,
+    ...                        symmetric_bc=False,
     ...                        internal_vars=internal_vars)
     >>> sol = zero_like_initial_guess(problem, bc)
     >>> for step in range(1, num_steps + 1):
@@ -188,26 +188,19 @@ def create_solver(
     if isinstance(linear_options, SolverOptions) or isinstance(adjoint_linear_options, SolverOptions):
         raise RuntimeError(
             "SolverOptions has been removed. "
-            "Use DirectSolverOptions or IterativeSolverOptions."
-        )
-
-    # Validate energy_fn constraints
-    if energy_fn is not None and not isinstance(linear_options, MatrixFreeOptions):
-        raise ValueError(
-            "energy_fn is only supported with MatrixFreeOptions. "
-            "Pass solver_options=MatrixFreeOptions(...) to use a custom energy function."
+            "Use DirectSolverOptions or KrylovSolverOptions."
         )
 
     # Validate extra_residual_fn constraints
     if extra_residual_fn is not None:
-        if iter_num == 1:
+        if linear:
             raise ValueError(
-                "extra_residual_fn requires Newton solver (iter_num != 1). "
+                "extra_residual_fn requires the nonlinear Newton solver (linear=False). "
                 "The hybrid matrix-free approach needs iterative Newton updates."
             )
         if isinstance(linear_options, DirectSolverOptions):
             raise ValueError(
-                "extra_residual_fn requires IterativeSolverOptions. "
+                "extra_residual_fn requires KrylovSolverOptions. "
                 "The hybrid Jacobian is a callable matvec, not a sparse matrix."
             )
         if P is not None:
@@ -219,45 +212,23 @@ def create_solver(
     # 1) Reduced path (matrix-free, requires iterative options)
     if P is not None:
         if linear_options is None:
-            linear_options = IterativeSolverOptions()
+            linear_options = KrylovSolverOptions()
         if adjoint_linear_options is None:
             adjoint_linear_options = linear_options
 
-        if not isinstance(linear_options, IterativeSolverOptions):
+        if not isinstance(linear_options, KrylovSolverOptions):
             raise ValueError(
-                "solver_options must be IterativeSolverOptions when P (prolongation matrix) "
+                "solver_options must be KrylovSolverOptions when P (prolongation matrix) "
                 f"is provided, got {type(linear_options).__name__}. "
                 "The reduced problem is matrix-free and only supports iterative solvers "
                 "(cg, bicgstab, gmres)."
             )
-        if not isinstance(adjoint_linear_options, IterativeSolverOptions):
+        if not isinstance(adjoint_linear_options, KrylovSolverOptions):
             raise ValueError(
-                "adjoint_solver_options must be IterativeSolverOptions when P is provided, "
+                "adjoint_solver_options must be KrylovSolverOptions when P is provided, "
                 f"got {type(adjoint_linear_options).__name__}."
             )
         return create_reduced_solver(problem, bc, P, linear_options, adjoint_linear_options)
-
-    # 2) Matrix-free path (energy-based, JVP tangent)
-    if isinstance(linear_options, MatrixFreeOptions):
-        if iter_num == 1:
-            raise ValueError(
-                "MatrixFreeOptions requires nonlinear Newton solve (iter_num != 1). "
-                "The matrix-free solver always performs a full Newton iteration."
-            )
-        if newton_options is not None:
-            import warnings as _warnings
-            _warnings.warn(
-                "[feax] newton_options is ignored when MatrixFreeOptions is used. "
-                "Configure Newton tolerances via MatrixFreeOptions(newton_tol=..., newton_max_iter=...).",
-                UserWarning,
-                stacklevel=2,
-            )
-        return create_matrix_free_solver(
-            problem=problem,
-            bc=bc,
-            options=linear_options,
-            energy_fn=energy_fn,
-        )
 
     # Non-reduced paths (Newton / linear): normalize missing options.
     # Default to DirectSolverOptions (direct solvers are preferred for
@@ -282,27 +253,26 @@ def create_solver(
             raise ValueError(
                 "internal_vars is required when solver_options is None or has solver='auto'. "
                 "Pass a sample InternalVars to enable automatic matrix property detection, "
-                "or specify the solver explicitly (e.g. IterativeSolverOptions(solver='cg'))."
+                "or specify the solver explicitly (e.g. KrylovSolverOptions(solver='cg'))."
             )
 
-    if not isinstance(linear_options, (DirectSolverOptions, IterativeSolverOptions, MatrixFreeOptions)):
+    if not isinstance(linear_options, (DirectSolverOptions, KrylovSolverOptions)):
         raise TypeError(
             "Unsupported solver_options type. "
-            f"Expected DirectSolverOptions, IterativeSolverOptions, or MatrixFreeOptions, got {type(linear_options).__name__}."
+            f"Expected DirectSolverOptions or KrylovSolverOptions, got {type(linear_options).__name__}."
         )
-    if not isinstance(adjoint_linear_options, (DirectSolverOptions, IterativeSolverOptions, MatrixFreeOptions)):
+    if not isinstance(adjoint_linear_options, (DirectSolverOptions, KrylovSolverOptions)):
         raise TypeError(
             "Unsupported adjoint_solver_options type. "
-            f"Expected DirectSolverOptions, IterativeSolverOptions, or MatrixFreeOptions, got {type(adjoint_linear_options).__name__}."
+            f"Expected DirectSolverOptions or KrylovSolverOptions, got {type(adjoint_linear_options).__name__}."
         )
 
-    J_bc_func = create_J_bc_function(problem, bc, symmetric=symmetric_bc)
-
-    # Assemble sample Jacobian and resolve "auto" only when needed.
+    # Assemble sample Jacobian (CSR-direct) and resolve "auto" only when needed.
     if _needs_auto:
         from .utils import zero_like_initial_guess
+        J_bc_csr_func = create_J_bc_csr_function(problem, bc, symmetric=symmetric_bc)
         _initial_tmp = zero_like_initial_guess(problem, bc)
-        _sample_J = J_bc_func(_initial_tmp, internal_vars)
+        _sample_J = J_bc_csr_func(_initial_tmp, internal_vars)
         _mp = detect_matrix_property(_sample_J, matrix_view=problem.matrix_view)
         from .solvers.options import detect_backend
         _backend = detect_backend()
@@ -325,32 +295,8 @@ def create_solver(
                 adjoint_linear_options = resolve_iterative_solver(adjoint_linear_options, _mp)
             print(f"[feax] Auto adjoint solver ({_category}): backend={_backend.name}, matrix_property={_mp.name} -> {adjoint_linear_options.solver}")
 
-    # 2) Newton path
-    if iter_num != 1:
-        return create_newton_solver(
-            problem=problem,
-            bc=bc,
-            linear_options=linear_options,
-            adjoint_linear_options=adjoint_linear_options,
-            iter_num=iter_num,
-            newton_options=newton_options,
-            internal_vars=internal_vars,
-            extra_residual_fn=extra_residual_fn,
-            symmetric_bc=symmetric_bc,
-        )
-
-    # 3) Linear path (iter_num == 1)
-    if iter_num == 1:
-        if newton_options is not None and newton_options.internal_jit:
-            import warnings as _warnings
-            _warnings.warn(
-                "[feax] newton_options.internal_jit=True is ignored when iter_num=1: "
-                "the linear solver is called only once per solve and "
-                "internal JIT provides no benefit. "
-                "Use jax.jit(solver) to JIT the entire solve instead.",
-                UserWarning,
-                stacklevel=2,
-            )
+    # 2) Linear path (single linear solve)
+    if linear:
         return create_linear_solver(
             problem=problem,
             bc=bc,
@@ -358,3 +304,15 @@ def create_solver(
             adjoint_solver_options=adjoint_linear_options,
             internal_vars=internal_vars,
         )
+
+    # 3) Nonlinear Newton path
+    return create_newton_solver(
+        problem=problem,
+        bc=bc,
+        linear_options=linear_options,
+        adjoint_linear_options=adjoint_linear_options,
+        newton_options=newton_options,
+        internal_vars=internal_vars,
+        extra_residual_fn=extra_residual_fn,
+        symmetric_bc=symmetric_bc,
+    )

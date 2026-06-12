@@ -550,7 +550,7 @@ def mindlin_weak_form(
     nonlinear : {"linear", "von_karman"}
         Strain measure (see :func:`mindlin_strains`). ``"von_karman"``
         makes the residual cubic in ``w`` and requires Newton iteration
-        (``iter_num != 1`` when calling :func:`feax.create_solver`).
+        (``linear=False`` when calling :func:`feax.create_solver`).
 
     Returns
     -------
@@ -662,7 +662,7 @@ def make_mindlin_plate(
         Gaussian quadrature order; ``None`` lets feax choose per element.
     nonlinear : {"linear", "von_karman"}
         Strain measure. ``"von_karman"`` requires a Newton solve
-        (``iter_num != 1`` in :func:`feax.create_solver`).
+        (``linear=False`` in :func:`feax.create_solver`).
     B : (2,2,2,2) array, optional
         Membrane–bending coupling stiffness for an asymmetric laminate.
         Defaults to ``None`` (uncoupled, symmetric plate).

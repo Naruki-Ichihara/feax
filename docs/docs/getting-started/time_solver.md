@@ -37,7 +37,7 @@ class HeatPipeline(ImplicitPipeline):
         bc = fe.DirichletBCConfig([...]).create_bc(self.problem)
         self.solver = fe.create_solver(self.problem, bc,
             solver_options=fe.DirectSolverOptions(),
-            iter_num=1, internal_vars=fe.InternalVars(volume_vars=(T0,)))
+            linear=True, internal_vars=fe.InternalVars(volume_vars=(T0,)))
 
     def initial_state(self):
         return T0_flat  # flat solution vector

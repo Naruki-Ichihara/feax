@@ -2,9 +2,9 @@
 
 Validates that analytic gradients (via custom VJP / implicit function theorem)
 match central finite differences for boundary condition values across:
-- Linear solver (iter_num=1)
-- Newton solver with fori_loop (make_jittable=True)
-- Newton solver with Python loop (make_jittable=False)
+- Linear solver (linear=True)
+- Newton solver with fori_loop ()
+- Newton solver with Python loop ()
 """
 
 import jax
@@ -78,12 +78,12 @@ def _check_grad(loss_fn, bc_vals, rtol=1e-4):
 
 @pytest.mark.cpu
 def test_bc_grad_linear(elastic_setup):
-    """Linear solver (iter_num=1): grad w.r.t. bc_vals matches FD."""
+    """Linear solver (linear=True): grad w.r.t. bc_vals matches FD."""
     problem, bc, iv, bc1, initial = elastic_setup
     solver = fe.create_solver(
         problem, bc,
-        solver_options=fe.IterativeSolverOptions(solver='cg'),
-        iter_num=1, internal_vars=iv,
+        solver_options=fe.KrylovSolverOptions(solver='cg'),
+        linear=True, internal_vars=iv,
     )
 
     def loss(bc_vals_arg):
@@ -98,13 +98,13 @@ def test_bc_grad_linear(elastic_setup):
 
 @pytest.mark.cpu
 def test_bc_grad_newton_jittable(elastic_setup):
-    """Newton fori_loop (make_jittable=True): grad w.r.t. bc_vals matches FD."""
+    """Newton fori_loop (): grad w.r.t. bc_vals matches FD."""
     problem, bc, iv, bc1, initial = elastic_setup
     solver = fe.create_solver(
         problem, bc,
-        solver_options=fe.IterativeSolverOptions(solver='cg'),
-        iter_num=3, internal_vars=iv,
-        newton_options=NewtonOptions(make_jittable=True),
+        solver_options=fe.KrylovSolverOptions(solver='cg'),
+        linear=False, internal_vars=iv,
+        newton_options=NewtonOptions(),
     )
 
     def loss(bc_vals_arg):
@@ -119,13 +119,13 @@ def test_bc_grad_newton_jittable(elastic_setup):
 
 @pytest.mark.cpu
 def test_bc_grad_newton_python_loop(elastic_setup):
-    """Newton Python loop (make_jittable=False): grad w.r.t. bc_vals matches FD."""
+    """Newton Python loop (): grad w.r.t. bc_vals matches FD."""
     problem, bc, iv, bc1, initial = elastic_setup
     solver = fe.create_solver(
         problem, bc,
-        solver_options=fe.IterativeSolverOptions(solver='cg'),
-        iter_num=3, internal_vars=iv,
-        newton_options=NewtonOptions(make_jittable=False),
+        solver_options=fe.KrylovSolverOptions(solver='cg'),
+        linear=False, internal_vars=iv,
+        newton_options=NewtonOptions(),
     )
 
     def loss(bc_vals_arg):
@@ -144,9 +144,9 @@ def test_bc_grad_newton_nonsymmetric(elastic_setup):
     problem, bc, iv, bc1, initial = elastic_setup
     solver = fe.create_solver(
         problem, bc,
-        solver_options=fe.IterativeSolverOptions(solver='gmres'),
-        iter_num=3, internal_vars=iv,
-        newton_options=NewtonOptions(make_jittable=True),
+        solver_options=fe.KrylovSolverOptions(solver='gmres'),
+        linear=False, internal_vars=iv,
+        newton_options=NewtonOptions(),
         symmetric_bc=False,
     )
 

@@ -206,9 +206,9 @@ class ThermalRampPipeline(ImplicitPipeline):
             solver_options=fe.DirectSolverOptions(solver="umfpack", verbose=True),
             adjoint_solver_options=fe.DirectSolverOptions(solver="umfpack"),
             newton_options=fe.NewtonOptions(
-                tol=1e-6, rel_tol=1e-8, max_iter=30, internal_jit=True,
+                tol=1e-6, rel_tol=1e-8, max_iter=30,
             ),
-            iter_num=30,
+            linear=False,
             internal_vars=sample_iv,
         )
 

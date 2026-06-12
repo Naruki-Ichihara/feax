@@ -74,7 +74,7 @@ internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), s
 
 # Homogenization solver
 print("Creating homogenization solver...")
-solver_options = fe.IterativeSolverOptions(solver="cg", tol=1e-10, atol=1e-10, verbose=True)
+solver_options = fe.KrylovSolverOptions(solver="cg", tol=1e-10, atol=1e-10, verbose=True)
 
 compute_C_hom = flat.solver.create_homogenization_solver(
     problem, bc, P, mesh, solver_options=solver_options, dim=3

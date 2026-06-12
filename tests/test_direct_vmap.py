@@ -156,7 +156,7 @@ def _create_direct_solver(problem, solver_name):
         problem,
         bc,
         solver_options=fe.DirectSolverOptions(solver=solver_name),
-        iter_num=1,
+        linear=True,
     )
 
 

@@ -141,7 +141,7 @@ for name, angles_deg in LAMINATES:
     solver = fe.create_solver(
         problem, bc,
         solver_options=fe.DirectSolverOptions(),
-        iter_num=1,
+        linear=True,
         internal_vars=iv,
     )
     sol = solver(iv)

@@ -97,13 +97,13 @@ solver_opts = fe.DirectSolverOptions()
 solver = fe.create_solver(
     problem, bc,
     solver_options=solver_opts,
-    iter_num=1,
+    linear=True,
     internal_vars=internal_vars
 )
 initial = fe.zero_like_initial_guess(problem, bc)
 ```
 
-`iter_num=1` solves a linear problem in a single Newton iteration. Omit it for nonlinear problems.
+`linear=True` performs a single linear solve. Use the default `linear=False` for nonlinear (Newton) problems.
 
 ## Solving
 
@@ -176,7 +176,7 @@ internal_vars  = fe.InternalVars(volume_vars=(), surface_vars=[(traction_array,)
 
 solver_opts = fe.DirectSolverOptions()
 solver      = fe.create_solver(problem, bc, solver_options=solver_opts,
-                               iter_num=1, internal_vars=internal_vars)
+                               linear=True, internal_vars=internal_vars)
 initial     = fe.zero_like_initial_guess(problem, bc)
 
 sol          = solver(internal_vars, initial)

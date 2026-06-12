@@ -69,8 +69,8 @@ def test_cg_solver_jit_compatibility(
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG
-    solver_opts = fe.IterativeSolverOptions(solver="cg")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.KrylovSolverOptions(solver="cg")
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve without JIT
@@ -106,8 +106,8 @@ def test_bicgstab_solver_jit_compatibility(
     bc = bc_config.create_bc(problem)
 
     # Create solver with BICGSTAB
-    solver_opts = fe.IterativeSolverOptions(solver="bicgstab")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.KrylovSolverOptions(solver="bicgstab")
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve without JIT
@@ -143,8 +143,8 @@ def test_gmres_solver_jit_compatibility(
     bc = bc_config.create_bc(problem)
 
     # Create solver with GMRES
-    solver_opts = fe.IterativeSolverOptions(solver="gmres")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.KrylovSolverOptions(solver="gmres")
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve without JIT
@@ -186,7 +186,7 @@ def test_cudss_solver_jit_compatibility_full(
 
     # Create solver with cuDSS
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve with JIT (only JIT version to avoid multiple solver creation)
@@ -221,7 +221,7 @@ def test_cudss_solver_jit_compatibility_upper(
 
     # Create solver with cuDSS for UPPER matrix
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve with JIT (only JIT version to avoid multiple solver creation)
@@ -255,8 +255,8 @@ def test_multiple_jit_compilations_cg(
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG
-    solver_opts = fe.IterativeSolverOptions(solver="cg")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.KrylovSolverOptions(solver="cg")
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # First JIT compilation
@@ -291,7 +291,7 @@ def test_multiple_jit_compilations_cudss(
 
     # Create solver with cuDSS
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # First JIT compilation

@@ -375,7 +375,7 @@ the membrane–bending coupling term arising from the variation of
 Parameters
 ----------
 - **G_s** (*(2,2) array           Transverse shear stiffness.*)
-- **nonlinear** (*{`&quot;linear&quot;, &quot;von_karman&quot;`}*): Strain measure (see :func:``7). ``&quot;von_karman&quot;`` makes the residual cubic in ``w`` and requires Newton iteration (``iter_num != 1`` when calling :func:``4).
+- **nonlinear** (*{`&quot;linear&quot;, &quot;von_karman&quot;`}*): Strain measure (see :func:``7). ``&quot;von_karman&quot;`` makes the residual cubic in ``w`` and requires Newton iteration (``linear=False`` when calling :func:``4).
 
 
 Returns
@@ -422,6 +422,6 @@ Parameters
 - **ele_type** (*str*): Element type for both variables (default ``&quot;QUAD4&quot;``).
 - **location_fns** (*iterable of callables, optional*): Boundary-location predicates for surface integrals.
 - **gauss_order** (*int, optional*): Gaussian quadrature order; ``None`` lets feax choose per element.
-- **nonlinear** (*{`&quot;linear&quot;, &quot;von_karman&quot;`}*): Strain measure. ``&quot;von_karman&quot;`` requires a Newton solve (``iter_num != 1`` in :func:``0).
+- **nonlinear** (*{`&quot;linear&quot;, &quot;von_karman&quot;`}*): Strain measure. ``&quot;von_karman&quot;`` requires a Newton solve (``linear=False`` in :func:``0).
 - **B** (*(2,2,2,2) array, optional*): Membrane–bending coupling stiffness for an asymmetric laminate. Defaults to ``None`` (uncoupled, symmetric plate).
 

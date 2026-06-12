@@ -36,7 +36,7 @@ Solves: ρ̃ - r² ∇²ρ̃ = ρ_source
 - `mesh` - Mesh object
 - `radius` - Filter radius (controls smoothness - larger = smoother)
 - `P` - Optional prolongation matrix for periodic boundary conditions (default None)
-- `solver_options` - Optional IterativeSolverOptions (default: cg, tol=1e-8)
+- `solver_options` - Optional KrylovSolverOptions (default: cg, tol=1e-8)
 
 
 **Returns**:
@@ -87,7 +87,7 @@ Solves: ρ̃ - r² ∇²ρ̃ = ρ_source
 - `mesh` - Mesh object
 - `radius` - Filter radius (controls smoothness - larger = smoother)
 - `P` - Optional prolongation matrix for periodic boundary conditions (default None)
-- `solver_options` - Optional IterativeSolverOptions (default: cg, tol=1e-8)
+- `solver_options` - Optional KrylovSolverOptions (default: cg, tol=1e-8)
 
 
 **Returns**:

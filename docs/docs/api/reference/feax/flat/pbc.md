@@ -111,6 +111,60 @@ The matrix construction process:
 4. Results in a rectangular matrix for DoF space transformation
 5. Returns JAX BCOO sparse matrix for JAX transformations compatibility
 
+#### cyclic\_prolongation\_matrix
+
+```python
+def cyclic_prolongation_matrix(mesh: Mesh,
+                               vec: int,
+                               location_master: Callable[[onp.ndarray], bool],
+                               location_slave: Callable[[onp.ndarray], bool],
+                               rotation: onp.ndarray,
+                               mapping: Callable[[onp.ndarray], onp.ndarray],
+                               tol: float = 1e-5) -> BCOO
+```
+
+Prolongation matrix for *cyclic* (rotational) symmetry between two cut faces.
+
+Unlike :func:`prolongation_matrix` — which enforces the translational relation
+``u_slave = u_master`` component-by-component — this builds the rotation-coupled
+constraint
+
+.. math:: \mathbf{`u`}_{`\text{slave`}} = \mathbf{`R`}\,\mathbf{`u`}_{`\text{master`}},
+
+where ``R`` is the sector rotation. This is what a 1/N angular sector of a body
+of revolution requires on its two radial cut planes: the slave-plane DoF block of
+each node is expressed as a linear combination (via ``R``) of the matching
+master-plane node&#x27;s *independent* DoF block, so the whole slave plane is removed
+from the reduced system.
+
+**Arguments**:
+
+- `mesh` _Mesh_ - Finite element mesh (provides ``points``).
+- ``0 _int_ - DoFs per node (3 for 3D elasticity).
+- ``1 _Callable_ - Predicate selecting master-plane nodes.
+- ``2 _Callable_ - Predicate selecting slave-plane nodes.
+- ``3 _array_ - ``(vec, vec)`` rotation matrix ``R`` relating the master
+  DoF block to the slave DoF block (e.g. rotation by the sector angle about
+  the symmetry axis).
+- ``8 _Callable_ - Maps a master-plane *point* onto its matching slave-plane
+  *point* (typically the same physical rotation as ``rotation`` applied to
+  coordinates). Used only to pair nodes geometrically.
+- ``1 _float_ - Geometric matching tolerance.
+
+
+**Returns**:
+
+- ``2 - Prolongation matrix ``P`` of shape ``(N, M)`` with ``u = P @ u_reduced``;
+  ``N`` is the full DoF count, ``M = N - vec * (``2 nodes)``.
+
+
+**Notes**:
+
+  Master nodes must themselves be independent (they must not also be slaves of
+  another pairing); for a single radial sector with a polar opening the two cut
+  planes share no nodes, so this holds. Nodes carrying a Dirichlet BC should be
+  disjoint from the slave (eliminated) set to avoid conflicting constraints.
+
 #### periodic\_bc\_3D
 
 ```python

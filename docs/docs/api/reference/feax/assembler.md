@@ -10,6 +10,28 @@ separated internal variables. It handles the assembly of residual vectors and
 Jacobian matrices for both volume and surface integrals, supporting various
 physics kernels (Laplace, mass, surface, and universal).
 
+#### classify\_volume\_var
+
+```python
+def classify_volume_var(problem: 'Problem', var: np.ndarray)
+```
+
+Classify a volume internal variable by its storage kind.
+
+The decision is made from the *original* global array shape (before
+per-cell gathering), so it is unambiguous and resolved statically at
+trace-build time.
+
+Returns a ``(kind, fe_idx)`` pair where ``kind`` is one of
+``_VAR_NODE``/``_VAR_CELL``/``_VAR_QUAD`` (or ``None`` for an unrecognized
+layout → caller falls back to legacy sniffing), and ``fe_idx`` is the index
+of the finite-element variable whose shape functions interpolate a
+node-based variable. ``fe_idx`` matters only for ``_VAR_NODE`` (node-based
+fields are interpolated with that variable&#x27;s shape functions); it is ``0``
+otherwise. This is what makes mixed element-type multi-variable problems
+interpolate each internal variable on its *own* mesh rather than always on
+variable 0&#x27;s.
+
 ## Operator Objects
 
 ```python
@@ -89,7 +111,9 @@ np.ndarray
 #### interpolate\_var
 
 ```python
-def interpolate_var(var: np.ndarray) -> np.ndarray
+def interpolate_var(var: np.ndarray,
+                    kind: str = None,
+                    fe_idx: int = 0) -> np.ndarray
 ```
 
 Interpolate a single internal variable to quadrature points.
@@ -99,7 +123,9 @@ Handles node-based (shape function interpolation), cell-based
 
 Parameters
 ----------
-- **var** (*np.ndarray*): Internal variable. Shape determines interpolation strategy: - scalar: broadcast to all quad points - (num_nodes,): node-based, interpolate via shape functions - (1,) or cell-based: broadcast to all quad points - (num_quads,): quad-based, pass through
+- **var** (*np.ndarray*): Internal variable for a single element (post-gather, post-slice).
+- **kind** (*str, optional*): Static storage tag (``_VAR_NODE``/``_VAR_CELL``/``_VAR_QUAD``) classified from the original global shape via :func:`classify_volume_var`. When provided, interpolation dispatches on the tag with no runtime shape inspection. When ``None``, falls back to the legacy shape-sniffing path (kept for backward compatibility / unclassifiable shapes).
+- **fe_idx** (*int, default 0*): For ``_VAR_NODE`` variables, the finite-element variable whose shape functions interpolate this field. Lets a node-based internal var tied to variable ``i`` be interpolated on variable ``i``&#x27;s mesh even when this Operator belongs to a different variable (mixed element types). Ignored for cell/quad layouts.
 
 
 Returns
@@ -110,8 +136,8 @@ np.ndarray
 #### interpolate\_vars
 
 ```python
-def interpolate_vars(
-        cell_internal_vars: Tuple[np.ndarray, ...]) -> List[np.ndarray]
+def interpolate_vars(cell_internal_vars: Tuple[np.ndarray, ...],
+                     kinds: Tuple = None) -> List[np.ndarray]
 ```
 
 Interpolate all internal variables to quadrature points.
@@ -119,6 +145,7 @@ Interpolate all internal variables to quadrature points.
 Parameters
 ----------
 - **cell_internal_vars** (*tuple of np.ndarray*): Internal variables for a single element.
+- **kinds** (*tuple of (str, int), optional*): Static ``(kind, fe_idx)`` descriptors, one per variable, from :func:`classify_volume_var` (see :meth:`interpolate_var`). When ``None``, every variable uses the legacy sniffing path.
 
 
 Returns
@@ -231,7 +258,9 @@ np.ndarray
 #### get\_laplace\_kernel
 
 ```python
-def get_laplace_kernel(problem: 'Problem', tensor_map: Callable) -> Callable
+def get_laplace_kernel(problem: 'Problem',
+                       tensor_map: Callable,
+                       var_kinds: Tuple[str, ...] = None) -> Callable
 ```
 
 Create Laplace kernel function for gradient-based physics.
@@ -256,7 +285,9 @@ Callable
 #### get\_mass\_kernel
 
 ```python
-def get_mass_kernel(problem: 'Problem', mass_map: Callable) -> Callable
+def get_mass_kernel(problem: 'Problem',
+                    mass_map: Callable,
+                    var_kinds: Tuple[str, ...] = None) -> Callable
 ```
 
 Create mass kernel function for non-gradient terms.
@@ -304,36 +335,42 @@ Callable
 #### create\_volume\_kernel
 
 ```python
-def create_volume_kernel(problem: 'Problem') -> Callable
+def create_volume_kernel(problem: 'Problem',
+                         var_kinds: Tuple = None) -> Callable
 ```
 
-Create unified volume kernel combining all volume physics.
+Create the unified volume kernel for residual / Jacobian assembly.
 
-This function creates a kernel that combines contributions from all volume
-integral terms: Laplace (gradient-based), mass (non-gradient), universal
-(custom), and weak form kernels. The resulting kernel is used for both
-residual and Jacobian assembly.
+Composition rules (consistent for single- and multi-variable problems):
+
+1. **Base element residual** (full physics, chosen exclusively):
+
+   - ``get_universal_kernel()`` — if defined, it is the complete element
+     residual (full low-level control); the standard pieces below are *not*
+     added. This is the same &quot;escape hatch&quot; meaning in both single- and
+     multi-variable problems.
+   - otherwise, for multi-variable problems: ``get_weak_form()``
+     (raises if neither is defined).
+   - otherwise, for single-variable problems: ``get_tensor_map()`` (or
+     ``get_energy_density()`` differentiated via ``jax.grad``) **plus**
+     ``get_mass_map()`` — these are complementary standard pieces and are
+     summed.
+
+2. **Extra additive kernel** (optional): ``get_extra_kernel()`` is *always
+   added on top* of the base, regardless of which base was chosen. Use it
+   for complementary low-level terms (e.g. a regularization or stabilization
+   term layered on standard physics) — the additive counterpart of the
+   full-replacement ``get_universal_kernel()``.
 
 Parameters
 ----------
-- **problem** (*Problem*): The finite element problem that may define get_tensor_map(), get_mass_map(), get_weak_form(), and/or get_universal_kernel() methods.
+- **problem** (*Problem*): Defines some subset of ``get_tensor_map`` / ``get_energy_density`` / ``get_mass_map`` / ``get_weak_form`` / ``get_universal_kernel`` / ``get_extra_kernel``.
 
 
 Returns
 -------
 Callable
-    Combined volume kernel function that sums contributions from all
-    applicable physics kernels.
-
-Notes
------
-The kernel checks for the existence of each physics method in the problem
-and only includes contributions from those that are defined. This allows
-for flexible problem definitions with any combination of physics terms.
-
-For multi-variable problems, the priority order is:
-1. ``get_universal_kernel()`` — full low-level control
-2. ``get_weak_form()`` — high-level quad-point physics definition
+    Element kernel ``base(...) + extra(...)``.
 
 #### create\_surface\_kernel
 
@@ -460,8 +497,50 @@ list of np.ndarray
 
 Notes
 -----
-Uses JAX&#x27;s at[].add() for scatter-add operations to accumulate
-contributions from multiple elements sharing the same nodes.
+Volume and all boundary contributions are concatenated into one value array
+and reduced with a single sorted ``segment_sum`` over the precomputed DOF
+scatter map (``problem.res_perm`` / ``res_sorted_dofs``). This replaces the
+``1 + num_boundaries`` scatter-adds with one deterministic reduction (no
+atomics), matching the CSR-direct Jacobian assembly.
+
+#### get\_jacobian
+
+```python
+def get_jacobian(problem: 'Problem', sol_list: List[np.ndarray],
+                 internal_vars: InternalVars) -> sparse.BCOO
+```
+
+Assemble the global tangent (Jacobian) as a sparse ``BCOO`` matrix.
+
+Companion to :func:`get_res` (which assembles the global residual): this
+assembles the element tangents into the global Jacobian **without applying
+Dirichlet boundary conditions**, returned as a JAX ``BCOO``. It is the entry
+point for callers that need the raw assembled operator — e.g. building the
+material/geometric stiffness pair ``(K, K_g)`` for the linear-buckling
+eigensolver (:func:`feax.solvers.eigen.create_linear_buckling_solver`).
+
+For the solver stack, prefer the CSR-direct, BC-applied assembly
+(:func:`create_J_bc_csr_function`); for cheap statistics without
+materializing the matrix, use :func:`get_jacobian_info`.
+
+Parameters
+----------
+- **problem** (*Problem*): The finite element problem containing mesh and physics definitions.
+- **sol_list** (*list of np.ndarray*): Solution arrays for each variable.
+- **internal_vars** (*InternalVars*): Container with material properties and loading parameters.
+
+
+Returns
+-------
+sparse.BCOO
+    The assembled global Jacobian with no boundary conditions applied,
+    shape ``(num_total_dofs_all_vars, num_total_dofs_all_vars)``.
+
+Notes
+-----
+With a JIT-compiled cuDSS solver, materializing this BCOO outside the JIT
+boundary can contend with the backend&#x27;s GPU memory; assemble inside the
+traced region (or use the CSR-direct path) in that setting.
 
 #### get\_jacobian\_info
 
@@ -474,7 +553,7 @@ Get Jacobian matrix information without full matrix construction.
 
 This function provides safe access to Jacobian statistics that works
 correctly with JIT-compiled solvers and cuDSS backend. Unlike the
-internal _get_J function, this does not cause GPU memory conflicts.
+full assembly in :func:`get_jacobian`, this does not cause GPU memory conflicts.
 
 Parameters
 ----------
@@ -543,39 +622,82 @@ Notes
 The residual represents the imbalance in the weak form equations.
 For converged solutions, the residual should be near zero.
 
-#### create\_J\_bc\_function
+#### create\_J\_bc\_csr\_function
 
 ```python
-def create_J_bc_function(
+def create_J_bc_csr_function(
     problem: 'Problem',
     bc: 'DirichletBC',
     symmetric: bool = True
-) -> Callable[[np.ndarray, InternalVars], sparse.BCOO]
+) -> Callable[[np.ndarray, InternalVars], 'CSRMatrix']
 ```
 
-Create Jacobian function with Dirichlet BC applied.
+Assemble the BC-applied Jacobian directly as a deduplicated CSRMatrix.
 
-Returns a function that computes the Jacobian matrix with Dirichlet
-boundary conditions enforced. The BC application modifies the matrix
-to enforce constraints.
+Returns ``(sol_flat, internal_vars) -&gt; CSRMatrix`` that assembles the
+BC-applied Jacobian straight into deduplicated CSR form — no BCOO, no
+per-solve ``sum_duplicates`` sort — using the slot map precomputed in
+:meth:`Problem._build_csr_assembly_structure`, ready for direct backends
+(cuDSS/cholmod/umfpack/spsolve) without conversion.
 
-Parameters
-----------
-- **problem** (*Problem*): The finite element problem definition.
-- **bc** (*DirichletBC*): Dirichlet boundary condition specifications.
-- **symmetric** (*bool, default True*): If True, use symmetric elimination (zero BC rows and columns). If False, use non-symmetric elimination (zero BC rows only, keep columns). Non-symmetric elimination preserves the K_10 coupling, which is needed for the incremental Newton approach without pre-applied BCs.
+#### create\_J\_bc\_csr\_parametric
 
+```python
+def create_J_bc_csr_parametric(problem: 'Problem',
+                               symmetric: bool = True) -> Callable
+```
 
-Returns
--------
-Callable
-    Function with signature (sol_flat, internal_vars) -&gt; sparse.BCOO
-    that returns the BC-modified Jacobian matrix.
+Parametric form of :func:`create_J_bc_csr_function`.
 
-Notes
------
-The returned function is suitable for use in Newton solvers and
-can be differentiated for sensitivity analysis.
+Like :func:`create_J_bc_csr_function` but takes ``bc`` as an explicit third
+argument so it traces through the BC pytree (vmap / per-step BC values).
+
+#### create\_res\_J\_bc\_csr\_parametric
+
+```python
+def create_res_J_bc_csr_parametric(problem: 'Problem',
+                                   symmetric: bool = True) -> Callable
+```
+
+Fused BC-applied residual + CSR Jacobian, ``bc`` as an explicit argument.
+
+Returns ``(sol_flat, internal_vars, bc) -&gt; (res_bc, J_bc_csr)`` computed from
+a single element-kernel pass (see :func:`_get_res_J_csr`) — used by the
+Newton step so it does not evaluate the volume kernel twice (once for the
+residual, once for the Jacobian).
+
+#### create\_matfree\_res\_J\_parametric
+
+```python
+def create_matfree_res_J_parametric(problem: 'Problem',
+                                    symmetric: bool = True) -> Callable
+```
+
+Matrix-free counterpart of :func:`create_res_J_bc_csr_parametric` (Krylov).
+
+Returns ``(sol_flat, internal_vars, bc) -&gt; (res_bc, J_matvec)`` where
+``J_matvec(v)`` applies the BC-eliminated tangent **without assembling it**:
+the bulk action ``K @ v`` is a forward-mode ``jax.jvp`` of the residual, and
+the Dirichlet rows/columns are handled by masking. It reproduces
+``apply_boundary_to_J_csr(_get_J_csr(...)) @ v`` exactly. For symmetric BC the
+operator is symmetric (``Jᵀ = J``), so the same matvec serves the adjoint.
+
+This is the operator the Krylov (cg/bicgstab/gmres) solvers consume — they
+never need the matrix entries, only this matvec, so the CSR assembly is
+skipped entirely on the iterative path.
+
+#### create\_matfree\_Kt\_parametric
+
+```python
+def create_matfree_Kt_parametric(problem: 'Problem') -> Callable
+```
+
+Matrix-free ``K_bulk^T`` (un-eliminated residual transpose) for the
+symmetric-BC adjoint correction.
+
+Returns ``(sol_flat, internal_vars) -&gt; (w -&gt; K_bulk^T @ w)`` via reverse-mode
+``jax.vjp`` of the residual — used to recover the correct ``bc_vals``
+gradient without assembling the bulk Jacobian.
 
 #### create\_res\_bc\_function
 
@@ -608,30 +730,6 @@ Notes
 The returned function is used in Newton solvers to find solutions
 that satisfy both the weak form equations and boundary conditions.
 
-#### create\_J\_bc\_parametric
-
-```python
-def create_J_bc_parametric(problem: 'Problem',
-                           symmetric: bool = True) -> Callable
-```
-
-Create a Jacobian function that takes ``bc`` as an explicit argument.
-
-Unlike :func:`create_J_bc_function` which captures ``bc`` in a closure,
-this version accepts ``bc`` as a third argument so that the function
-traces through the BC pytree under ``jax.vmap``.
-
-Parameters
-----------
-- **problem** (*Problem*): The finite element problem definition.
-- **symmetric** (*bool, default True*): If True, use symmetric elimination.
-
-
-Returns
--------
-Callable
-    Function with signature ``(sol_flat, internal_vars, bc) -&gt; sparse.BCOO``.
-
 #### create\_res\_bc\_parametric
 
 ```python
@@ -654,4 +752,38 @@ Returns
 -------
 Callable
     Function with signature ``(sol_flat, internal_vars, bc) -&gt; np.ndarray``.
+
+#### create\_energy\_fn
+
+```python
+def create_energy_fn(problem) -> Callable
+```
+
+Create a total-energy integration function from a feax Problem.
+
+Builds a pure JAX function that integrates the problem&#x27;s energy density
+over the domain::
+
+    E(u) = ∫ ψ(∇u, *internal_vars) dΩ
+
+The energy density is obtained from ``problem.get_energy_density()``. This
+is the same density the residual assembler differentiates (``tensor_map =
+jax.grad(energy_density)``) — :func:`create_energy_fn` exposes the *scalar*
+energy itself, which is useful for objective evaluation (e.g. compliance /
+stored energy) and energy-based post-processing.
+
+Parameters
+----------
+- **problem** (*feax.Problem*): A problem defining ``get_energy_density()`` (must return non-None).
+
+
+Returns
+-------
+- **energy** (*callable*): ``energy(u_flat)`` or ``energy(u_flat, internal_vars)`` returning a scalar. Without ``internal_vars`` the density receives only ``∇u``; with it, each volume variable is interpolated to quadrature points (node-based via shape functions, cell-based by broadcast) and passed as extra arguments ``ψ(∇u, var0_q, var1_q, …)``.
+
+
+Raises
+------
+ValueError
+    If ``problem.get_energy_density()`` returns None.
 

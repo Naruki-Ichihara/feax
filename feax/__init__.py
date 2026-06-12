@@ -55,15 +55,14 @@ try:
     from importlib.metadata import PackageNotFoundError, version
     __version__ = version("feax")
 except (ImportError, PackageNotFoundError):
-    __version__ = "0.5.2"
+    __version__ = "0.6.0"
 
 # Main API
-from .assembler import create_J_bc_function, create_res_bc_function, get_jacobian_info, get_res
+from .assembler import create_energy_fn, create_J_bc_csr_function, create_res_bc_function, get_jacobian, get_jacobian_info, get_res
 from .DCboundary import (
     DirichletBC,
     DirichletBCConfig,
     DirichletBCSpec,
-    apply_boundary_to_J,
     apply_boundary_to_res,
     dirichlet_bc_config,
 )
@@ -87,15 +86,6 @@ from .solvers.eigen import (
     generalized_eigh,
 )
 from .solvers.linear import create_linear_solver, linear_solve
-from .solvers.matrix_free import (
-    LinearSolverOptions,
-    MatrixFreeOptions,
-    NewtonInfo,
-    create_energy_fn,
-    create_matrix_free_solver,
-    newton_solve as matrix_free_newton_solve,
-)
-from .solvers.newton import newton_solve, newton_solve_fori, newton_solve_py
 from .solvers.time_solver import (
     AdaptiveDtConfig,
     Callback,
@@ -113,7 +103,7 @@ from .solvers.options import (
     CUDSSMatrixView,
     CUDSSOptions,
     DirectSolverOptions,
-    IterativeSolverOptions,
+    KrylovSolverOptions,
     MatrixProperty,
     NewtonOptions,
     SKSPARSEOptions,

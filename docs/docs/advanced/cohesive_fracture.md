@@ -1,17 +1,17 @@
-# Cohesive Fracture with Matrix-Free Newton Solver
+# Cohesive Fracture with a Hybrid Matrix-Free Newton Solver
 
-This tutorial demonstrates quasi-static fracture simulation using FEAX's matrix-free Newton solver and cohesive zone model. We solve a 3D Mode I fracture problem where the total energy is composed of bulk elastic and cohesive interface contributions — all expressed as pure JAX functions and differentiated automatically.
+This tutorial demonstrates quasi-static fracture simulation using FEAX's hybrid matrix-free Newton–Krylov solver and a cohesive zone model. We solve a 3D Mode I fracture problem where the residual combines a bulk elastic contribution with a cohesive interface contribution.
 
 ## Overview
 
-Traditional FE fracture solvers assemble the tangent stiffness matrix explicitly. FEAX takes a different approach:
+The bulk elasticity is handled by FEAX's standard residual assembly, while the cohesive interface — which couples arbitrary node pairs and does not fit the element weak form — is supplied as an **extra residual term**:
 
-1. Define the **total potential energy** $\Pi(\mathbf{u})$ as a sum of bulk and cohesive terms
-2. The **residual** is obtained automatically: $\mathbf{r} = \nabla_\mathbf{u} \Pi$
-3. The **tangent operator** is computed via JVP (Jacobian-vector product) of the residual — no sparse matrix assembly
-4. An iterative Krylov solver (CG) solves the Newton linear system using only matvec operations
+1. The **bulk residual** is assembled by FEAX from the elastic energy density (`get_energy_density` → `σ = jax.grad(ψ)`), giving the sparse bulk Jacobian.
+2. The **cohesive residual** $\mathbf{r}_\text{coh} = \partial\Phi_\text{coh}/\partial\mathbf{u}$ is passed via `extra_residual_fn`.
+3. At each Newton step the combined tangent applies the bulk Jacobian (sparse) plus the cohesive tangent **matrix-free** via `jax.jvp`.
+4. A Krylov solver (CG) solves the Newton system using matrix–vector products.
 
-This is the **matrix-free Newton** path in FEAX, activated by passing `MatrixFreeOptions` as the solver options.
+This is the **hybrid matrix-free Newton–Krylov** path in FEAX, activated by passing `extra_residual_fn` together with `KrylovSolverOptions`.
 
 ## Energy-Based Formulation
 
@@ -35,7 +35,7 @@ $$
 \Pi_\text{bulk}(\mathbf{u}) = \int_\Omega \psi(\nabla\mathbf{u})\,d\Omega
 $$
 
-In FEAX, this is obtained via `get_energy_density()` and `create_energy_fn()`:
+In FEAX, the bulk is defined through `get_energy_density()`. When `get_tensor_map()` is not defined, the assembler automatically uses `σ = jax.grad(ψ)` for the residual and Jacobian, so the bulk needs no hand-written stress:
 
 ```python
 class Elasticity3D(fe.problem.Problem):
@@ -45,10 +45,10 @@ class Elasticity3D(fe.problem.Problem):
             return 0.5 * lmbda * np.trace(eps)**2 + mu * np.sum(eps * eps)
         return psi
 
-elastic_energy = create_energy_fn(problem)  # ∫ ψ(∇u) dΩ
+# Scalar bulk energy — used for energy decomposition / post-processing only;
+# the solve itself uses the residual assembled from get_energy_density.
+elastic_energy = fe.create_energy_fn(problem)  # ∫ ψ(∇u) dΩ
 ```
-
-Note that `get_energy_density()` returns the scalar energy density $\psi$, not the stress tensor. FEAX integrates this over quadrature points to compute the total energy. The stress and tangent stiffness are never assembled explicitly — they are computed on-the-fly via JAX's automatic differentiation.
 
 ### Cohesive Interface Energy
 
@@ -119,46 +119,38 @@ cohesive_energy = interface.create_energy_fn(
 )
 ```
 
-### Total Energy and Matrix-Free Newton
+### Cohesive Residual
 
-The total potential energy is the sum:
+The cohesive contribution enters the global residual as the gradient of the interface potential at the current history $\boldsymbol{\delta}_\text{max}$:
 
 $$
-\Pi(\mathbf{u}, \boldsymbol{\delta}_\text{max}) = \Pi_\text{bulk}(\mathbf{u}) + \Pi_\text{coh}(\mathbf{u}, \boldsymbol{\delta}_\text{max})
+\mathbf{r}_\text{coh}(\mathbf{u}) = \frac{\partial \Phi_\text{coh}(\mathbf{u}, \boldsymbol{\delta}_\text{max})}{\partial \mathbf{u}}
 $$
 
 ```python
-def total_energy(u_flat, delta_max):
-    return elastic_energy(u_flat) + cohesive_energy(u_flat, delta_max)
+def cohesive_residual(u_flat, delta_max):
+    return jax.grad(lambda u: cohesive_energy(u, delta_max))(u_flat)
 ```
 
-The Newton solver finds $\mathbf{u}$ such that $\nabla_\mathbf{u}\Pi = \mathbf{0}$. At each Newton iteration $k$:
-
-1. **Residual**: $\mathbf{r}^{(k)} = \nabla_\mathbf{u}\Pi(\mathbf{u}^{(k)})$ — computed via `jax.grad`
-2. **Newton direction**: solve $\mathbf{K}^{(k)}\,\Delta\mathbf{u} = -\mathbf{r}^{(k)}$ where $\mathbf{K} = \nabla^2_\mathbf{u}\Pi$
-3. **Update**: $\mathbf{u}^{(k+1)} = \mathbf{u}^{(k)} + \Delta\mathbf{u}$
-
-The key: step 2 never forms $\mathbf{K}$ explicitly. Instead, the CG solver only needs the matrix-vector product $\mathbf{K}\mathbf{v}$, which is computed via JVP:
+The Newton solver finds $\mathbf{u}$ such that $\mathbf{r}_\text{bulk}(\mathbf{u}) + \mathbf{r}_\text{coh}(\mathbf{u}) = \mathbf{0}$. At each Newton iteration the linear system uses the combined tangent
 
 $$
-\mathbf{K}\mathbf{v} = \frac{\partial}{\partial\epsilon}\nabla_\mathbf{u}\Pi(\mathbf{u} + \epsilon\mathbf{v})\bigg|_{\epsilon=0}
+\mathbf{J}_\text{total}\,\mathbf{v} = \mathbf{J}_\text{bulk}\,\mathbf{v} + \frac{\partial}{\partial\epsilon}\,\mathbf{r}_\text{coh}(\mathbf{u} + \epsilon\mathbf{v})\bigg|_{\epsilon=0},
 $$
 
-This is exactly what `jax.jvp` computes in forward-mode AD, at roughly the cost of one residual evaluation.
+where the bulk Jacobian $\mathbf{J}_\text{bulk}$ is assembled (and provides a Jacobi preconditioner) and the cohesive tangent is applied matrix-free via `jax.jvp` — at roughly the cost of one cohesive-residual evaluation. The CG solver needs only this combined matrix–vector product.
 
 ## Problem Setup
 
 ### Material and Geometry
 
 ```python
+import jax
 import jax.numpy as np
 import numpy as onp
 import feax as fe
 from feax.mechanics.cohesive import (
     CohesiveInterface, compute_lumped_area_weights, exponential_potential,
-)
-from feax.solvers.matrix_free import (
-    LinearSolverOptions, MatrixFreeOptions, create_energy_fn,
 )
 
 # Material parameters
@@ -225,33 +217,34 @@ def make_bc(disp):
 
 ## Solver
 
-Create the matrix-free solver by passing `MatrixFreeOptions` and the custom `total_energy` function:
+Build the solver once with `extra_residual_fn` and `KrylovSolverOptions`. The cohesive history $\boldsymbol{\delta}_\text{max}$ is a quasi-static state variable updated between load steps; flow it into the extra residual through a small mutable holder so the solver need not be rebuilt:
 
 ```python
-solver_options = MatrixFreeOptions(
-    newton_tol=1e-8,
-    newton_max_iter=200,
-    linear_solver=LinearSolverOptions(solver='cg', atol=1e-8, maxiter=200),
-    verbose=True,
-)
-
 bc0 = make_bc(0.0)
+history = {'delta_max': np.zeros(interface.n_nodes)}
+
 solver = fe.create_solver(
     problem, bc0,
-    solver_options=solver_options,
-    energy_fn=total_energy,
+    solver_options=fe.KrylovSolverOptions(
+        solver='cg', atol=1e-8, maxiter=200,
+        use_jacobi_preconditioner=True, verbose=True,
+    ),
+    newton_options=fe.NewtonOptions(tol=1e-8, max_iter=200),
+    extra_residual_fn=lambda u: cohesive_residual(u, history['delta_max']),
+    linear=False,
 )
+EMPTY_IV = fe.InternalVars()  # bulk elasticity carries no internal variables
 ```
 
 **Key points:**
-- `MatrixFreeOptions` activates the JVP-based Newton path
-- `energy_fn=total_energy` provides the custom energy (bulk + cohesive)
-- The inner CG solver uses only matvec operations — no sparse matrix stored
-- `verbose=True` prints Newton convergence info via `jax.debug.print` (JIT-compatible)
+- `extra_residual_fn` adds the cohesive residual; the bulk residual/Jacobian come from `get_energy_density`
+- `KrylovSolverOptions` + `linear=False` selects the hybrid matrix-free Newton–Krylov path
+- The bulk Jacobian is assembled (and gives a Jacobi preconditioner); the cohesive tangent is matrix-free
+- `verbose=True` prints Newton convergence info
 
 ## Quasi-Static Loading
 
-Each load step increments the prescribed displacement. The solver uses the previous solution as initial guess, and $\delta_\text{max}$ is updated after convergence:
+Each load step increments the prescribed displacement. The solver reuses the previous solution as the initial guess, and $\delta_\text{max}$ is updated after convergence:
 
 ```python
 u_flat = np.zeros(problem.num_total_dofs_all_vars)
@@ -260,33 +253,34 @@ delta_max = np.zeros(interface.n_nodes)
 for step in range(1, n_steps + 1):
     disp = applied_disp * step / n_steps
 
-    # Apply BC values to initial guess
+    # Apply BC values to initial guess, publish the current history, then solve
     bc = make_bc(disp)
     u_flat = u_flat.at[bc.bc_rows].set(bc.bc_vals)
-
-    # Solve: delta_max is passed as extra argument
-    u_flat = solver(delta_max, u_flat)
+    history['delta_max'] = delta_max
+    u_flat = solver(EMPTY_IV, u_flat, bc=bc)
 
     # Update irreversibility state
     delta_current = interface.get_opening(u_flat)
     delta_max = np.maximum(delta_max, delta_current)
 ```
 
-Note: `solver(delta_max, u_flat)` — the first argument corresponds to the extra arguments of `total_energy`, and the second is the initial guess.
+Note: `solver(EMPTY_IV, u_flat, bc=bc)` — the bulk has no internal variables, `u_flat` is the initial guess, and `bc=` supplies the current load step's prescribed values.
 
 ## Post-Processing
 
 ### Reaction Force via Energy Gradient
 
-The reaction force is extracted from the internal force vector, which is the gradient of the total energy:
+The reaction force is the internal force vector — the gradient of the total potential energy (bulk + cohesive). The scalar energies are kept purely for this post-processing:
 
 $$
-\mathbf{f}_\text{int} = \nabla_\mathbf{u}\Pi(\mathbf{u}, \boldsymbol{\delta}_\text{max})
+\mathbf{f}_\text{int} = \nabla_\mathbf{u}\big[\Pi_\text{bulk}(\mathbf{u}) + \Phi_\text{coh}(\mathbf{u}, \boldsymbol{\delta}_\text{max})\big]
 $$
 
 ```python
-gradient_fn = jax.grad(total_energy)
-fint = gradient_fn(u_flat, delta_max)
+def total_energy(u_flat, delta_max):
+    return elastic_energy(u_flat) + cohesive_energy(u_flat, delta_max)
+
+fint = jax.grad(total_energy)(u_flat, delta_max)
 reaction_force = float(np.sum(fint[upper_y_dofs]))
 ```
 
@@ -315,20 +309,20 @@ fe.utils.save_sol(
 ## Summary
 
 **Key concepts:**
-- **Energy-based formulation** — define $\Pi(\mathbf{u})$ as a scalar function; stress and tangent stiffness are derived automatically via JAX AD
-- **`get_energy_density()`** — returns $\psi(\nabla\mathbf{u})$ for the bulk; `create_energy_fn()` integrates it over the domain
-- **`CohesiveInterface`** — encodes interface geometry (node pairs, normals, weights) and creates the cohesive energy function
-- **Matrix-free Newton** — JVP-based tangent operator avoids sparse matrix assembly; inner CG solver uses only matvec
-- **Irreversibility** — $\delta_\text{max}$ state variable tracks maximum opening; updated outside the solver between load steps
+- **Bulk via residual assembly** — `get_energy_density()` lets FEAX assemble the bulk residual and Jacobian (`σ = jax.grad(ψ)`); no hand-written stress
+- **Cohesive via `extra_residual_fn`** — the interface contribution $\partial\Phi_\text{coh}/\partial\mathbf{u}$ is added to the global residual and applied matrix-free
+- **`CohesiveInterface`** — encodes interface geometry (node pairs, normals, weights) and builds the cohesive energy function
+- **Hybrid Newton–Krylov** — assembled bulk Jacobian (with Jacobi preconditioner) + JVP cohesive tangent; CG solves with matvecs only
+- **Irreversibility** — $\delta_\text{max}$ tracks the maximum opening; updated between load steps and flowed in through a mutable holder
 
-**Why matrix-free?**
-- Cohesive contributions couple arbitrary node pairs — hard to fit into standard FE sparse assembly
-- The energy formulation naturally combines bulk and interface terms as pure JAX functions
-- JVP cost ≈ 1 residual evaluation, regardless of problem size or sparsity pattern
+**Why this split?**
+- Cohesive contributions couple arbitrary node pairs — hard to fit into standard FE sparse assembly, so they enter as an extra residual
+- The bulk keeps the assembled Jacobian, giving a preconditioner the pure matrix-free path would lack
+- The cohesive JVP costs ≈ 1 cohesive-residual evaluation, independent of the sparsity pattern
 
 ## Further Reading
 
 - `examples/advance/cohesive_fracture_2d.py` — 2D version with QUAD4 elements
 - `examples/advance/cohesive_fracture_3d.py` — Complete 3D working example
+- [Solver Guide](../getting-started/solver.md) — `extra_residual_fn` and the hybrid Newton–Krylov path
 - [API: feax.mechanics.cohesive](../api/reference/feax/mechanics/cohesive.md) — Cohesive zone models
-- [API: feax.solvers.matrix_free](../api/reference/feax/solvers/matrix_free.md) — Matrix-free Newton solver

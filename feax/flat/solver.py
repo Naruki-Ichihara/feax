@@ -19,7 +19,7 @@ import jax
 import jax.numpy as np
 
 from ..solver import create_solver
-from ..solvers.options import IterativeSolverOptions
+from ..solvers.options import KrylovSolverOptions
 
 # ---------------------------------------------------------------------------
 # Unit strain tensors in Voigt order
@@ -195,7 +195,7 @@ def create_homogenization_solver(
     bc: Any,
     P: Any,
     mesh: Any,
-    solver_options: IterativeSolverOptions = None,
+    solver_options: KrylovSolverOptions = None,
     dim: int = 3,
 ):
     """Create a computational homogenization solver for a linear elastic unit cell.
@@ -219,7 +219,7 @@ def create_homogenization_solver(
         Shape ``(num_dofs, num_reduced_dofs)``.
     mesh :
         FEAX mesh of the unit cell.
-    solver_options : IterativeSolverOptions, optional
+    solver_options : KrylovSolverOptions, optional
         Iterative solver configuration.
     dim : int
         Problem dimension. ``2`` or ``3``. Default: ``3``.
@@ -247,7 +247,7 @@ def create_homogenization_solver(
     )
 
     if solver_options is None:
-        solver_options = IterativeSolverOptions()
+        solver_options = KrylovSolverOptions()
     _verbose = solver_options.verbose
 
     fluctuation_solver = create_solver(problem, bc, solver_options, P=P)

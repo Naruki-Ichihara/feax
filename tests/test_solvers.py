@@ -34,8 +34,8 @@ def test_cg_solver_linear_elasticity(
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG
-    solver_opts = fe.IterativeSolverOptions(solver="cg")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.KrylovSolverOptions(solver="cg")
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve
@@ -64,8 +64,8 @@ def test_bicgstab_solver_linear_elasticity(
     bc = bc_config.create_bc(problem)
 
     # Create solver with BICGSTAB
-    solver_opts = fe.IterativeSolverOptions(solver="bicgstab")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.KrylovSolverOptions(solver="bicgstab")
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve
@@ -94,8 +94,8 @@ def test_gmres_solver_linear_elasticity(
     bc = bc_config.create_bc(problem)
 
     # Create solver with GMRES
-    solver_opts = fe.IterativeSolverOptions(solver="gmres")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.KrylovSolverOptions(solver="gmres")
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve
@@ -124,20 +124,20 @@ def test_solver_consistency_cg_bicgstab_gmres(
     bc = bc_config.create_bc(problem)
 
     # Solve with CG
-    solver_opts_cg = fe.IterativeSolverOptions(solver="cg")
-    solver_cg = fe.create_solver(problem, bc, solver_options=solver_opts_cg, iter_num=1)
+    solver_opts_cg = fe.KrylovSolverOptions(solver="cg")
+    solver_cg = fe.create_solver(problem, bc, solver_options=solver_opts_cg, linear=True)
     initial_cg = fe.zero_like_initial_guess(problem, bc)
     sol_cg = solver_cg(internal_vars, initial_cg)
 
     # Solve with BICGSTAB
-    solver_opts_bicgstab = fe.IterativeSolverOptions(solver="bicgstab")
-    solver_bicgstab = fe.create_solver(problem, bc, solver_options=solver_opts_bicgstab, iter_num=1)
+    solver_opts_bicgstab = fe.KrylovSolverOptions(solver="bicgstab")
+    solver_bicgstab = fe.create_solver(problem, bc, solver_options=solver_opts_bicgstab, linear=True)
     initial_bicgstab = fe.zero_like_initial_guess(problem, bc)
     sol_bicgstab = solver_bicgstab(internal_vars, initial_bicgstab)
 
     # Solve with GMRES
-    solver_opts_gmres = fe.IterativeSolverOptions(solver="gmres")
-    solver_gmres = fe.create_solver(problem, bc, solver_options=solver_opts_gmres, iter_num=1)
+    solver_opts_gmres = fe.KrylovSolverOptions(solver="gmres")
+    solver_gmres = fe.create_solver(problem, bc, solver_options=solver_opts_gmres, linear=True)
     initial_gmres = fe.zero_like_initial_guess(problem, bc)
     sol_gmres = solver_gmres(internal_vars, initial_gmres)
 
@@ -170,8 +170,8 @@ def test_solution_physical_validity_with_cg(
     bc = bc_config.create_bc(problem)
 
     # Create solver with CG and solve
-    solver_opts = fe.IterativeSolverOptions(solver="cg")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.KrylovSolverOptions(solver="cg")
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
     solution = solver(internal_vars, initial)
 
@@ -199,8 +199,8 @@ def test_residual_after_cg_solve(
     bc = bc_config.create_bc(problem)
 
     # Solve with CG
-    solver_opts = fe.IterativeSolverOptions(solver="cg")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, iter_num=1)
+    solver_opts = fe.KrylovSolverOptions(solver="cg")
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
     solution = solver(internal_vars, initial)
 
