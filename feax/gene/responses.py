@@ -9,7 +9,7 @@ import jax.numpy as np
 
 def create_compliance_fn(problem, surface_load_params=None):
     """
-    Creates a universal JIT-compiled compliance function for a given problem.
+    Creates a universal pure-JAX compliance function for a given problem.
     Computes compliance (strain energy) = sum over all surfaces of integral u*f dGamma
     where u is displacement and f is traction on each loaded boundary.
     
@@ -21,7 +21,8 @@ def create_compliance_fn(problem, surface_load_params=None):
                            If list/array, must match number of surfaces.
         
     Returns:
-        compliance_fn: JIT-compiled function that takes solution and returns compliance value
+        compliance_fn: pure-JAX function (sol) -> compliance; jit the
+            composed objective at the call site
     """
     # Get all surface information from the problem
     surface_maps = problem.get_surface_maps()
@@ -29,7 +30,6 @@ def create_compliance_fn(problem, surface_load_params=None):
 
     if num_surfaces == 0:
         # No surface loads, return zero compliance function
-        @jax.jit
         def compliance_fn(sol):
             return 0.0
         return compliance_fn
@@ -71,7 +71,6 @@ def create_compliance_fn(problem, surface_load_params=None):
     total_nodes_var0 = problem.fes[0].num_total_nodes
     vec_var0 = problem.fes[0].vec
 
-    @jax.jit
     def compliance_fn(sol):
         """Compute compliance for the given solution over all surfaces."""
         # Manually unflatten just the first variable (displacement)
@@ -108,7 +107,7 @@ def create_compliance_fn(problem, surface_load_params=None):
 
 def create_dynamic_compliance_fn(problem):
     """
-    Creates a universal JIT-compiled compliance function for a given problem.
+    Creates a universal pure-JAX compliance function for a given problem.
     Computes compliance (strain energy) = sum over all surfaces of integral u*f dGamma
     where u is displacement and f is traction on each loaded boundary.
 
@@ -120,14 +119,13 @@ def create_dynamic_compliance_fn(problem):
         problem: FEAX Problem instance
 
     Returns:
-        compliance_fn: JIT-compiled function that takes ``sol`` and
+        compliance_fn: pure-JAX function that takes ``sol`` and
             ``surface_vars`` and returns the compliance value.
     """
     surface_maps = problem.get_surface_maps()
     num_surfaces = len(problem.boundary_inds_list)
 
     if num_surfaces == 0:
-        @jax.jit
         def compliance_fn(sol, surface_vars):
             return 0.0
         return compliance_fn
@@ -158,7 +156,6 @@ def create_dynamic_compliance_fn(problem):
     total_nodes_var0 = problem.fes[0].num_total_nodes
     vec_var0 = problem.fes[0].vec
 
-    @jax.jit
     def compliance_fn(sol, surface_vars):
         """Compute compliance for the given solution over all surfaces."""
         # Manually unflatten just the first variable (displacement)
@@ -194,7 +191,7 @@ def create_dynamic_compliance_fn(problem):
 
 def create_volume_fn(problem):
     """
-    Creates a JIT-compiled volume fraction calculation function for a given problem.
+    Creates a pure-JAX volume fraction calculation function for a given problem.
     Returns a function that computes the volume fraction of material in the domain.
 
     Supports node-based, cell-based, and quad-based density arrays.
@@ -203,7 +200,7 @@ def create_volume_fn(problem):
         problem: FEAX Problem instance
 
     Returns:
-        volume_fn: JIT-compiled function that takes density array and returns volume fraction
+        volume_fn: pure-JAX function that takes density array and returns volume fraction
                    Accepts: (num_nodes,) node-based, (num_cells,) cell-based,
                            or (num_cells, num_quads) quad-based density arrays
     """
@@ -218,7 +215,6 @@ def create_volume_fn(problem):
     cells = fe.cells  # (num_cells, num_nodes_per_cell)
     domain_volume = float(np.sum(JxW))  # Pre-compute domain volume as Python float
 
-    @jax.jit
     def volume_fn(rho_array):
         """Compute volume fraction for the given density distribution.
 

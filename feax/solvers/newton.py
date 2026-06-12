@@ -4,11 +4,12 @@ Provides:
 
 * :func:`create_newton_solver` — the entry point used by ``feax.solver``. With
   ``extra_residual_fn`` it runs the hybrid matrix-free Newton-Krylov path;
-  otherwise it delegates to the unified callback solver below.
+  otherwise it delegates to the unified traced solver below.
 * :func:`create_callback_newton_solver` — the standard nonlinear solver. The
-  iteration runs as a host loop inside a single ``jax.pure_callback`` (so it
-  composes with an outer ``jax.jit`` / ``jax.vmap`` / ``jax.grad``), with a
-  CSR-direct fused residual+Jacobian forward and a single traced adjoint solve.
+  iteration is a traced ``jax.lax.while_loop`` (one Newton step per loop body;
+  the graph does not grow with ``max_iter``), so it composes natively with
+  ``jax.jit`` / ``jax.vmap`` / ``jax.grad``, with a CSR-direct fused
+  residual+Jacobian forward and a single traced adjoint solve.
 * :func:`create_armijo_line_search_scan` — the (vmap-friendly) line search.
 """
 
@@ -17,7 +18,6 @@ from typing import Optional
 
 import jax
 import jax.numpy as np
-from jax import custom_batching
 
 from ..assembler import (
     _get_J_csr,
@@ -25,7 +25,6 @@ from ..assembler import (
     create_J_bc_csr_parametric,
     create_matfree_Kt_parametric,
     create_matfree_res_J_parametric,
-    create_res_bc_function,
     create_res_bc_parametric,
     create_res_J_bc_csr_parametric,
 )
@@ -109,20 +108,20 @@ def _create_differentiable_newton_solver(
     _needs_adjoint_bc_correction = symmetric_bc and _has_parametric
 
     @jax.custom_vjp
-    def differentiable_solve(internal_vars, initial_guess, bc_arg):
-        return solve_fn(internal_vars, initial_guess, bc_arg)[0]
+    def differentiable_solve(internal_vars, initial_guess, bc_arg, sv):
+        return solve_fn(internal_vars, initial_guess, bc_arg, sv)[0]
 
-    def f_fwd(internal_vars, initial_guess, bc_arg):
-        sol = differentiable_solve(internal_vars, initial_guess, bc_arg)
-        return sol, (internal_vars, sol, bc_arg)
+    def f_fwd(internal_vars, initial_guess, bc_arg, sv):
+        sol = differentiable_solve(internal_vars, initial_guess, bc_arg, sv)
+        return sol, (internal_vars, sol, bc_arg, sv)
 
     def f_bwd(res, v):
-        internal_vars, sol, effective_bc = res
+        internal_vars, sol, effective_bc, sv = res
 
         # Choose parametric or closure-based functions for adjoint
         if _has_parametric:
-            _res_fn = lambda dofs, iv: res_bc_parametric(dofs, iv, effective_bc)
-            _J_fn = lambda s, iv: J_bc_parametric(s, iv, effective_bc)
+            _res_fn = lambda dofs, iv: res_bc_parametric(dofs, iv, effective_bc, sv)
+            _J_fn = lambda s, iv: J_bc_parametric(s, iv, effective_bc, sv)
         else:
             _res_fn = res_bc_func
             _J_fn = J_bc_func
@@ -131,7 +130,7 @@ def _create_differentiable_newton_solver(
 
         if extra_res_bc_fn is not None and bulk_J_bc_func is not None:
             # Hybrid adjoint: J_adjoint_matvec(v) = J_bulk^T @ v + VJP(extra_res_bc, v)
-            J_bulk = bulk_J_bc_func(sol, internal_vars)
+            J_bulk = bulk_J_bc_func(sol, internal_vars, effective_bc, sv)
             _, vjp_extra = jax.vjp(extra_res_bc_fn, sol)
 
             def adjoint_matvec(w):
@@ -178,7 +177,7 @@ def _create_differentiable_newton_solver(
         if _needs_adjoint_bc_correction:
             sol_list_for_correction = problem.unflatten_fn_sol_list(sol)
             kdata, kindptr, kindices = _get_J_csr(
-                problem, sol_list_for_correction, internal_vars)
+                problem, sol_list_for_correction, internal_vars, sv)
             K_bulk = CSRMatrix(kdata, kindptr, kindices,
                                (problem.num_total_dofs_all_vars,) * 2)
             # Isolate λ_free by zeroing BC entries
@@ -197,7 +196,7 @@ def _create_differentiable_newton_solver(
             def res_fn_params(iv, bc_arg):
                 dofs = jax.flatten_util.ravel_pytree(sol_list)[0]
                 return problem.unflatten_fn_sol_list(
-                    res_bc_parametric(dofs, iv, bc_arg)
+                    res_bc_parametric(dofs, iv, bc_arg, sv)
                 )
 
             _, f_vjp = jax.vjp(res_fn_params, internal_vars, effective_bc)
@@ -216,7 +215,7 @@ def _create_differentiable_newton_solver(
             vjp_iv = jax.tree_util.tree_map(_safe_negate, vjp_iv)
             vjp_bc = None
 
-        return (vjp_iv, None, vjp_bc)
+        return (vjp_iv, None, vjp_bc, None)
 
     differentiable_solve.defvjp(f_fwd, f_bwd)
 
@@ -235,17 +234,13 @@ def _create_differentiable_newton_solver(
             The ``bc_rows`` / ``bc_mask`` must match the original BC
             (same constrained DOFs); only ``bc_vals`` should differ.
         static_vars : StaticVars, optional
-            Not supported on the hybrid (extra_residual_fn) path, whose
-            Newton loop runs eagerly on the host — there is no user-facing
-            jit trace to keep mesh-sized constants out of.
+            Structural arrays passed as runtime arguments to the jitted
+            per-iteration kernels (and the traced adjoint), so nothing
+            mesh-sized is baked into their compilation caches.
         """
-        if static_vars is not None:
-            raise NotImplementedError(
-                "static_vars is not supported on the hybrid Newton path "
-                "(extra_residual_fn). Use the standard Newton or linear path.")
         from ..DCboundary import DirichletBC
         effective_bc = bc if isinstance(bc, DirichletBC) else _default_bc
-        return differentiable_solve(internal_vars, initial_guess, effective_bc)
+        return differentiable_solve(internal_vars, initial_guess, effective_bc, static_vars)
 
     _default_bc = bc
     return solver_with_bc
@@ -277,13 +272,6 @@ def create_newton_solver(
         ``J_total @ v = J_bulk @ v + jvp(extra_res_bc, sol, v)``.
         Dirichlet BC rows of the extra residual are zeroed automatically.
     """
-    # Hybrid bulk Jacobian: assembled in deduplicated CSR form (bypassing BCOO +
-    # per-call sum_duplicates). CSRMatrix supplies ``@ v`` (forward matvec),
-    # ``.diagonal()`` (Jacobi preconditioner) and ``.T @ w`` (adjoint matvec) —
-    # everything the hybrid path needs.
-    J_bc_func = create_J_bc_csr_function(problem, bc, symmetric=symmetric_bc)
-    res_bc_func = create_res_bc_function(problem, bc)
-
     # --- Hybrid matrix-free path ---
     # When extra_residual_fn is provided, JAX loop primitives (while_loop,
     # fori_loop) cannot be used because the hybrid Jacobian is a Python
@@ -312,27 +300,32 @@ def create_newton_solver(
             else create_linear_solve_fn(adjoint_linear_options)
         )
 
-        # The hybrid Newton loop runs as a Python loop (the matrix-free
-        # Jacobian is a callable, not a JAX array); JIT-compile the per-call
-        # residual and bulk-Jacobian kernels so each dispatch is a compiled
-        # program.
-        J_bc_func = jax.jit(J_bc_func)
-        res_bc_func = jax.jit(res_bc_func)
+        # Bulk Jacobian / residual as PARAMETRIC functions: (sol, iv, bc, sv).
+        # bc and StaticVars are runtime arguments of the jit boundary, so the
+        # per-iteration compiled kernels bake no mesh-sized constants and the
+        # BC override (``solver(..., bc=...)``) reaches the forward loop. The
+        # hybrid Newton loop runs as a Python loop (the matrix-free Jacobian is
+        # a callable, not a JAX array); jitting the per-call kernels makes each
+        # dispatch one compiled program.
+        J_bc_param = create_J_bc_csr_parametric(problem, symmetric=symmetric_bc)
+        res_bc_param = create_res_bc_parametric(problem)
+        J_bc_param_jit = jax.jit(J_bc_param)
+        res_bc_param_jit = jax.jit(res_bc_param)
 
         _verbose = linear_options.verbose
 
-        def _hybrid_total_res(sol, internal_vars):
+        def _hybrid_total_res(sol, internal_vars, bc_arg, sv):
             """Total residual = bulk + extra (with BCs zeroed)."""
-            return res_bc_func(sol, internal_vars) + extra_res_bc(sol)
+            return res_bc_param_jit(sol, internal_vars, bc_arg, sv) + extra_res_bc(sol)
 
         _iterative_solver = getattr(
             jax.scipy.sparse.linalg, linear_options.solver
         )
 
-        def hybrid_solve_fn(internal_vars, initial_sol, bc_arg=None):
+        def hybrid_solve_fn(internal_vars, initial_sol, bc_arg, sv=None):
             """Python-loop Newton solver with hybrid matrix-free Jacobian."""
             sol = initial_sol
-            res_total = _hybrid_total_res(sol, internal_vars)
+            res_total = _hybrid_total_res(sol, internal_vars, bc_arg, sv)
             res_norm = float(np.linalg.norm(res_total))
             initial_res_norm = res_norm
 
@@ -347,7 +340,7 @@ def create_newton_solver(
                     break
 
                 # Bulk Jacobian (sparse) + hybrid matvec
-                J_bulk = J_bc_func(sol, internal_vars)
+                J_bulk = J_bc_param_jit(sol, internal_vars, bc_arg, sv)
 
                 def matvec(v, _sol=sol):
                     _, Jv_extra = jax.jvp(extra_res_bc, (_sol,), (v,))
@@ -386,7 +379,7 @@ def create_newton_solver(
                 _ls_success = False
                 for _bt in range(newton_options.line_search_max_backtracks):
                     trial_sol = sol + alpha * du
-                    trial_res = _hybrid_total_res(trial_sol, internal_vars)
+                    trial_res = _hybrid_total_res(trial_sol, internal_vars, bc_arg, sv)
                     trial_norm = float(np.linalg.norm(trial_res))
                     if trial_norm < res_norm:
                         _ls_success = True
@@ -433,13 +426,15 @@ def create_newton_solver(
         return _create_differentiable_newton_solver(
             problem=problem,
             bc=bc,
-            J_bc_func=J_bc_func,
-            res_bc_func=res_bc_func,
+            J_bc_func=None,
+            res_bc_func=None,
             solve_fn=hybrid_solve_fn,
             adjoint_solver_options=adjoint_linear_options,
             adjoint_linear_solve_fn=adjoint_linear_solve_fn,
             extra_res_bc_fn=extra_res_bc,
-            bulk_J_bc_func=J_bc_func,
+            bulk_J_bc_func=J_bc_param,
+            J_bc_parametric=J_bc_param,
+            res_bc_parametric=res_bc_param,
             symmetric_bc=symmetric_bc,
         )
 
@@ -518,19 +513,23 @@ def create_callback_newton_solver(
     internal_vars=None,
     symmetric_bc: bool = True,
 ):
-    """Create a differentiable, jit/vmap-safe Newton solver via a host callback.
+    """Create a differentiable, jit/vmap-safe Newton solver (traced loop).
 
-    The Newton iteration (inherently data-dependent) runs as a host Python loop
-    that dispatches the compiled per-iteration kernels (fused CSR
-    residual+Jacobian assembly + linear solve). The whole loop is wrapped in a
-    single :func:`jax.pure_callback`, so tracing it under an outer ``jax.jit``
-    inserts one callback node — no giant fused compile, no ``float(norm)``
-    tracing error. A ``custom_vmap`` rule routes batched calls to a vectorized
-    host loop (block-diagonal direct solves). The backward pass is a single
-    adjoint linear solve plus the residual VJP — ordinary traced JAX, so it is
-    natively jit/vmap/grad compatible.
+    The Newton iteration (inherently data-dependent) is a
+    :func:`jax.lax.while_loop` whose body is one Newton step (fused CSR
+    residual+Jacobian assembly + linear solve + Armijo line search). The body
+    is traced once, so the compiled graph holds a single step regardless of
+    ``max_iter``, and the solver composes natively with ``jax.jit`` /
+    ``jax.vmap`` / ``jax.grad``. The backward pass is a single adjoint linear
+    solve plus the residual VJP (custom_vjp — nothing differentiates through
+    the loop).
 
-    Returns ``solver(internal_vars, initial_guess, bc=None) -> solution``.
+    ``raise_on_line_search_failure`` is honored for eager calls only; under
+    jit/vmap a failed line search stops the iteration (no exception can be
+    raised from traced values).
+
+    Returns ``solver(internal_vars, initial_guess, bc=None, static_vars=None)
+    -> solution``.
     """
     if newton_options is None:
         newton_options = NewtonOptions()
@@ -609,70 +608,31 @@ def create_callback_newton_solver(
             sol, du, res, res_norm, internal_vars=(iv, bc_, sv))
         return new_sol, new_norm, found
 
-    # ---- host loops (run inside pure_callback, concrete arrays) ----------
     def _res_norm_single(sol, iv, bc_, sv):
         return np.linalg.norm(res_param(sol, iv, bc_, sv))
 
-    def host_single(iv, sol0, bc_, sv):
-        sol = sol0
-        res0 = float(_res_norm_single(sol, iv, bc_, sv))
-        for it in range(max_iter):
-            if res0 <= tol:
-                break
-            sol, rn, found = one_step(sol, iv, bc_, sv)
-            if _raise_on_ls_fail and not bool(found):
-                raise NewtonLineSearchError(
-                    f"Newton iter {it}: Armijo line search failed after "
-                    f"{newton_options.line_search_max_backtracks} backtracks. "
-                    "The Newton direction is not a descent direction for "
-                    "0.5*||r||^2 — usually a sign of an inconsistent Jacobian "
-                    "or a bad linear solve.")
-            rn = float(rn)
-            if rn < tol or (res0 > 0 and rn / res0 < rel_tol):
-                break
-        return sol
-
-    # sv (StaticVars) is problem structure — shared across the batch, never
-    # carrying a batch axis.
-    _vstep = jax.vmap(one_step, in_axes=(0, 0, 0, None))
-    _vnorm0 = jax.vmap(_res_norm_single, in_axes=(0, 0, 0, None))
-
-    def host_batched(iv, sol0, bc_, sv):
-        sol = sol0
-        res0 = np.asarray(_vnorm0(sol, iv, bc_, sv))       # (B,)
-        for it in range(max_iter):
-            sol, rn, found = _vstep(sol, iv, bc_, sv)      # rn (B,), found (B,)
-            rn = np.asarray(rn)
-            if _raise_on_ls_fail and not bool(np.all(found)):
-                n_fail = int(np.sum(~np.asarray(found)))
-                raise NewtonLineSearchError(
-                    f"Newton iter {it}: Armijo line search failed for "
-                    f"{n_fail} of {rn.shape[0]} batched systems.")
-            denom = np.where(res0 > 0, res0, 1.0)
-            converged = (rn < tol) | (rn / denom < rel_tol)
-            if bool(np.all(converged)):
-                break
-        return sol
-
-    # ---- forward -----------------------------------------------------------
-    # Two interchangeable implementations:
+    # ---- forward: traced Newton loop (lax.while_loop) ---------------------
+    # The loop body is traced ONCE — the compiled graph holds a single Newton
+    # step regardless of ``max_iter`` (a while_loop does not unroll). The whole
+    # solve therefore:
+    #   * composes with jax.jit natively, with no pure_callback node and no
+    #     host round-trip per iteration (each step is one fused program, not
+    #     hundreds of eagerly dispatched kernels);
+    #   * vmaps natively (batched while_loop: all lanes iterate until every
+    #     lane's condition is false, converged lanes are masked) — the CPU
+    #     direct backends keep their block-diagonal custom_vmap rules;
+    #   * works with GPU FFI backends (cuDSS): inside a pure_callback the
+    #     computation is placed on the Host platform, where the CUDA FFI
+    #     handler does not exist. CPU direct backends (spsolve/cholmod/
+    #     umfpack) are pure_callback-based and run inside the loop body fine.
+    # Gradients are unaffected — custom_vjp wraps the solve, nothing
+    # differentiates through the loop.
     #
-    # * traced ``lax.while_loop`` — used when the forward linear solver is
-    #   cuDSS. The cuDSS FFI call is registered for the CUDA platform only;
-    #   inside a ``pure_callback`` the computation is placed on Host, where no
-    #   handler exists (and dispatching GPU work from a host callback can
-    #   deadlock the stream). A traced loop keeps the FFI call in an ordinary
-    #   CUDA trace. It vmaps natively (batched while_loop), at the cost of
-    #   host-side conveniences: ``raise_on_line_search_failure`` cannot raise
-    #   (a failed line search just stops the iteration) and there is no
-    #   per-iteration host logging.
-    #
-    # * host loop in a single ``pure_callback`` — all other backends (the CPU
-    #   direct solvers run on the host anyway). Preserves the host-side
-    #   line-search error and adaptive early exit.
-    _traced_forward = _fwd_direct and getattr(linear_options, "solver", None) == "cudss"
-
-    def _forward_traced(iv, sol0, bc_, sv):
+    # Host-side behavior: ``raise_on_line_search_failure`` is honored for
+    # eager (non-traced, non-vmapped) calls, where the final line-search flag
+    # is concrete. Under jit/vmap an exception cannot be raised from traced
+    # values; a failed line search simply stops the iteration there.
+    def _forward(iv, sol0, bc_, sv):
         res00 = _res_norm_single(sol0, iv, bc_, sv)
 
         def cond(state):
@@ -686,43 +646,17 @@ def create_callback_newton_solver(
             return (new_sol, new_norm, it + 1, f)
 
         init = (sol0, res00, np.array(0, dtype=np.int32), np.array(True))
-        sol, _, _, _ = jax.lax.while_loop(cond, body, init)
+        sol, _, it, found = jax.lax.while_loop(cond, body, init)
+
+        if _raise_on_ls_fail and not isinstance(found, jax.core.Tracer):
+            if not bool(found):
+                raise NewtonLineSearchError(
+                    f"Newton iter {int(it)}: Armijo line search failed after "
+                    f"{newton_options.line_search_max_backtracks} backtracks. "
+                    "The Newton direction is not a descent direction for "
+                    "0.5*||r||^2 — usually a sign of an inconsistent Jacobian "
+                    "or a bad linear solve.")
         return sol
-
-    @custom_batching.custom_vmap
-    def _forward_callback(iv, sol0, bc_, sv):
-        rshape = jax.ShapeDtypeStruct(sol0.shape, sol0.dtype)
-        return jax.pure_callback(host_single, rshape, iv, sol0, bc_, sv)
-
-    def _forward(iv, sol0, bc_, sv):
-        if _traced_forward:
-            return _forward_traced(iv, sol0, bc_, sv)
-        return _forward_callback(iv, sol0, bc_, sv)
-
-    @_forward_callback.def_vmap
-    def _forward_vmap(axis_size, in_batched, iv, sol0, bc_, sv):
-        # ``in_batched`` mirrors the (iv, sol0, bc_, sv) structure with a bool
-        # per leaf: True → that leaf already carries the batch axis at position
-        # 0, False → it must be broadcast so every leaf is uniformly batched.
-        # sv is problem structure and stays shared (unbatched) across the batch.
-        iv_b, sol_b, bc_b, sv_b = in_batched
-        if any(jax.tree_util.tree_leaves(sv_b)):
-            raise NotImplementedError(
-                "vmap over StaticVars is not supported — the problem structure "
-                "must be shared across the batch.")
-
-        def _bcast(x, xb):
-            return jax.tree_util.tree_map(
-                lambda a, batched: a if batched
-                else np.broadcast_to(a, (axis_size,) + np.shape(a)),
-                x, xb)
-
-        iv = _bcast(iv, iv_b)
-        sol0 = _bcast(sol0, sol_b)
-        bc_ = _bcast(bc_, bc_b)
-        rshape = jax.ShapeDtypeStruct(sol0.shape, sol0.dtype)
-        out = jax.pure_callback(host_batched, rshape, iv, sol0, bc_, sv)
-        return out, True
 
     # ---- adjoint (single traced linear solve; vmaps natively) ------------
     _needs_bc_correction = symmetric_bc

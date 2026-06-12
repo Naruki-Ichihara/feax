@@ -270,7 +270,8 @@ def create_density_filter(mesh, radius: float, weight_type: str = "cone") -> Cal
             - "constant": w = 1 if d <= r, else 0
 
     Returns:
-        filter_fn: A JIT-compiled function (rho) -> rho_filtered
+        filter_fn: A pure-JAX function (rho) -> rho_filtered; compose it
+            under the caller's ``jax.jit`` (feax.gene.optimizer does this)
                   Input: (num_nodes,) node-based density field
                   Output: (num_nodes,) filtered node-based density field
 
@@ -299,7 +300,6 @@ def create_density_filter(mesh, radius: float, weight_type: str = "cone") -> Cal
     # Pre-compute sparse filter weight matrix (done once at filter creation)
     weight_matrix, row_sums = _compute_density_filter_weights_sparse(points, radius, weight_type)
 
-    @jax.jit
     def filter_fn(rho: np.ndarray) -> np.ndarray:
         """Apply density filter to node-based design variables.
 
@@ -353,14 +353,14 @@ def density_filter(rho_source, mesh, radius: float, weight_type: str = "cone") -
 # ============================================================================
 
 
-@jax.jit
 def heaviside_projection(rho, beta=10.0, threshold=0.5):
     """
     Apply Heaviside projection to density field for sharp void/solid boundaries.
 
     H(ρ) = (tanh(β*(ρ-threshold)) + 1) / 2
 
-    This function is pure and JIT-compiled for efficient batched processing.
+    This function is pure JAX; jit it (or the loss containing it) at the
+    call site for efficient batched processing.
 
     Args:
         rho: Density field (normalized to [0, 1])
