@@ -22,7 +22,7 @@ from feax.solvers.time_solver import ImplicitPipeline, TimeConfig, run
 
 The most common choice. Each time step solves one (non)linear system:
 
-1. `update_vars(state, t, dt)` → `InternalVars` (pack the previous solution)
+1. `update_vars(state, t, dt)` → `TracedParams` (pack the previous solution)
 2. `self.solver(iv, state)` → new state
 
 ### Minimal Example: Heat Equation
@@ -37,14 +37,14 @@ class HeatPipeline(ImplicitPipeline):
         bc = fe.DirichletBCConfig([...]).create_bc(self.problem)
         self.solver = fe.create_solver(self.problem, bc,
             solver_options=fe.DirectSolverOptions(),
-            linear=True, internal_vars=fe.InternalVars(volume_vars=(T0,)))
+            linear=True, traced_params=fe.TracedParams(volume_vars=(T0,)))
 
     def initial_state(self):
         return T0_flat  # flat solution vector
 
     def update_vars(self, state, t, dt):
         T_old = self.problem.unflatten_fn_sol_list(state)[0][:, 0]
-        return fe.InternalVars(volume_vars=(T_old,))
+        return fe.TracedParams(volume_vars=(T_old,))
 
 result = run(HeatPipeline(), mesh, TimeConfig(dt=1e-5, t_end=1e-2))
 ```
@@ -55,13 +55,13 @@ result = run(HeatPipeline(), mesh, TimeConfig(dt=1e-5, t_end=1e-2))
 |---|---|---|
 | `build(mesh)` | Yes | Create problem, BCs, solver. Called once before the time loop. |
 | `initial_state()` | Yes | Return the initial flat solution vector (or any JAX pytree). |
-| `update_vars(state, t, dt)` | Yes | Pack the current state into `InternalVars` for the implicit solve. |
+| `update_vars(state, t, dt)` | Yes | Pack the current state into `TracedParams` for the implicit solve. |
 | `save(state, step, t, output_dir)` | No | Write VTK or other output files. |
 | `monitor(state, step, t)` | No | Return `{name: value}` dict for logging. |
 
 ### How Backward Euler Works
 
-The transient term (e.g., $\partial T / \partial t$) is discretized as $(T^{n+1} - T^n) / \Delta t$ inside the weak form. The "old" value $T^n$ is passed to the solver as an `InternalVars` entry. FEAX then solves the nonlinear system for $T^{n+1}$.
+The transient term (e.g., $\partial T / \partial t$) is discretized as $(T^{n+1} - T^n) / \Delta t$ inside the weak form. The "old" value $T^n$ is passed to the solver as an `TracedParams` entry. FEAX then solves the nonlinear system for $T^{n+1}$.
 
 In the Problem class, the weak form receives the old value as an extra argument:
 
@@ -139,11 +139,11 @@ class StaggaredPipeline(TimePipeline):
 
     def step(self, state, t, dt):
         # Thermal solve
-        iv_thermal = fe.InternalVars(volume_vars=(state['T'],))
+        iv_thermal = fe.TracedParams(volume_vars=(state['T'],))
         T_new = self.thermal_solver(iv_thermal, state['T'])
 
         # Mechanical solve with updated temperature
-        iv_mech = fe.InternalVars(volume_vars=(T_new,))
+        iv_mech = fe.TracedParams(volume_vars=(T_new,))
         u_new = self.mech_solver(iv_mech, state['u'])
 
         return {'T': T_new, 'u': u_new}

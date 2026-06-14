@@ -20,7 +20,7 @@ import feax as fe
 
 def test_cg_solver_linear_elasticity(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test JAX CG solver on linear elasticity problem."""
@@ -39,7 +39,7 @@ def test_cg_solver_linear_elasticity(
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve
-    solution = solver(internal_vars, initial)
+    solution = solver(traced_params, initial)
 
     # Check solution is non-trivial
     assert np.linalg.norm(solution) > 0
@@ -50,7 +50,7 @@ def test_cg_solver_linear_elasticity(
 
 def test_bicgstab_solver_linear_elasticity(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test JAX BICGSTAB solver on linear elasticity problem."""
@@ -69,7 +69,7 @@ def test_bicgstab_solver_linear_elasticity(
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve
-    solution = solver(internal_vars, initial)
+    solution = solver(traced_params, initial)
 
     # Check solution is non-trivial
     assert np.linalg.norm(solution) > 0
@@ -80,7 +80,7 @@ def test_bicgstab_solver_linear_elasticity(
 
 def test_gmres_solver_linear_elasticity(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test JAX GMRES solver on linear elasticity problem."""
@@ -99,7 +99,7 @@ def test_gmres_solver_linear_elasticity(
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve
-    solution = solver(internal_vars, initial)
+    solution = solver(traced_params, initial)
 
     # Check solution is non-trivial
     assert np.linalg.norm(solution) > 0
@@ -110,7 +110,7 @@ def test_gmres_solver_linear_elasticity(
 
 def test_solver_consistency_cg_bicgstab_gmres(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that CG, BICGSTAB, and GMRES produce consistent solutions."""
@@ -127,19 +127,19 @@ def test_solver_consistency_cg_bicgstab_gmres(
     solver_opts_cg = fe.KrylovSolverOptions(solver="cg")
     solver_cg = fe.create_solver(problem, bc, solver_options=solver_opts_cg, linear=True)
     initial_cg = fe.zero_like_initial_guess(problem, bc)
-    sol_cg = solver_cg(internal_vars, initial_cg)
+    sol_cg = solver_cg(traced_params, initial_cg)
 
     # Solve with BICGSTAB
     solver_opts_bicgstab = fe.KrylovSolverOptions(solver="bicgstab")
     solver_bicgstab = fe.create_solver(problem, bc, solver_options=solver_opts_bicgstab, linear=True)
     initial_bicgstab = fe.zero_like_initial_guess(problem, bc)
-    sol_bicgstab = solver_bicgstab(internal_vars, initial_bicgstab)
+    sol_bicgstab = solver_bicgstab(traced_params, initial_bicgstab)
 
     # Solve with GMRES
     solver_opts_gmres = fe.KrylovSolverOptions(solver="gmres")
     solver_gmres = fe.create_solver(problem, bc, solver_options=solver_opts_gmres, linear=True)
     initial_gmres = fe.zero_like_initial_guess(problem, bc)
-    sol_gmres = solver_gmres(internal_vars, initial_gmres)
+    sol_gmres = solver_gmres(traced_params, initial_gmres)
 
     # All solutions should be close to each other
     solution_tol = 1e-4
@@ -155,7 +155,7 @@ def test_solver_consistency_cg_bicgstab_gmres(
 
 def test_solution_physical_validity_with_cg(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that CG solution has physically valid properties."""
@@ -173,7 +173,7 @@ def test_solution_physical_validity_with_cg(
     solver_opts = fe.KrylovSolverOptions(solver="cg")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
-    solution = solver(internal_vars, initial)
+    solution = solver(traced_params, initial)
 
     # Check that solution is non-trivial
     solution_norm = np.linalg.norm(solution)
@@ -185,7 +185,7 @@ def test_solution_physical_validity_with_cg(
 
 def test_residual_after_cg_solve(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that residual is small after solving with CG."""
@@ -202,11 +202,11 @@ def test_residual_after_cg_solve(
     solver_opts = fe.KrylovSolverOptions(solver="cg")
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True)
     initial = fe.zero_like_initial_guess(problem, bc)
-    solution = solver(internal_vars, initial)
+    solution = solver(traced_params, initial)
 
     # Check residual
     sol_list = problem.unflatten_fn_sol_list(solution)
-    residual_list = fe.get_res(problem, sol_list, internal_vars)
+    residual_list = fe.get_res(problem, sol_list, traced_params)
 
     # Flatten residual list to vector by concatenating and flattening each array
     residual = np.concatenate([r.flatten() for r in residual_list])

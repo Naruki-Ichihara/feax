@@ -13,13 +13,13 @@ import feax as fe
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(),
     linear=True,
-    internal_vars=internal_vars)
+    traced_params=traced_params)
 
 # 2. Create an initial guess
 initial = fe.zero_like_initial_guess(problem, bc)
 
 # 3. Solve
-sol = solver(internal_vars, initial)
+sol = solver(traced_params, initial)
 ```
 
 The returned `solver` is a callable with a `custom_vjp`, so it composes with `jax.jit`, `jax.grad`, and `jax.vmap`.
@@ -49,7 +49,7 @@ The distinction is the operator representation:
 # Auto-select: cuDSS on GPU, cholmod/umfpack/spsolve on CPU
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(),
-    linear=True, internal_vars=internal_vars)
+    linear=True, traced_params=traced_params)
 
 # Explicit backend
 solver = fe.create_solver(problem, bc,
@@ -68,7 +68,7 @@ When `symmetric_bc=False` is used, the Jacobian becomes non-symmetric (GENERAL).
 ```python
 solver = fe.create_solver(problem, bc,
     solver_options=fe.KrylovSolverOptions(solver="cg"),
-    linear=True, internal_vars=internal_vars)
+    linear=True, traced_params=traced_params)
 ```
 
 Available backends: `"auto"`, `"cg"`, `"bicgstab"`, `"gmres"`.
@@ -87,7 +87,7 @@ When `solver_options` is omitted or set to `solver="auto"`, FEAX selects a concr
 solver_options=None  (or DirectSolverOptions(solver="auto"))
         │
         ▼
-  Assemble sample Jacobian (needs internal_vars)
+  Assemble sample Jacobian (needs traced_params)
         │
         ▼
   detect_matrix_property(J)
@@ -110,7 +110,7 @@ solver_options=None  (or DirectSolverOptions(solver="auto"))
 ```
 
 :::note Auto-selection assembles a sample Jacobian
-Resolving `"auto"` evaluates the Jacobian once to inspect its properties, so pass `internal_vars` to `create_solver` when you rely on auto-selection (or specify the solver explicitly to skip the probe).
+Resolving `"auto"` evaluates the Jacobian once to inspect its properties, so pass `traced_params` to `create_solver` when you rely on auto-selection (or specify the solver explicitly to skip the probe).
 :::
 
 ### Direct Solver Priority
@@ -191,8 +191,8 @@ For linear elasticity and other linear PDEs, one linear solve is sufficient:
 ```python
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(),
-    linear=True, internal_vars=internal_vars)
-sol = solver(internal_vars, initial)
+    linear=True, traced_params=traced_params)
+sol = solver(traced_params, initial)
 ```
 
 ### Nonlinear Problems (`linear=False`)
@@ -203,10 +203,10 @@ For hyperelasticity and other nonlinear problems, use the Newton path (the defau
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(),
     newton_options=fe.NewtonOptions(tol=1e-8, max_iter=50),
-    internal_vars=internal_vars)
+    traced_params=traced_params)
 
 initial = fe.zero_like_initial_guess(problem, bc)
-sol = solver(internal_vars, initial)
+sol = solver(traced_params, initial)
 ```
 
 The Newton iteration runs adaptively (it stops as soon as the residual is converged). The loop itself runs on the host inside a single `jax.pure_callback`, so it stays compatible with `jax.jit` and `jax.vmap` while still using data-dependent convergence and line search.
@@ -269,7 +269,7 @@ solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(solver="spsolve"),
     newton_options=fe.NewtonOptions(tol=1e-6, max_iter=20),
     symmetric_bc=False,
-    internal_vars=internal_vars)
+    traced_params=traced_params)
 ```
 
 ### When to Use `symmetric_bc=False`
@@ -293,7 +293,7 @@ solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(solver="spsolve"),
     newton_options=fe.NewtonOptions(tol=1e-6, max_iter=20),
     symmetric_bc=False,
-    internal_vars=internal_vars)
+    traced_params=traced_params)
 
 sol = fe.zero_like_initial_guess(problem, bc)
 
@@ -304,7 +304,7 @@ for step in range(1, num_steps + 1):
     bc_step = bc.replace_vals(new_vals)
 
     # Solve with updated BCs, reusing the previous solution as initial guess
-    sol = solver(internal_vars, sol, bc=bc_step)
+    sol = solver(traced_params, sol, bc=bc_step)
 ```
 
 Key points:
@@ -384,7 +384,7 @@ import feax as fe
 
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(),
-    linear=True, internal_vars=iv)
+    linear=True, traced_params=iv)
 
 # Stack bc_vals into a batch (shape: [batch_size, num_bc_dofs])
 vals_batch = np.stack([
@@ -439,7 +439,7 @@ All solver paths implement `jax.custom_vjp`. The backward pass uses the **implic
 
 | Parameter | Differentiable | Notes |
 |---|---|---|
-| `InternalVars` (material params, loads) | Yes | All solver paths |
+| `TracedParams` (material params, loads) | Yes | All solver paths |
 | `bc_vals` (BC prescribed values) | Yes | Pass `bc=bc.replace_vals(...)` |
 | `initial_guess` | No | Gradient is `None` (not meaningful) |
 

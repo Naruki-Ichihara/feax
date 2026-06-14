@@ -132,10 +132,10 @@ def linear_elasticity_problem_lower(simple_mesh, material_params, boundary_condi
 
 
 @pytest.fixture
-def internal_vars(simple_mesh, boundary_condition, material_params):
+def traced_params(simple_mesh, boundary_condition, material_params):
     """Create internal variables independent of matrix view (shared for all problems)."""
     traction = material_params['traction']
     # Create a temporary problem just for generating internal vars (like in the example)
     temp_problem = fe.Problem(simple_mesh, vec=3, dim=3, location_fns=[boundary_condition])
-    surf_var = fe.InternalVars.create_uniform_surface_var(temp_problem, traction)
-    return fe.InternalVars((), [(surf_var,)])
+    surf_var = fe.TracedParams.create_uniform_surface_var(temp_problem, traction)
+    return fe.TracedParams((), [(surf_var,)])

@@ -83,7 +83,7 @@ class ThirdMediumContact(fe.Problem)
 Neo-Hookean + HuHu-LuLu regularization Problem for third-medium contact.
 
 Do not instantiate directly — use :meth:`create` which also builds the
-matching :class:`~feax.InternalVars`.
+matching :class:`~feax.TracedParams`.
 
 Parameters stored via ``additional_info``:
     ``(kr_coeff, plane_strain)``
@@ -129,7 +129,7 @@ def create(
         dim: Optional[int] = None,
         ref_length: float = 1.0,
         plane_strain: bool = True
-) -> Tuple["ThirdMediumContact", InternalVars]
+) -> Tuple["ThirdMediumContact", TracedParams]
 ```
 
 Create a TMC problem with matching internal variables.
@@ -151,7 +151,7 @@ Parameters
 Returns
 -------
 - **problem** (*ThirdMediumContact*): Configured feax Problem (with ``hess=True``).
-- **iv** (*feax.InternalVars*): Internal variables ready for ``create_solver`` / ``newton_solve``.
+- **iv** (*feax.TracedParams*): Internal variables ready for ``create_solver`` / ``newton_solve``.
 
 
 Examples
@@ -161,6 +161,6 @@ Examples
 ...     mesh, is_medium, mu=G, lmbda=K,
 ...     gamma0=5e-7, kr=5e-7, ele_type=&#x27;QUAD9&#x27;,
 ... )
->>> solver = fe.create_solver(problem, bc, internal_vars=iv, ...)
+>>> solver = fe.create_solver(problem, bc, traced_params=iv, ...)
 ```
 

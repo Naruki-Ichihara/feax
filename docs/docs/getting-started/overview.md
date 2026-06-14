@@ -28,16 +28,16 @@ bc = fe.DCboundary.DirichletBCConfig([
 ]).create_bc(problem)
 
 # 4. Internal variables (parameters)
-internal_vars = fe.InternalVars(volume_vars=(), surface_vars=[])
+traced_params = fe.TracedParams(volume_vars=(), surface_vars=[])
 
 # 5. Solver
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(),
-    linear=True, internal_vars=internal_vars)
+    linear=True, traced_params=traced_params)
 initial = fe.zero_like_initial_guess(problem, bc)
 
 # 6. Solve
-sol = solver(internal_vars, initial)
+sol = solver(traced_params, initial)
 ```
 
 ## Problem Definition
@@ -148,7 +148,7 @@ For coupled multi-physics (e.g., Stokes flow, Cahn-Hilliard), use `get_weak_form
 The weak form function operates at a **single quadrature point** and is automatically `jax.vmap`-ed over all quadrature points by the framework. Its signature is:
 
 ```python
-def weak_form(vals, grads, x, *internal_vars):
+def weak_form(vals, grads, x, *traced_params):
     ...
     return mass_terms, grad_terms
 ```
@@ -160,7 +160,7 @@ def weak_form(vals, grads, x, *internal_vars):
 | `vals[i]` | `(vec_i,)` | Interpolated solution of variable $i$ at the quadrature point |
 | `grads[i]` | `(vec_i, dim)` | Gradient of variable $i$ at the quadrature point |
 | `x` | `(dim,)` | Physical coordinate of the quadrature point |
-| `*internal_vars` | scalar (interpolated) | Volume internal variables, interpolated to the quadrature point |
+| `*traced_params` | scalar (interpolated) | Volume internal variables, interpolated to the quadrature point |
 
 **Return values:**
 
@@ -203,7 +203,7 @@ problem = CahnHilliard(
 For multi-variable surface loads, override `get_surface_weak_forms()`. Each function operates at a single surface quadrature point:
 
 ```python
-def surface_weak_form(vals, x, *internal_vars):
+def surface_weak_form(vals, x, *traced_params):
     ...
     return tractions  # list of (vec_i,) arrays
 ```
@@ -246,7 +246,7 @@ def kernel(
     cell_shape_grads,       # (num_quads, num_nodes, dim)  dN/dx at native Gauss pts
     cell_JxW,               # (num_quads,)           det(J) × weight at native Gauss pts
     cell_v_grads_JxW,       # (num_quads, num_nodes, vec, dim)  pre-weighted test grad
-    *cell_internal_vars,    # per-cell internal variables (gathered from InternalVars)
+    *cell_internal_vars,    # per-cell internal variables (gathered from TracedParams)
 ):
     ...
     return residual_flat    # (num_dofs_per_cell,)  element residual, flattened
@@ -287,7 +287,7 @@ class MyProblem(fe.Problem):
 
 ##### Per-cell internal variables
 
-`cell_internal_vars` contains **one entry per variable in `InternalVars.volume_vars`**, already gathered to the element level:
+`cell_internal_vars` contains **one entry per variable in `TracedParams.volume_vars`**, already gathered to the element level:
 
 | Global shape | Per-cell shape passed to kernel |
 |---|---|
@@ -307,7 +307,7 @@ import jax
 import jax.numpy as np
 import jax.flatten_util
 import feax as fe
-from feax.internal_vars import InternalVars
+from feax.traced_params import TracedParams
 
 class CustomQuadratureProblem(fe.Problem):
     def custom_init(self, dNdxi, weights, C):
@@ -327,7 +327,7 @@ class CustomQuadratureProblem(fe.Problem):
         def kernel(cell_sol_flat, physical_quad_points,
                    cell_shape_grads, cell_JxW, cell_v_grads_JxW,
                    cell_nodes):
-            # cell_nodes: (num_nodes, 3) — per-cell physical coords from InternalVars
+            # cell_nodes: (num_nodes, 3) — per-cell physical coords from TracedParams
             cell_sol = unflatten(cell_sol_flat)[0]          # (num_nodes, 3)
 
             # Isoparametric Jacobian and its inverse at each custom quad point
@@ -352,13 +352,13 @@ class CustomQuadratureProblem(fe.Problem):
 
 
 # Construction: pass custom quad data via additional_info,
-# node coords via InternalVars
+# node coords via TracedParams
 problem = CustomQuadratureProblem(
     mesh, vec=3, dim=3, ele_type="HEX8",
     additional_info=(dNdxi, weights, C),
 )
 cell_nodes = np.asarray(mesh.points)[np.asarray(mesh.cells)]  # (nc, nn, 3)
-iv = InternalVars(volume_vars=(cell_nodes,))
+iv = TracedParams(volume_vars=(cell_nodes,))
 ```
 
 :::note
@@ -426,7 +426,7 @@ See [Periodic Boundary Conditions](../advanced/periodic_boundary_conditions.md) 
 
 ## Internal Variables
 
-`InternalVars` separates problem structure from parameter values. This separation is what makes FEAX differentiable — parameters flow through the solver as JAX arrays, enabling `jax.grad` and `jax.vmap`.
+`TracedParams` separates problem structure from parameter values. This separation is what makes FEAX differentiable — parameters flow through the solver as JAX arrays, enabling `jax.grad` and `jax.vmap`.
 
 ### Creation Methods
 
@@ -443,13 +443,13 @@ See [Periodic Boundary Conditions](../advanced/periodic_boundary_conditions.md) 
 
 ```python
 # Volume variables → passed as *args to get_tensor_map() stress function
-E  = fe.InternalVars.create_node_var(problem, 210e3)
-nu = fe.InternalVars.create_node_var(problem, 0.3)
+E  = fe.TracedParams.create_node_var(problem, 210e3)
+nu = fe.TracedParams.create_node_var(problem, 0.3)
 
 # Surface variables → passed as *args to get_surface_maps() traction function
-traction = fe.InternalVars.create_uniform_surface_var(problem, 1e-3)
+traction = fe.TracedParams.create_uniform_surface_var(problem, 1e-3)
 
-internal_vars = fe.InternalVars(
+traced_params = fe.TracedParams(
     volume_vars=(E, nu),            # tuple of arrays
     surface_vars=[(traction,)]      # list of tuples, one per location_fn
 )
@@ -469,7 +469,7 @@ def get_tensor_map(self):
 
 ### Differentiability
 
-Since `InternalVars` is a JAX pytree, you can differentiate with respect to any parameter:
+Since `TracedParams` is a JAX pytree, you can differentiate with respect to any parameter:
 
 ```python
 def objective(iv):
@@ -477,7 +477,7 @@ def objective(iv):
     return np.sum(sol ** 2)
 
 grad_fn = jax.grad(objective)
-grads = grad_fn(internal_vars)
+grads = grad_fn(traced_params)
 # grads.volume_vars[0] → sensitivity w.r.t. E at each node
 ```
 
@@ -504,11 +504,11 @@ The `linear` flag selects the solve path:
 ```python
 # Linear problem — one solve
 solver = fe.create_solver(problem, bc, solver_options=fe.DirectSolverOptions(),
-    linear=True, internal_vars=internal_vars)
+    linear=True, traced_params=traced_params)
 
 # Nonlinear problem — adaptive Newton (the default)
 solver = fe.create_solver(problem, bc, solver_options=fe.DirectSolverOptions(),
-    internal_vars=internal_vars)
+    traced_params=traced_params)
 ```
 
 Both paths compose with `jax.jit`, `jax.vmap`, and `jax.grad`. The Newton loop runs on the host inside a single `jax.pure_callback`, so adaptive convergence stays trace-compatible.
@@ -533,7 +533,7 @@ solver = fe.create_solver(problem, bc,
 All solvers share the same signature:
 
 ```python
-sol = solver(internal_vars, initial_guess)
+sol = solver(traced_params, initial_guess)
 ```
 
 This uniform interface enables `jax.jit`, `jax.grad`, and `jax.vmap` to work with any solver path.
@@ -555,11 +555,11 @@ import jax
 
 # JIT compilation — eliminates Python overhead
 fast_solver = jax.jit(solver)
-sol = fast_solver(internal_vars, initial)
+sol = fast_solver(traced_params, initial)
 
 # Differentiation — gradients through the entire solve
 grad_fn = jax.grad(lambda iv: np.sum(solver(iv, initial)**2))
-grads = grad_fn(internal_vars)
+grads = grad_fn(traced_params)
 
 # Vectorization — batch parameter studies
 batched_solver = jax.vmap(solver, in_axes=(0, None))

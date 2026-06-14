@@ -555,10 +555,10 @@ def mindlin_weak_form(
     Returns
     -------
     weak_form : callable
-        ``(vals, grads, x, *internal_vars) -> (mass_terms, grad_terms)``.
+        ``(vals, grads, x, *traced_params) -> (mass_terms, grad_terms)``.
     """
 
-    def weak_form(vals, grads, x, *internal_vars):
+    def weak_form(vals, grads, x, *traced_params):
         uvw = vals[0]                       # (3,)
         theta = vals[1]                     # (2,)
         grad_uvw = grads[0]                 # (3, 2)

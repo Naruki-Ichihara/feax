@@ -175,7 +175,7 @@ def create_dynamic_compliance_fn(problem):
             # Note: negative sign follows the convention that external work is positive
             traction = -jax.vmap(
                 jax.vmap(
-                    lambda u, x, sv: surface['surface_fn'](u, x, *sv),
+                    lambda u, x, svars: surface['surface_fn'](u, x, *svars),
                     in_axes=(0, 0, 0),
                 )
             )(u_face, surface['subset_quad_points'], surface_vars_i)

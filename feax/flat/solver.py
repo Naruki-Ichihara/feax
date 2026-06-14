@@ -73,7 +73,7 @@ def macro_displacement(mesh, epsilon_macro: np.ndarray) -> np.ndarray:
     return (pts @ epsilon_macro.T).flatten()
 
 
-def average_stress(problem, u_total: np.ndarray, internal_vars, dim: int) -> np.ndarray:
+def average_stress(problem, u_total: np.ndarray, traced_params, dim: int) -> np.ndarray:
     """Compute the volume-averaged Cauchy stress in Voigt notation.
 
     Parameters
@@ -82,8 +82,8 @@ def average_stress(problem, u_total: np.ndarray, internal_vars, dim: int) -> np.
         FEAX Problem instance.
     u_total : ndarray, shape (num_dofs,)
         Total displacement field.
-    internal_vars :
-        FEAX InternalVars.
+    traced_params :
+        FEAX TracedParams.
     dim : int
         Problem dimension (2 or 3).
 
@@ -123,7 +123,7 @@ def average_stress(problem, u_total: np.ndarray, internal_vars, dim: int) -> np.
     cell_node_ids = problem.cells_list[0]   # (num_cells, nodes_per_cell)
 
     vol_vars_quad = []
-    for var in internal_vars.volume_vars:
+    for var in traced_params.volume_vars:
         if var.ndim == 1:
             if var.shape[0] == num_cells:
                 # cell-based: same value at every quad point
@@ -227,12 +227,12 @@ def create_homogenization_solver(
     Returns
     -------
     callable
-        ``solve(internal_vars) -> HomogenizationResult``
+        ``solve(traced_params) -> HomogenizationResult``
 
     Examples
     --------
     >>> solve = create_homogenization_solver(problem, bc, P, mesh, dim=3)
-    >>> result = solve(internal_vars)
+    >>> result = solve(traced_params)
     >>> result.C_hom   # ndarray, shape (6, 6)
     >>> result.u_totals[0]  # displacement field for first strain case
     """
@@ -252,16 +252,16 @@ def create_homogenization_solver(
 
     fluctuation_solver = create_solver(problem, bc, solver_options, P=P)
 
-    def _single_case(unit_strain, internal_vars):
+    def _single_case(unit_strain, traced_params):
         u_macro = macro_displacement(mesh, unit_strain)
-        u_total = fluctuation_solver(internal_vars, u_macro)
-        sigma_voigt = average_stress(problem, u_total, internal_vars, dim)
+        u_total = fluctuation_solver(traced_params, u_macro)
+        sigma_voigt = average_stress(problem, u_total, traced_params, dim)
         return sigma_voigt, u_total, u_macro
 
-    def solve(internal_vars) -> HomogenizationResult:
+    def solve(traced_params) -> HomogenizationResult:
         columns, u_totals, u_macros = jax.vmap(
             _single_case, in_axes=(0, None)
-        )(unit_strains_arr, internal_vars)
+        )(unit_strains_arr, traced_params)
         # columns: (n_cases, voigt_dim), need transpose for C_hom
         C_hom = columns.T
         return HomogenizationResult(

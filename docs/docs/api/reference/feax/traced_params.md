@@ -1,20 +1,20 @@
 ---
-sidebar_label: internal_vars
-title: feax.internal_vars
+sidebar_label: traced_params
+title: feax.traced_params
 ---
 
 Internal variables management for FEAX finite element framework.
 
-This module provides the InternalVars dataclass for handling dynamic parameters
+This module provides the TracedParams dataclass for handling dynamic parameters
 separately from problem structure.
 
-## InternalVars Objects
+## TracedParams Objects
 
 ```python
 @dataclass(frozen=True)
 
 @jax.tree_util.register_pytree_node_class
-class InternalVars()
+class TracedParams()
 ```
 
 Container for internal variables used in finite element computations.
@@ -43,9 +43,9 @@ required for functional programming patterns.
 Examples
 --------
 ```python
->>> E = InternalVars.create_node_var(problem, 210e9)  # Young&#x27;s modulus at nodes
->>> nu = InternalVars.create_node_var(problem, 0.3)   # Poisson&#x27;s ratio at nodes
->>> internal_vars = InternalVars(volume_vars=(E, nu))
+>>> E = TracedParams.create_node_var(problem, 210e9)  # Young&#x27;s modulus at nodes
+>>> nu = TracedParams.create_node_var(problem, 0.3)   # Poisson&#x27;s ratio at nodes
+>>> traced_params = TracedParams(volume_vars=(E, nu))
 ```
 
 #### \_\_post\_init\_\_
@@ -90,8 +90,8 @@ Examples
 --------
 Create uniform material properties:
 ```python
->>> E = InternalVars.create_node_var(problem, 210e9)  # Young&#x27;s modulus
->>> rho = InternalVars.create_node_var(problem, 7800)  # Density
+>>> E = TracedParams.create_node_var(problem, 210e9)  # Young&#x27;s modulus
+>>> rho = TracedParams.create_node_var(problem, 7800)  # Density
 ```
 
 #### create\_cell\_var
@@ -125,8 +125,8 @@ Examples
 --------
 Create uniform element properties:
 ```python
->>> rho = InternalVars.create_cell_var(problem, 0.5)  # Topology density per element
->>> E = InternalVars.create_cell_var(problem, 70e3)  # Young&#x27;s modulus per element
+>>> rho = TracedParams.create_cell_var(problem, 0.5)  # Topology density per element
+>>> E = TracedParams.create_cell_var(problem, 70e3)  # Young&#x27;s modulus per element
 ```
 
 #### create\_uniform\_volume\_var
@@ -159,8 +159,8 @@ Examples
 --------
 Create uniform material properties:
 ```python
->>> E = InternalVars.create_uniform_volume_var(problem, 210e9)  # Young&#x27;s modulus
->>> rho = InternalVars.create_uniform_volume_var(problem, 7800)  # Density
+>>> E = TracedParams.create_uniform_volume_var(problem, 210e9)  # Young&#x27;s modulus
+>>> rho = TracedParams.create_uniform_volume_var(problem, 7800)  # Density
 ```
 
 #### create\_uniform\_surface\_var
@@ -193,8 +193,8 @@ Examples
 --------
 Create uniform surface loads:
 ```python
->>> pressure = InternalVars.create_uniform_surface_var(problem, -1000)  # Pressure load
->>> heat_flux = InternalVars.create_uniform_surface_var(problem, 50.0)  # Heat flux
+>>> pressure = TracedParams.create_uniform_surface_var(problem, -1000)  # Pressure load
+>>> heat_flux = TracedParams.create_uniform_surface_var(problem, 50.0)  # Heat flux
 ```
 
 #### create\_node\_var\_from\_fn
@@ -228,11 +228,11 @@ Examples
 Create spatially varying material properties:
 ```python
 >>> def E_gradient(x): return 200e9 + 50e9 * x[0]  # Varies with x-coordinate
->>> E_varying = InternalVars.create_node_var_from_fn(problem, E_gradient)
+>>> E_varying = TracedParams.create_node_var_from_fn(problem, E_gradient)
 ```
 ```python
 >>> def density_field(x): return 7800 * (1 + 0.1 * np.sin(x[0]))  # Sinusoidal variation
->>> rho_varying = InternalVars.create_node_var_from_fn(problem, density_field)
+>>> rho_varying = TracedParams.create_node_var_from_fn(problem, density_field)
 ```
 
 #### create\_cell\_var\_from\_fn
@@ -266,7 +266,7 @@ Examples
 Create spatially varying material properties:
 ```python
 >>> def density_field(x): return 0.5 * (1 + np.tanh(x[0]))  # Smooth transition
->>> rho_varying = InternalVars.create_cell_var_from_fn(problem, density_field)
+>>> rho_varying = TracedParams.create_cell_var_from_fn(problem, density_field)
 ```
 
 #### create\_spatially\_varying\_volume\_var
@@ -303,11 +303,11 @@ Examples
 Create spatially varying material properties:
 ```python
 >>> def E_gradient(x): return 200e9 + 50e9 * x[0]  # Varies with x-coordinate
->>> E_varying = InternalVars.create_spatially_varying_volume_var(problem, E_gradient)
+>>> E_varying = TracedParams.create_spatially_varying_volume_var(problem, E_gradient)
 ```
 ```python
 >>> def density_field(x): return 7800 * (1 + 0.1 * np.sin(x[0]))  # Sinusoidal variation
->>> rho_varying = InternalVars.create_spatially_varying_volume_var(problem, density_field)
+>>> rho_varying = TracedParams.create_spatially_varying_volume_var(problem, density_field)
 ```
 
 #### create\_spatially\_varying\_surface\_var
@@ -341,20 +341,20 @@ Examples
 Create spatially varying surface loads:
 ```python
 >>> def pressure_gradient(x): return 1000 * x[1]  # Hydrostatic pressure
->>> pressure = InternalVars.create_spatially_varying_surface_var(problem, pressure_gradient)
+>>> pressure = TracedParams.create_spatially_varying_surface_var(problem, pressure_gradient)
 ```
 ```python
 >>> def traction_field(x): return 500 * np.sin(np.pi * x[0])  # Sinusoidal traction
->>> traction = InternalVars.create_spatially_varying_surface_var(problem, traction_field)
+>>> traction = TracedParams.create_spatially_varying_surface_var(problem, traction_field)
 ```
 
 #### replace\_volume\_var
 
 ```python
-def replace_volume_var(index: int, new_var: np.ndarray) -> 'InternalVars'
+def replace_volume_var(index: int, new_var: np.ndarray) -> 'TracedParams'
 ```
 
-Create a new InternalVars with one volume variable replaced.
+Create a new TracedParams with one volume variable replaced.
 
 Parameters
 ----------
@@ -364,17 +364,17 @@ Parameters
 
 Returns
 -------
-InternalVars
+TracedParams
     New instance with updated variable
 
 #### replace\_surface\_var
 
 ```python
 def replace_surface_var(surface_index: int, var_index: int,
-                        new_var: np.ndarray) -> 'InternalVars'
+                        new_var: np.ndarray) -> 'TracedParams'
 ```
 
-Create a new InternalVars with one surface variable replaced.
+Create a new TracedParams with one surface variable replaced.
 
 Parameters
 ----------
@@ -385,7 +385,7 @@ Parameters
 
 Returns
 -------
-InternalVars
+TracedParams
     New instance with updated variable
 
 #### tree\_flatten
@@ -394,10 +394,10 @@ InternalVars
 def tree_flatten() -> Tuple[List[np.ndarray], Tuple[int, List[int]]]
 ```
 
-Flatten InternalVars into leaves and auxiliary data for JAX pytree.
+Flatten TracedParams into leaves and auxiliary data for JAX pytree.
 
 This method extracts all JAX arrays (leaves) and structural information
-needed to reconstruct the InternalVars object.
+needed to reconstruct the TracedParams object.
 
 Returns
 -------
@@ -410,12 +410,12 @@ Tuple[List[np.ndarray], Tuple[int, List[int]]]
 ```python
 @classmethod
 def tree_unflatten(cls, aux_data: Tuple[int, List[int]],
-                   leaves: List[np.ndarray]) -> 'InternalVars'
+                   leaves: List[np.ndarray]) -> 'TracedParams'
 ```
 
-Reconstruct InternalVars from flattened leaves and auxiliary data.
+Reconstruct TracedParams from flattened leaves and auxiliary data.
 
-This method rebuilds the InternalVars structure from the flat list of
+This method rebuilds the TracedParams structure from the flat list of
 arrays and structural information.
 
 Parameters
@@ -426,6 +426,6 @@ Parameters
 
 Returns
 -------
-InternalVars
-    Reconstructed InternalVars object
+TracedParams
+    Reconstructed TracedParams object
 

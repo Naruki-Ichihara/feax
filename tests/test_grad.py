@@ -56,7 +56,7 @@ requires_cudss = pytest.mark.skipif(
 @pytest.mark.cpu
 def test_cg_solver_grad(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that gradients can be computed through CG solver."""
@@ -75,13 +75,13 @@ def test_cg_solver_grad(
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate: norm of solution
-    def loss_fn(internal_vars):
-        sol = solver(internal_vars, initial)
+    def loss_fn(traced_params):
+        sol = solver(traced_params, initial)
         return np.linalg.norm(sol)
 
     # Compute gradient
     grad_fn = jax.grad(loss_fn)
-    grads = grad_fn(internal_vars)
+    grads = grad_fn(traced_params)
 
     # Check that gradients exist and are finite
     assert grads is not None
@@ -96,7 +96,7 @@ def test_cg_solver_grad(
 @pytest.mark.cpu
 def test_bicgstab_solver_grad(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that gradients can be computed through BICGSTAB solver."""
@@ -115,13 +115,13 @@ def test_bicgstab_solver_grad(
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
-    def loss_fn(internal_vars):
-        sol = solver(internal_vars, initial)
+    def loss_fn(traced_params):
+        sol = solver(traced_params, initial)
         return np.linalg.norm(sol)
 
     # Compute gradient
     grad_fn = jax.grad(loss_fn)
-    grads = grad_fn(internal_vars)
+    grads = grad_fn(traced_params)
 
     # Check gradients
     assert grads is not None
@@ -135,7 +135,7 @@ def test_bicgstab_solver_grad(
 @pytest.mark.cpu
 def test_gmres_solver_grad(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that gradients can be computed through GMRES solver."""
@@ -154,13 +154,13 @@ def test_gmres_solver_grad(
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
-    def loss_fn(internal_vars):
-        sol = solver(internal_vars, initial)
+    def loss_fn(traced_params):
+        sol = solver(traced_params, initial)
         return np.linalg.norm(sol)
 
     # Compute gradient
     grad_fn = jax.grad(loss_fn)
-    grads = grad_fn(internal_vars)
+    grads = grad_fn(traced_params)
 
     # Check gradients
     assert grads is not None
@@ -179,7 +179,7 @@ def test_gmres_solver_grad(
 @requires_cudss
 def test_cudss_solver_grad_full(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that gradients can be computed through cuDSS solver (FULL matrix)."""
@@ -194,17 +194,17 @@ def test_cudss_solver_grad_full(
 
     # Create solver with cuDSS
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
-    def loss_fn(internal_vars):
-        sol = solver(internal_vars, initial)
+    def loss_fn(traced_params):
+        sol = solver(traced_params, initial)
         return np.linalg.norm(sol)
 
     # Compute gradient
     grad_fn = jax.grad(loss_fn)
-    grads = grad_fn(internal_vars)
+    grads = grad_fn(traced_params)
 
     # Check gradients
     assert grads is not None
@@ -219,7 +219,7 @@ def test_cudss_solver_grad_full(
 @requires_cudss
 def test_cudss_solver_grad_upper(
     linear_elasticity_problem_upper,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that gradients can be computed through cuDSS solver (UPPER matrix)."""
@@ -237,17 +237,17 @@ def test_cudss_solver_grad_upper(
 
     # Create solver with cuDSS for UPPER matrix
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
-    def loss_fn(internal_vars):
-        sol = solver(internal_vars, initial)
+    def loss_fn(traced_params):
+        sol = solver(traced_params, initial)
         return np.linalg.norm(sol)
 
     # Compute gradient
     grad_fn = jax.grad(loss_fn)
-    grads = grad_fn(internal_vars)
+    grads = grad_fn(traced_params)
 
     # Check gradients
     assert grads is not None
@@ -265,7 +265,7 @@ def test_cudss_solver_grad_upper(
 @pytest.mark.cpu
 def test_gradient_consistency_cg_bicgstab(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that gradients from CG and BICGSTAB are similar."""
@@ -287,11 +287,11 @@ def test_gradient_consistency_cg_bicgstab(
         linear=True
     )
 
-    def loss_cg(internal_vars):
-        sol = solver_cg(internal_vars, initial)
+    def loss_cg(traced_params):
+        sol = solver_cg(traced_params, initial)
         return np.linalg.norm(sol)
 
-    grad_cg = jax.grad(loss_cg)(internal_vars)
+    grad_cg = jax.grad(loss_cg)(traced_params)
 
     # Create BICGSTAB solver and compute gradient
     solver_bicgstab = fe.create_solver(
@@ -300,11 +300,11 @@ def test_gradient_consistency_cg_bicgstab(
         linear=True
     )
 
-    def loss_bicgstab(internal_vars):
-        sol = solver_bicgstab(internal_vars, initial)
+    def loss_bicgstab(traced_params):
+        sol = solver_bicgstab(traced_params, initial)
         return np.linalg.norm(sol)
 
-    grad_bicgstab = jax.grad(loss_bicgstab)(internal_vars)
+    grad_bicgstab = jax.grad(loss_bicgstab)(traced_params)
 
     # Compare gradients
     grad_cg_surf = grad_cg.surface_vars[0][0]
@@ -325,7 +325,7 @@ def test_gradient_consistency_cg_bicgstab(
 @pytest.mark.cpu
 def test_grad_jit_compatibility_cg(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that grad and JIT can be composed with CG solver."""
@@ -344,13 +344,13 @@ def test_grad_jit_compatibility_cg(
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
-    def loss_fn(internal_vars):
-        sol = solver(internal_vars, initial)
+    def loss_fn(traced_params):
+        sol = solver(traced_params, initial)
         return np.linalg.norm(sol)
 
     # JIT the gradient function
     grad_fn = jax.jit(jax.grad(loss_fn))
-    grads = grad_fn(internal_vars)
+    grads = grad_fn(traced_params)
 
     # Check gradients
     assert grads is not None
@@ -364,7 +364,7 @@ def test_grad_jit_compatibility_cg(
 @pytest.mark.cpu
 def test_grad_jit_compatibility_bicgstab(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that grad and JIT can be composed with BICGSTAB solver."""
@@ -383,13 +383,13 @@ def test_grad_jit_compatibility_bicgstab(
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
-    def loss_fn(internal_vars):
-        sol = solver(internal_vars, initial)
+    def loss_fn(traced_params):
+        sol = solver(traced_params, initial)
         return np.linalg.norm(sol)
 
     # JIT the gradient function
     grad_fn = jax.jit(jax.grad(loss_fn))
-    grads = grad_fn(internal_vars)
+    grads = grad_fn(traced_params)
 
     # Check gradients
     assert grads is not None
@@ -403,7 +403,7 @@ def test_grad_jit_compatibility_bicgstab(
 @pytest.mark.cpu
 def test_grad_jit_compatibility_gmres(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that grad and JIT can be composed with GMRES solver."""
@@ -422,13 +422,13 @@ def test_grad_jit_compatibility_gmres(
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
-    def loss_fn(internal_vars):
-        sol = solver(internal_vars, initial)
+    def loss_fn(traced_params):
+        sol = solver(traced_params, initial)
         return np.linalg.norm(sol)
 
     # JIT the gradient function
     grad_fn = jax.jit(jax.grad(loss_fn))
-    grads = grad_fn(internal_vars)
+    grads = grad_fn(traced_params)
 
     # Check gradients
     assert grads is not None
@@ -443,7 +443,7 @@ def test_grad_jit_compatibility_gmres(
 @requires_cudss
 def test_grad_jit_compatibility_cudss(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that grad and JIT can be composed with cuDSS solver."""
@@ -456,21 +456,21 @@ def test_grad_jit_compatibility_cudss(
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
 
-    # Create solver with cuDSS (pass internal_vars to pre-warm CuDSSSolver
+    # Create solver with cuDSS (pass traced_params to pre-warm CuDSSSolver
     # with concrete values, required for JIT+grad composition)
     solver_opts = fe.DirectSolverOptions()
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True,
-                              internal_vars=internal_vars)
+                              traced_params=traced_params)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
-    def loss_fn(internal_vars):
-        sol = solver(internal_vars, initial)
+    def loss_fn(traced_params):
+        sol = solver(traced_params, initial)
         return np.linalg.norm(sol)
 
     # JIT the gradient function
     grad_fn = jax.jit(jax.grad(loss_fn))
-    grads = grad_fn(internal_vars)
+    grads = grad_fn(traced_params)
 
     # Check gradients
     assert grads is not None
@@ -488,7 +488,7 @@ def test_grad_jit_compatibility_cudss(
 @pytest.mark.cpu
 def test_jit_grad_composition_order_cg(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test different composition orders of JIT and grad with CG solver."""
@@ -507,17 +507,17 @@ def test_jit_grad_composition_order_cg(
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
-    def loss_fn(internal_vars):
-        sol = solver(internal_vars, initial)
+    def loss_fn(traced_params):
+        sol = solver(traced_params, initial)
         return np.linalg.norm(sol)
 
     # Test 1: jax.jit(jax.grad(loss_fn))
     grad_fn_1 = jax.jit(jax.grad(loss_fn))
-    grads_1 = grad_fn_1(internal_vars)
+    grads_1 = grad_fn_1(traced_params)
 
     # Test 2: jax.grad(jax.jit(loss_fn))
     grad_fn_2 = jax.grad(jax.jit(loss_fn))
-    grads_2 = grad_fn_2(internal_vars)
+    grads_2 = grad_fn_2(traced_params)
 
     # Both should produce valid gradients
     surface_grads_1 = grads_1.surface_vars[0][0]
@@ -538,7 +538,7 @@ def test_jit_grad_composition_order_cg(
 @requires_cudss
 def test_jit_grad_composition_order_cudss(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test different composition orders of JIT and grad with cuDSS solver."""
@@ -551,25 +551,25 @@ def test_jit_grad_composition_order_cudss(
     bc_config = fe.DirichletBCConfig([left_fix])
     bc = bc_config.create_bc(problem)
 
-    # Create solver with cuDSS (pass internal_vars to pre-warm CuDSSSolver
+    # Create solver with cuDSS (pass traced_params to pre-warm CuDSSSolver
     # with concrete values, required for JIT+grad composition)
     solver_opts = fe.DirectSolverOptions()
     solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True,
-                              internal_vars=internal_vars)
+                              traced_params=traced_params)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Define function to differentiate
-    def loss_fn(internal_vars):
-        sol = solver(internal_vars, initial)
+    def loss_fn(traced_params):
+        sol = solver(traced_params, initial)
         return np.linalg.norm(sol)
 
     # Test 1: jax.jit(jax.grad(loss_fn))
     grad_fn_1 = jax.jit(jax.grad(loss_fn))
-    grads_1 = grad_fn_1(internal_vars)
+    grads_1 = grad_fn_1(traced_params)
 
     # Test 2: jax.grad(jax.jit(loss_fn))
     grad_fn_2 = jax.grad(jax.jit(loss_fn))
-    grads_2 = grad_fn_2(internal_vars)
+    grads_2 = grad_fn_2(traced_params)
 
     # Both should produce valid gradients
     surface_grads_1 = grads_1.surface_vars[0][0]
@@ -594,7 +594,7 @@ def test_jit_grad_composition_order_cudss(
 def test_gradient_consistency_upper_vs_full(
     linear_elasticity_problem,
     linear_elasticity_problem_upper,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that UPPER matrix view produces same gradients as FULL matrix view.
@@ -627,15 +627,15 @@ def test_gradient_consistency_upper_vs_full(
         problem_full, bc_full,
         solver_options=solver_opts_full,
         adjoint_solver_options=solver_opts_full,
-        linear=True, internal_vars=internal_vars
+        linear=True, traced_params=traced_params
     )
     initial_full = fe.zero_like_initial_guess(problem_full, bc_full)
 
-    def objective_full(internal_vars):
-        sol = solver_full(internal_vars, initial_full)
+    def objective_full(traced_params):
+        sol = solver_full(traced_params, initial_full)
         return np.linalg.norm(sol)
 
-    grad_full = jax.grad(objective_full)(internal_vars)
+    grad_full = jax.grad(objective_full)(traced_params)
 
     # Test with UPPER matrix view
     problem_upper = linear_elasticity_problem_upper
@@ -647,15 +647,15 @@ def test_gradient_consistency_upper_vs_full(
         problem_upper, bc_upper,
         solver_options=solver_opts_upper,
         adjoint_solver_options=solver_opts_upper,
-        linear=True, internal_vars=internal_vars
+        linear=True, traced_params=traced_params
     )
     initial_upper = fe.zero_like_initial_guess(problem_upper, bc_upper)
 
-    def objective_upper(internal_vars):
-        sol = solver_upper(internal_vars, initial_upper)
+    def objective_upper(traced_params):
+        sol = solver_upper(traced_params, initial_upper)
         return np.linalg.norm(sol)
 
-    grad_upper = jax.grad(objective_upper)(internal_vars)
+    grad_upper = jax.grad(objective_upper)(traced_params)
 
     # Compare gradients
     grad_full_surf = grad_full.surface_vars[0][0]

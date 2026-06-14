@@ -85,17 +85,17 @@ def _make_problem_and_bc(epsilon, Nx=4, Ny=4):
     ]).create_bc(problem)
 
     shape_hess = problem.fes[0].shape_hessians
-    iv = fe.InternalVars(volume_vars=(shape_hess,))
-    return problem, bc, iv, mesh
+    tp = fe.TracedParams(volume_vars=(shape_hess,))
+    return problem, bc, tp, mesh
 
 
 def test_hessian_jacobian_symmetric_spd():
     """Verify the Hessian contribution produces a symmetric, SPD Jacobian."""
-    problem, bc, iv, mesh = _make_problem_and_bc(epsilon=0.01)
+    problem, bc, tp, mesh = _make_problem_and_bc(epsilon=0.01)
 
     u_zero = fe.zero_like_initial_guess(problem, bc)
     J_fn = fe.create_J_bc_csr_function(problem, bc)
-    J = J_fn(u_zero, iv)
+    J = J_fn(u_zero, tp)
     J_dense = onp.array(J.todense())
 
     # Symmetric
@@ -133,7 +133,7 @@ def test_hessian_nonzero_contribution():
     std_bc = fe.DirichletBCConfig([
         fe.DirichletBCSpec(all_boundary, 'all', 0.0),
     ]).create_bc(std_problem)
-    std_iv = fe.InternalVars()
+    std_iv = fe.TracedParams()
 
     # Regularized Poisson (with Hessian)
     reg_problem, reg_bc, reg_iv, _ = _make_problem_and_bc(epsilon=0.01, Nx=Nx, Ny=Ny)
@@ -157,7 +157,7 @@ def test_hessian_nonzero_contribution():
 
 def test_hessian_solver_converges():
     """Verify the solver converges with Hessian regularization."""
-    problem, bc, iv, mesh = _make_problem_and_bc(epsilon=0.01, Nx=8, Ny=8)
+    problem, bc, tp, mesh = _make_problem_and_bc(epsilon=0.01, Nx=8, Ny=8)
 
     solver = fe.create_solver(
         problem, bc,
@@ -166,9 +166,9 @@ def test_hessian_solver_converges():
             use_jacobi_preconditioner=True,
         ),
         linear=True,
-        internal_vars=iv,
+        traced_params=tp,
     )
-    sol = solver(iv, fe.zero_like_initial_guess(problem, bc))
+    sol = solver(tp, fe.zero_like_initial_guess(problem, bc))
     u = problem.unflatten_fn_sol_list(sol)[0]
     u_num = onp.array(u[:, 0])
 
@@ -204,30 +204,30 @@ def test_hessian_vanishes_with_zero_epsilon():
     std_bc = fe.DirichletBCConfig([
         fe.DirichletBCSpec(all_boundary, 'all', 0.0),
     ]).create_bc(std_problem)
-    std_iv = fe.InternalVars()
+    std_iv = fe.TracedParams()
     std_solver = fe.create_solver(
         std_problem, std_bc,
         solver_options=fe.KrylovSolverOptions(
             solver='cg', maxiter=5000, tol=1e-10,
             use_jacobi_preconditioner=True,
         ),
-        linear=True, internal_vars=std_iv,
+        linear=True, traced_params=std_iv,
     )
     std_sol = std_solver(std_iv, fe.zero_like_initial_guess(std_problem, std_bc))
     u_std = onp.array(std_problem.unflatten_fn_sol_list(std_sol)[0][:, 0])
 
     # Regularized with tiny ε (source term uses ε=0 to match standard Poisson)
     # This tests that the Hessian stiffness with ε→0 doesn't break the solution
-    problem, bc, iv, _ = _make_problem_and_bc(epsilon=1e-8, Nx=Nx, Ny=Ny)
+    problem, bc, tp, _ = _make_problem_and_bc(epsilon=1e-8, Nx=Nx, Ny=Ny)
     solver = fe.create_solver(
         problem, bc,
         solver_options=fe.KrylovSolverOptions(
             solver='cg', maxiter=5000, tol=1e-10,
             use_jacobi_preconditioner=True,
         ),
-        linear=True, internal_vars=iv,
+        linear=True, traced_params=tp,
     )
-    sol = solver(iv, fe.zero_like_initial_guess(problem, bc))
+    sol = solver(tp, fe.zero_like_initial_guess(problem, bc))
     u_reg = onp.array(problem.unflatten_fn_sol_list(sol)[0][:, 0])
 
     diff = onp.max(onp.abs(u_reg - u_std))

@@ -485,7 +485,7 @@ def zero_like_initial_guess(problem: 'Problem', bc: DirichletBC) -> np.ndarray:
     --------
     >>> from feax.utils import zero_like_initial_guess
     >>> initial_guess = zero_like_initial_guess(problem, bc)
-    >>> solution = solver(internal_vars, initial_guess)
+    >>> solution = solver(traced_params, initial_guess)
     
     For time-dependent problems:
     >>> # First timestep

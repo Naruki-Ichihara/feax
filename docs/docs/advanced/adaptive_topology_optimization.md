@@ -107,19 +107,19 @@ class CantileverPipeline(Pipeline):
         self._volume_fn = gene.create_volume_fn(problem)
         self._filter_fn = gene.create_density_filter(mesh, 3.0)
 
-        sample_iv = fe.InternalVars(
-            volume_vars=(fe.InternalVars.create_node_var(problem, 0.4),),
+        sample_iv = fe.TracedParams(
+            volume_vars=(fe.TracedParams.create_node_var(problem, 0.4),),
             surface_vars=())
         solver_opts = fe.DirectSolverOptions()
         self._solver = fe.create_solver(
             problem, bc, solver_options=solver_opts,
             adjoint_solver_options=solver_opts,
-            linear=True, internal_vars=sample_iv)
+            linear=True, traced_params=sample_iv)
 
     def objective(self, rho, beta=1.0):
         rho_f = self._filter_fn(rho)
         rho_p = gene.heaviside_projection(rho_f, beta=beta)
-        iv = fe.InternalVars(volume_vars=(rho_p,), surface_vars=())
+        iv = fe.TracedParams(volume_vars=(rho_p,), surface_vars=())
         sol = self._solver(iv, self._initial)
         return self._compliance_fn(sol)
 
@@ -316,19 +316,19 @@ class CantileverPipeline(Pipeline):
         self._volume_fn = gene.create_volume_fn(problem)
         self._filter_fn = gene.create_density_filter(mesh, 3.0)
 
-        sample_iv = fe.InternalVars(
-            volume_vars=(fe.InternalVars.create_node_var(problem, 0.4),),
+        sample_iv = fe.TracedParams(
+            volume_vars=(fe.TracedParams.create_node_var(problem, 0.4),),
             surface_vars=())
         solver_opts = fe.DirectSolverOptions()
         self._solver = fe.create_solver(
             problem, bc, solver_options=solver_opts,
             adjoint_solver_options=solver_opts,
-            linear=True, internal_vars=sample_iv)
+            linear=True, traced_params=sample_iv)
 
     def objective(self, rho, beta=1.0):
         rho_f = self._filter_fn(rho)
         rho_p = gene.heaviside_projection(rho_f, beta=beta)
-        iv = fe.InternalVars(volume_vars=(rho_p,), surface_vars=())
+        iv = fe.TracedParams(volume_vars=(rho_p,), surface_vars=())
         sol = self._solver(iv, self._initial)
         return self._compliance_fn(sol)
 

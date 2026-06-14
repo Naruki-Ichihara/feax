@@ -8,17 +8,17 @@ Examples
 >>> from feax.profiler import trace_jaxpr, profile, time_fn
 
 >>> # Inspect the jaxpr of a function
->>> info = trace_jaxpr(res_fn, sol, internal_vars)
+>>> info = trace_jaxpr(res_fn, sol, traced_params)
 >>> print(info)
 
 >>> # Time a solver call
 >>> with profile("newton_solve") as t:
-...     sol = solver(internal_vars, u0)
+...     sol = solver(traced_params, u0)
 >>> print(t.summary())
 
 >>> # Per-iteration Newton profiling
 >>> from feax.profiler import profile_solver_py
->>> sol, prof = profile_solver_py(problem, bc, internal_vars, initial)
+>>> sol, prof = profile_solver_py(problem, bc, traced_params, initial)
 >>> print(prof.summary())
 """
 
@@ -126,7 +126,7 @@ def trace_jaxpr(fn: Callable, *args, **kwargs) -> JaxprInfo:
 
     Examples
     --------
-    >>> info = trace_jaxpr(res_fn, sol, internal_vars)
+    >>> info = trace_jaxpr(res_fn, sol, traced_params)
     >>> print(info)
     >>> info.save("jaxpr_residual.txt")
     """
@@ -408,7 +408,7 @@ def profile_solver(
 def profile_solver_py(
     problem,
     bc,
-    internal_vars,
+    traced_params,
     initial_guess,
     *,
     solver_options=None,
@@ -427,7 +427,7 @@ def profile_solver_py(
         The feax Problem instance.
     bc : DirichletBC
         Boundary conditions.
-    internal_vars : InternalVars
+    traced_params : TracedParams
         Material parameters / internal variables.
     initial_guess : array
         Initial solution vector.
@@ -463,7 +463,7 @@ def profile_solver_py(
 
     # Resolve "auto" solver by sampling a Jacobian at the initial guess
     if isinstance(solver_options, DirectSolverOptions) and solver_options.solver == "auto":
-        _sample_J = J_bc_fn(initial_guess, internal_vars)
+        _sample_J = J_bc_fn(initial_guess, traced_params)
         _mp = detect_matrix_property(_sample_J, matrix_view=problem.matrix_view)
         solver_options = resolve_direct_solver(solver_options, _mp, matrix_view=problem.matrix_view)
 
@@ -476,7 +476,7 @@ def profile_solver_py(
     for _ in range(max_iter):
         iter_start = time.perf_counter()
 
-        res = res_bc_fn(sol, internal_vars)
+        res = res_bc_fn(sol, traced_params)
         jax.block_until_ready(res)
         res_norm = float(np.linalg.norm(res))
         prof.residual_norms.append(res_norm)
@@ -486,7 +486,7 @@ def profile_solver_py(
             prof.iteration_times.append(time.perf_counter() - iter_start)
             break
 
-        J = J_bc_fn(sol, internal_vars)
+        J = J_bc_fn(sol, traced_params)
         jax.block_until_ready(J)
         du = linear_solve_fn(J, -res)
         jax.block_until_ready(du)
@@ -605,7 +605,7 @@ def format_cost_analysis(fn: Callable, *args, label: str = "") -> str:
 
     Examples
     --------
-    >>> print(format_cost_analysis(solve_forward, internal_vars,
+    >>> print(format_cost_analysis(solve_forward, traced_params,
     ...                            label="solve_forward"))
     XLA Cost Analysis: solve_forward
     --------------------------------------------------

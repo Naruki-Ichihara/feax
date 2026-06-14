@@ -22,7 +22,7 @@ Usage
 
     is_medium = classify_medium_cells(mesh, lambda cx, cy: ...)
 
-    problem, iv = ThirdMediumContact.create(
+    problem, tp = ThirdMediumContact.create(
         mesh, is_medium=is_medium,
         mu=0.357, lmbda=1.667,
         gamma0=5e-7, kr=5e-7,
@@ -45,7 +45,7 @@ import jax.flatten_util
 import numpy as onp
 
 import feax as fe
-from feax.internal_vars import InternalVars
+from feax.traced_params import TracedParams
 
 
 # ============================================================================
@@ -104,7 +104,7 @@ class ThirdMediumContact(fe.Problem):
     """Neo-Hookean + HuHu-LuLu regularization Problem for third-medium contact.
 
     Do not instantiate directly — use :meth:`create` which also builds the
-    matching :class:`~feax.InternalVars`.
+    matching :class:`~feax.TracedParams`.
 
     Parameters stored via ``additional_info``:
         ``(kr_coeff, plane_strain)``
@@ -201,7 +201,7 @@ class ThirdMediumContact(fe.Problem):
         dim: Optional[int] = None,
         ref_length: float = 1.0,
         plane_strain: bool = True,
-    ) -> Tuple["ThirdMediumContact", InternalVars]:
+    ) -> Tuple["ThirdMediumContact", TracedParams]:
         """Create a TMC problem with matching internal variables.
 
         Parameters
@@ -234,16 +234,16 @@ class ThirdMediumContact(fe.Problem):
         -------
         problem : ThirdMediumContact
             Configured feax Problem (with ``hess=True``).
-        iv : feax.InternalVars
+        tp : feax.TracedParams
             Internal variables ready for ``create_solver`` / ``newton_solve``.
 
         Examples
         --------
-        >>> problem, iv = ThirdMediumContact.create(
+        >>> problem, tp = ThirdMediumContact.create(
         ...     mesh, is_medium, mu=G, lmbda=K,
         ...     gamma0=5e-7, kr=5e-7, ele_type='QUAD9',
         ... )
-        >>> solver = fe.create_solver(problem, bc, internal_vars=iv, ...)
+        >>> solver = fe.create_solver(problem, bc, traced_params=tp, ...)
         """
         if dim is None:
             dim = mesh.points.shape[1]
@@ -263,8 +263,8 @@ class ThirdMediumContact(fe.Problem):
         lmbda_cell = np.where(is_medium, lmbda * gamma0, lmbda)
 
         shape_hess = problem.fes[0].shape_hessians
-        iv = InternalVars(
+        tp = TracedParams(
             volume_vars=(mu_cell, lmbda_cell, shape_hess, is_medium),
         )
 
-        return problem, iv
+        return problem, tp

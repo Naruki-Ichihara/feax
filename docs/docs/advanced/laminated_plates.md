@@ -187,7 +187,7 @@ bc = fe.DirichletBCConfig([
 ]).create_bc(problem)
 
 solver = fe.create_solver(problem, bc, linear=False)   # Newton for von Kármán
-sol = solver(fe.InternalVars(volume_vars=()), fe.zero_like_initial_guess(problem, bc))
+sol = solver(fe.TracedParams(volume_vars=()), fe.zero_like_initial_guess(problem, bc))
 ```
 
 Under the hood `make_mindlin_plate` builds a `MindlinPlate` (a `feax.Problem` subclass)
@@ -279,14 +279,14 @@ class ThermalRampPipeline(ImplicitPipeline):
             solver_options=fe.DirectSolverOptions(solver="umfpack"),
             newton_options=fe.NewtonOptions(tol=1e-6, rel_tol=1e-8, max_iter=30),
             linear=False,
-            internal_vars=fe.InternalVars(volume_vars=(jnp.zeros(self._n_nodes),)),
+            traced_params=fe.TracedParams(volume_vars=(jnp.zeros(self._n_nodes),)),
         )
 
     def initial_state(self):
         return fe.zero_like_initial_guess(self.problem, self.bc)
 
     def update_vars(self, state, t, dt):
-        return fe.InternalVars(volume_vars=(jnp.full(self._n_nodes, t + dt),))
+        return fe.TracedParams(volume_vars=(jnp.full(self._n_nodes, t + dt),))
 
 config = TimeConfig(dt=1.0 / N_LOAD_STEPS, t_end=1.0, save_every=5, print_every=1)
 result = run(ThermalRampPipeline(), mesh, config, output_dir=str(OUTPUT_DIR))

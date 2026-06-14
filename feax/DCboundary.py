@@ -148,7 +148,7 @@ def apply_boundary_to_J_csr(bc: DirichletBC,
                             problem: 'Problem',
                             csr_data: np.ndarray,
                             symmetric: bool = True,
-                            sv=None) -> np.ndarray:
+                            ts=None) -> np.ndarray:
     """Apply Dirichlet BCs directly to a CSR ``data`` array (no BCOO).
 
     The CSR *structure* (``problem.csr_indptr`` / ``csr_indices``) is fixed, and
@@ -182,10 +182,10 @@ def apply_boundary_to_J_csr(bc: DirichletBC,
     np.ndarray
         BC-applied CSR value array (same shape as ``csr_data``).
     """
-    # When sv (StaticVars) is given the slot maps are traced arguments, so the
+    # When ts (TracedStructure) is given the slot maps are traced arguments, so the
     # row/column BC masks are computed at run time instead of being
     # constant-folded into nnz-sized literals inside the compiled executable.
-    src = sv if sv is not None else problem
+    src = ts if ts is not None else problem
     is_bc_row = bc.bc_mask[src.csr_row_of_slot]
     if symmetric:
         is_bc_col = bc.bc_mask[src.csr_indices]

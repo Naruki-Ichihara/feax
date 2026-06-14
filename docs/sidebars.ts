@@ -74,7 +74,7 @@ const sidebars: SidebarsConfig = {
     'api/reference/feax/csr',
     'api/reference/feax/DCboundary',
     'api/reference/feax/fe',
-    'api/reference/feax/internal_vars',
+    'api/reference/feax/traced_params',
     'api/reference/feax/mesh',
     'api/reference/feax/problem',
     'api/reference/feax/profiler',

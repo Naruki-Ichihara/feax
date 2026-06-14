@@ -155,6 +155,8 @@ thermal_bc = fe.DCboundary.DirichletBCConfig([
     fe.DCboundary.DirichletBCSpec(bottom, 0, T0),
 ]).create_bc(thermal_problem)
 
+thermal_ts = fe.TracedStructure.from_problem(thermal_problem)
+
 # Dimensions for surface variable arrays
 _num_top_faces  = len(thermal_problem.boundary_inds_list[0])
 _num_wall_faces = len(thermal_problem.boundary_inds_list[1])
@@ -162,7 +164,7 @@ _num_face_quads = thermal_problem.fes[0].num_face_quads
 
 
 def make_thermal_iv(T_old_nodes, laser_center, switch):
-    """Build InternalVars for the thermal problem at the current time step.
+    """Build TracedParams for the thermal problem at the current time step.
 
     Parameters
     ----------
@@ -182,7 +184,7 @@ def make_thermal_iv(T_old_nodes, laser_center, switch):
     # Surface walls: old_T only
     old_T_walls = dof_to_face_quad(thermal_problem, T_old_nodes, surface_index=1)
 
-    return fe.InternalVars(
+    return fe.TracedParams(
         volume_vars=vol,
         surface_vars=[
             (old_T_top, laser_x_top, laser_y_top, switch_top),
@@ -191,7 +193,7 @@ def make_thermal_iv(T_old_nodes, laser_center, switch):
     )
 
 
-# Build solver with a representative InternalVars for auto-detection
+# Build solver with a representative TracedParams for auto-detection
 _init_thermal_iv = make_thermal_iv(
     np.full(num_nodes, T0),
     np.array([Lx * 0.25, Ly * 0.5, Lz]),
@@ -201,7 +203,8 @@ thermal_solver = fe.create_solver(
     thermal_problem, thermal_bc,
     solver_options=fe.KrylovSolverOptions(solver='cg'),
     linear=True,
-    internal_vars=_init_thermal_iv,
+    traced_params=_init_thermal_iv,
+    traced_structure=thermal_ts,
 )
 
 
@@ -270,6 +273,8 @@ mech_bc = fe.DCboundary.DirichletBCConfig([
     fe.DCboundary.DirichletBCSpec(bottom, 2, 0.),
 ]).create_bc(mech_problem)
 
+mech_ts = fe.TracedStructure.from_problem(mech_problem)
+
 # Initial quad-point state
 _nc = mech_problem.num_cells
 _nq = mech_problem.fes[0].num_quads
@@ -279,13 +284,14 @@ epsilons_old = np.zeros((_nc, _nq, 3, 3))
 dT_quad      = np.zeros((_nc, _nq, 1))
 phase_quad   = np.full((_nc, _nq, 1), POWDER, dtype=np.int32)
 
-_init_mech_iv = fe.InternalVars(
+_init_mech_iv = fe.TracedParams(
     volume_vars=(sigmas_old, epsilons_old, dT_quad, phase_quad))
 
 mech_solver = fe.create_solver(
     mech_problem, mech_bc,
     solver_options=fe.KrylovSolverOptions(solver='cg'),
-    internal_vars=_init_mech_iv,
+    traced_params=_init_mech_iv,
+    traced_structure=mech_ts,
 )
 
 
@@ -429,7 +435,7 @@ for i, t_cur in enumerate(ts[1:], start=1):
 
     # ---- Step 1: Thermal solve ----------------------------------------
     thermal_iv = make_thermal_iv(T_nodes, laser_center, switch)
-    T_flat     = thermal_solver(thermal_iv, T_flat)
+    T_flat     = thermal_solver(thermal_iv, T_flat, traced_structure=thermal_ts)
     T_nodes    = thermal_problem.unflatten_fn_sol_list(T_flat)[0][:, 0]
 
     # ---- Step 2: Mechanics solve (every MECH_INTERVAL steps) ----------
@@ -437,8 +443,8 @@ for i, t_cur in enumerate(ts[1:], start=1):
         dT_nodes     = T_nodes - T_nodes_for_mech
         mech_params  = update_dT_and_phase(dT_nodes, T_nodes, mech_params)
 
-        mech_iv      = fe.InternalVars(volume_vars=mech_params)
-        u_flat       = mech_solver(mech_iv, u_flat)
+        mech_iv      = fe.TracedParams(volume_vars=mech_params)
+        u_flat       = mech_solver(mech_iv, u_flat, traced_structure=mech_ts)
         u_nodes      = mech_problem.unflatten_fn_sol_list(u_flat)[0]
 
         mech_params, (f_plus_diag, stress_xx_diag) = update_stress_strain(

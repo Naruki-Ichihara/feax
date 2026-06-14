@@ -83,11 +83,14 @@ thermal_bc = fe.DCboundary.DirichletBCConfig([
     fe.DCboundary.DirichletBCSpec(bottom, 0, T_bath),
 ]).create_bc(thermal_problem)
 
+thermal_ts = fe.TracedStructure.from_problem(thermal_problem)
+
 thermal_solver = fe.create_solver(
     thermal_problem, thermal_bc,
     solver_options=fe.KrylovSolverOptions(solver='cg'),
     linear=True,
-    internal_vars=fe.InternalVars(volume_vars=(np.full(num_nodes, T0),)),
+    traced_params=fe.TracedParams(volume_vars=(np.full(num_nodes, T0),)),
+    traced_structure=thermal_ts,
 )
 
 
@@ -120,6 +123,8 @@ pf_problem = PhaseFieldProblem(mesh, vec=1, dim=2, ele_type='QUAD4')
 # No Dirichlet BC (natural zero-flux BC: ∇d·n = 0)
 pf_bc = fe.DCboundary.DirichletBCConfig([]).create_bc(pf_problem)
 
+pf_ts = fe.TracedStructure.from_problem(pf_problem)
+
 # Initial history field H = 0 (quad-point based)
 num_cells = pf_problem.num_cells
 num_quads = pf_problem.fes[0].num_quads
@@ -129,7 +134,8 @@ pf_solver = fe.create_solver(
     pf_problem, pf_bc,
     solver_options=fe.KrylovSolverOptions(solver='cg'),
     linear=True,  # Linear in d when H is fixed
-    internal_vars=fe.InternalVars(volume_vars=(H_field,)),
+    traced_params=fe.TracedParams(volume_vars=(H_field,)),
+    traced_structure=pf_ts,
 )
 
 
@@ -162,14 +168,17 @@ mech_bc = fe.DCboundary.DirichletBCConfig([
     fe.DCboundary.DirichletBCSpec(left, 'x', 0.0),
 ]).create_bc(mech_problem)
 
+mech_ts = fe.TracedStructure.from_problem(mech_problem)
+
 mech_solver = fe.create_solver(
     mech_problem, mech_bc,
     solver_options=fe.KrylovSolverOptions(solver='cg'),
     linear=True,
-    internal_vars=fe.InternalVars(volume_vars=(
+    traced_params=fe.TracedParams(volume_vars=(
         np.zeros(num_nodes),        # d
         np.full(num_nodes, T0),     # T
     )),
+    traced_structure=mech_ts,
 )
 
 
@@ -255,8 +264,8 @@ for step in range(1, n_steps + 1):
     T_old = T_sol[:, 0]  # (num_nodes,)
 
     # --- Step 1: Solve thermal ---
-    thermal_iv = fe.InternalVars(volume_vars=(T_old,))
-    T_flat = thermal_solver(thermal_iv, T_flat)
+    thermal_iv = fe.TracedParams(volume_vars=(T_old,))
+    T_flat = thermal_solver(thermal_iv, T_flat, traced_structure=thermal_ts)
     T_sol = thermal_problem.unflatten_fn_sol_list(T_flat)[0]
 
     # --- Step 2: Update history field ---
@@ -264,16 +273,16 @@ for step in range(1, n_steps + 1):
     H_field = np.maximum(H_field, psi_el)
 
     # --- Step 3: Solve phase-field ---
-    pf_iv = fe.InternalVars(volume_vars=(H_field,))
-    d_flat = pf_solver(pf_iv, d_flat)
+    pf_iv = fe.TracedParams(volume_vars=(H_field,))
+    d_flat = pf_solver(pf_iv, d_flat, traced_structure=pf_ts)
     d_sol = pf_problem.unflatten_fn_sol_list(d_flat)[0]
     # Clamp damage to [0, 1]
     d_sol = np.clip(d_sol, 0.0, 1.0)
     d_flat = d_sol[:, 0]
 
     # --- Step 4: Solve mechanics ---
-    mech_iv = fe.InternalVars(volume_vars=(d_sol[:, 0], T_sol[:, 0]))
-    u_flat = mech_solver(mech_iv, u_flat)
+    mech_iv = fe.TracedParams(volume_vars=(d_sol[:, 0], T_sol[:, 0]))
+    u_flat = mech_solver(mech_iv, u_flat, traced_structure=mech_ts)
     u_sol = mech_problem.unflatten_fn_sol_list(u_flat)[0]
 
     if step % 10 == 0:

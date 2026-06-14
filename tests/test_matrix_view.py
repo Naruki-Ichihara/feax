@@ -176,7 +176,7 @@ def test_memory_reduction(linear_elasticity_problem, linear_elasticity_problem_u
 
 
 @pytest.mark.cpu
-def test_jacobian_info(linear_elasticity_problem, internal_vars):
+def test_jacobian_info(linear_elasticity_problem, traced_params):
     """Test get_jacobian_info function."""
     problem = linear_elasticity_problem
 
@@ -185,14 +185,17 @@ def test_jacobian_info(linear_elasticity_problem, internal_vars):
     sol_list = problem.unflatten_fn_sol_list(sol)
 
     # Get Jacobian info
-    info = fe.get_jacobian_info(problem, sol_list, internal_vars)
+    info = fe.get_jacobian_info(problem, sol_list, traced_params)
 
     # Check returned structure
     assert 'nnz' in info
     assert 'shape' in info
     assert 'matrix_view' in info
 
-    # Check exact values
-    assert info['nnz'] == 6912
+    # nnz is the deduplicated CSR non-zero count (== problem.csr_nse and the
+    # nse of get_jacobian()'s BCOO), matching what the direct solvers report.
+    # (Previously this returned the raw filtered COO entry count, 6912, which
+    # double-counts entries shared between elements.)
+    assert info['nnz'] == problem.csr_nse
     assert info['shape'] == (81, 81)
     assert info['matrix_view'] == MatrixView.FULL

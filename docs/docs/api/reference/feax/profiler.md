@@ -15,19 +15,19 @@ Examples
 ```
 ```python
 >>> # Inspect the jaxpr of a function
->>> info = trace_jaxpr(res_fn, sol, internal_vars)
+>>> info = trace_jaxpr(res_fn, sol, traced_params)
 >>> print(info)
 ```
 ```python
 >>> # Time a solver call
 >>> with profile(&quot;newton_solve&quot;) as t:
-...     sol = solver(internal_vars, u0)
+...     sol = solver(traced_params, u0)
 >>> print(t.summary())
 ```
 ```python
 >>> # Per-iteration Newton profiling
 >>> from feax.profiler import profile_solver_py
->>> sol, prof = profile_solver_py(problem, bc, internal_vars, initial)
+>>> sol, prof = profile_solver_py(problem, bc, traced_params, initial)
 >>> print(prof.summary())
 ```
 
@@ -88,7 +88,7 @@ JaxprInfo
 Examples
 --------
 ```python
->>> info = trace_jaxpr(res_fn, sol, internal_vars)
+>>> info = trace_jaxpr(res_fn, sol, traced_params)
 >>> print(info)
 >>> info.save(&quot;jaxpr_residual.txt&quot;)
 ```
@@ -247,7 +247,7 @@ Returns
 ```python
 def profile_solver_py(problem,
                       bc,
-                      internal_vars,
+                      traced_params,
                       initial_guess,
                       *,
                       solver_options=None,
@@ -265,7 +265,7 @@ Parameters
 ----------
 - **problem** (*Problem*): The feax Problem instance.
 - **bc** (*DirichletBC*): Boundary conditions.
-- **internal_vars** (*InternalVars*): Material parameters / internal variables.
+- **traced_params** (*TracedParams*): Material parameters / internal variables.
 - **initial_guess** (*array*): Initial solution vector.
 - **solver_options** (*DirectSolverOptions, optional*): Linear solver options. Defaults to ``DirectSolverOptions()``.
 - **label** (*str*): Label for the profile.
@@ -340,7 +340,7 @@ str
 Examples
 --------
 ```python
->>> print(format_cost_analysis(solve_forward, internal_vars,
+>>> print(format_cost_analysis(solve_forward, traced_params,
 ...                            label=&quot;solve_forward&quot;))
 ```
 XLA Cost Analysis: solve_forward

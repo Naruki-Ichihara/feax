@@ -52,9 +52,10 @@ def create_solver(
     newton_options: Optional[NewtonOptions] = None,
     linear: bool = False,
     P: Optional[BCOO] = None,
-    internal_vars=None,
+    traced_params=None,
     extra_residual_fn: Optional[Callable] = None,
     symmetric_bc: bool = True,
+    traced_structure=None,
 ) -> Callable:
     """Create a differentiable solver with custom VJP for gradient computation.
 
@@ -96,7 +97,7 @@ def create_solver(
         batched solves use a block-diagonal direct solve).
     P : BCOO matrix, optional
         Prolongation matrix for periodic boundary conditions.
-    internal_vars : InternalVars, optional
+    traced_params : TracedParams, optional
         Sample internal variables for auto solver selection and cuDSS
         pre-warming. Required when ``solver="auto"`` or cuDSS is used.
     extra_residual_fn : callable, optional
@@ -137,15 +138,40 @@ def create_solver(
         Note that ``symmetric_bc=False`` produces a non-symmetric Jacobian,
         so symmetric solvers (CG) cannot be used. Use ``spsolve``, ``umfpack``,
         ``bicgstab``, or ``gmres`` instead.
+    traced_structure : TracedStructure, optional
+        A :class:`feax.TracedStructure` for this problem. When given, every
+        sample assembly done at solver-construction time is routed through the
+        TracedStructure path instead of the no-TracedStructure path, namely:
+
+        1. the ``"auto"`` matrix-property probe (when ``solver="auto"`` /
+           ``solver_options`` is ``None``), and
+        2. pre-warming of direct solvers (cuDSS / cholmod / umfpack / spsolve),
+           which assemble a sample Jacobian to fix the CSR structure.
+
+        This matters because ``TracedStructure.from_problem`` releases the
+        host-side slot maps by default (``free_scratch=True``); the
+        no-TracedStructure path reads those maps and would raise. The
+        **recommended flow** is therefore to build the TracedStructure first,
+        pass it here, and also pass it to every ``solver(...)`` call::
+
+            ts = feax.TracedStructure.from_problem(problem)
+            solver = feax.create_solver(problem, bc, opts,
+                                        traced_params=tp, traced_structure=ts)
+            sol = solver(tp, x0, traced_structure=ts)
+
+        Omit it only if you keep the host maps alive
+        (``TracedStructure.from_problem(problem, free_scratch=False)`` or no
+        TracedStructure at all), in which case the legacy no-TracedStructure
+        path is used.
 
     Returns
     -------
     callable
         When ``DirectSolverOptions`` is used:
-            ``solver(internal_vars) -> solution``
+            ``solver(traced_params, initial_guess=None, bc=None, traced_structure=None) -> solution``
             (``initial_guess`` is optional and ignored if provided.)
         When ``KrylovSolverOptions`` is used:
-            ``solver(internal_vars, initial_guess, bc=None) -> solution``
+            ``solver(traced_params, initial_guess, bc=None, traced_structure=None) -> solution``
 
         The optional ``bc`` parameter accepts a
         :class:`~feax.DCboundary.DirichletBC` whose ``bc_rows`` match the
@@ -153,33 +179,38 @@ def create_solver(
         the solver when only prescribed values change (e.g. incremental
         loading).  Use :meth:`DirichletBC.replace_vals` for convenience.
 
+        Pass ``traced_structure=ts`` to run the solve on the TracedStructure
+        path (required if the host slot maps were released — the default of
+        ``TracedStructure.from_problem``); omit it to use the
+        no-TracedStructure path.
+
     Examples
     --------
     >>> # Direct solver (auto-selects cuDSS on GPU, spsolve on CPU)
     >>> solver = create_solver(problem, bc, solver_options=DirectSolverOptions(),
-    ...                        linear=True, internal_vars=internal_vars)
-    >>> solution = solver(internal_vars)
+    ...                        linear=True, traced_params=traced_params)
+    >>> solution = solver(traced_params)
     >>>
     >>> # Iterative solver with auto selection
     >>> solver = create_solver(problem, bc, solver_options=KrylovSolverOptions(),
-    ...                        linear=True, internal_vars=internal_vars)
-    >>> solution = solver(internal_vars, initial_guess)
+    ...                        linear=True, traced_params=traced_params)
+    >>> solution = solver(traced_params, initial_guess)
     >>>
-    >>> # Explicit solver selection (no internal_vars needed for non-cuDSS)
+    >>> # Explicit solver selection (no traced_params needed for non-cuDSS)
     >>> solver = create_solver(problem, bc, solver_options=KrylovSolverOptions(solver="gmres"),
     ...                        linear=True)
-    >>> solution = solver(internal_vars, initial_guess)
+    >>> solution = solver(traced_params, initial_guess)
     >>>
     >>> # Incremental loading with non-symmetric BC elimination
     >>> solver = create_solver(problem, bc,
     ...                        solver_options=DirectSolverOptions(solver="spsolve"),
     ...                        newton_options=NewtonOptions(tol=1e-6, max_iter=20),
     ...                        symmetric_bc=False,
-    ...                        internal_vars=internal_vars)
+    ...                        traced_params=traced_params)
     >>> sol = zero_like_initial_guess(problem, bc)
     >>> for step in range(1, num_steps + 1):
     ...     bc_step = bc.replace_vals(new_vals)  # update prescribed values
-    ...     sol = solver(internal_vars, sol, bc=bc_step)
+    ...     sol = solver(traced_params, sol, bc=bc_step)
     """
     linear_options = solver_options
     adjoint_linear_options = adjoint_solver_options
@@ -249,10 +280,10 @@ def create_solver(
     )
 
     if _needs_auto:
-        if internal_vars is None:
+        if traced_params is None:
             raise ValueError(
-                "internal_vars is required when solver_options is None or has solver='auto'. "
-                "Pass a sample InternalVars to enable automatic matrix property detection, "
+                "traced_params is required when solver_options is None or has solver='auto'. "
+                "Pass a sample TracedParams to enable automatic matrix property detection, "
                 "or specify the solver explicitly (e.g. KrylovSolverOptions(solver='cg'))."
             )
 
@@ -270,9 +301,20 @@ def create_solver(
     # Assemble sample Jacobian (CSR-direct) and resolve "auto" only when needed.
     if _needs_auto:
         from .utils import zero_like_initial_guess
-        J_bc_csr_func = create_J_bc_csr_function(problem, bc, symmetric=symmetric_bc)
         _initial_tmp = zero_like_initial_guess(problem, bc)
-        _sample_J = J_bc_csr_func(_initial_tmp, internal_vars)
+        # Detect the matrix property on the TracedStructure (recommended) path when an
+        # ``ts`` is supplied, so the probe never touches the no-TracedStructure slot
+        # maps (``csr_volume_slots`` / ``res_volume_dofs``). This lets the caller
+        # build TracedStructure first (which frees those host arrays) before
+        # create_solver, with no ordering constraint. Falls back to the
+        # closure/no-ts assembly when ``traced_structure`` is omitted.
+        if traced_structure is not None:
+            from .assembler import create_J_bc_csr_parametric
+            J_bc_csr_func = create_J_bc_csr_parametric(problem, symmetric=symmetric_bc)
+            _sample_J = J_bc_csr_func(_initial_tmp, traced_params, bc, traced_structure)
+        else:
+            J_bc_csr_func = create_J_bc_csr_function(problem, bc, symmetric=symmetric_bc)
+            _sample_J = J_bc_csr_func(_initial_tmp, traced_params)
         _mp = detect_matrix_property(_sample_J, matrix_view=problem.matrix_view)
         from .solvers.options import detect_backend
         _backend = detect_backend()
@@ -302,7 +344,8 @@ def create_solver(
             bc=bc,
             solver_options=linear_options,
             adjoint_solver_options=adjoint_linear_options,
-            internal_vars=internal_vars,
+            traced_params=traced_params,
+            traced_structure=traced_structure,
         )
 
     # 3) Nonlinear Newton path
@@ -312,7 +355,8 @@ def create_solver(
         linear_options=linear_options,
         adjoint_linear_options=adjoint_linear_options,
         newton_options=newton_options,
-        internal_vars=internal_vars,
+        traced_params=traced_params,
         extra_residual_fn=extra_residual_fn,
         symmetric_bc=symmetric_bc,
+        traced_structure=traced_structure,
     )

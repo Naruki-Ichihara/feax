@@ -74,7 +74,7 @@
         "reference/feax/basis",
         "reference/feax/csr",
         "reference/feax/fe",
-        "reference/feax/internal_vars",
+        "reference/feax/traced_params",
         "reference/feax/mesh",
         "reference/feax/problem",
         "reference/feax/profiler",

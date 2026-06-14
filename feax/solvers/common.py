@@ -298,23 +298,31 @@ def create_linear_solve_fn(
 def prewarm_direct_solvers(
     problem,
     bc,
-    internal_vars,
+    traced_params,
     J_bc_func,
     forward_options,
     adjoint_options,
     forward_solve_fn,
     adjoint_solve_fn,
+    traced_structure=None,
+    J_bc_func_parametric=None,
 ):
     """Pre-warm direct solve closures with concrete CSR structure.
 
     This must run outside JAX tracing so the first-call direct initialization
     does not capture tracers in closure state.
+
+    When ``traced_structure`` is given, the sample Jacobian is assembled on the
+    TracedStructure path (``J_bc_func_parametric``) so it never touches the
+    no-TracedStructure host slot maps — which may already have been released by
+    ``TracedStructure.from_problem(free_scratch=True)``. Falls back to the
+    closure ``J_bc_func`` (no-TracedStructure path) otherwise.
     """
 
     def _is_direct_solver(opts):
         return isinstance(opts, DirectSolverOptions)
 
-    if internal_vars is None:
+    if traced_params is None:
         return
 
     if not (_is_direct_solver(forward_options) or _is_direct_solver(adjoint_options)):
@@ -323,7 +331,10 @@ def prewarm_direct_solvers(
     from ..utils import zero_like_initial_guess
 
     initial_tmp = zero_like_initial_guess(problem, bc)
-    sample_J = J_bc_func(initial_tmp, internal_vars)
+    if traced_structure is not None and J_bc_func_parametric is not None:
+        sample_J = J_bc_func_parametric(initial_tmp, traced_params, bc, traced_structure)
+    else:
+        sample_J = J_bc_func(initial_tmp, traced_params)
     b_tmp = np.zeros(sample_J.shape[0])
 
     if _is_direct_solver(forward_options):

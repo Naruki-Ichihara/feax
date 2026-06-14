@@ -115,7 +115,7 @@ def get_energy_density(self):
     return psi
 ```
 
-The energy density takes `mu` and `lmbda` as per-cell arguments from `InternalVars`, so the same function serves both body and medium cells.
+The energy density takes `mu` and `lmbda` as per-cell arguments from `TracedParams`, so the same function serves both body and medium cells.
 
 ### HuHu-LuLu Biharmonic Regularization
 
@@ -162,14 +162,14 @@ def get_universal_kernel(self):
 Key points:
 
 - `hess=True` in the Problem constructor enables shape function Hessian computation
-- Shape Hessians (`cell_shape_hess`) are passed through `InternalVars` as volume variables
+- Shape Hessians (`cell_shape_hess`) are passed through `TracedParams` as volume variables
 - `cell_is_medium` acts as a per-cell switch: regularization is applied only in the medium region
 
 ## Building the Problem
 
 `ThirdMediumContact.create()` is the entry point — it builds the `Problem` (with shape
 Hessians enabled), assembles the per-cell moduli, shape Hessians, and medium mask into an
-`InternalVars`, and returns both together. Do **not** instantiate `ThirdMediumContact`
+`TracedParams`, and returns both together. Do **not** instantiate `ThirdMediumContact`
 directly:
 
 ```python
@@ -186,7 +186,7 @@ problem, iv = ThirdMediumContact.create(
 ```
 
 The returned `iv` bundles the per-cell material parameters, shape Hessians, and the medium
-mask as volume variables — pass it to the solver via `internal_vars=iv`.
+mask as volume variables — pass it to the solver via `traced_params=iv`.
 
 ## Boundary Conditions and Solver
 
@@ -223,7 +223,7 @@ solver = fe.create_solver(
     solver_options=fe.DirectSolverOptions(solver='umfpack', verbose=True),
     newton_options=fe.NewtonOptions(tol=1e-6, rel_tol=1e-8, max_iter=100),
     linear=False,        # adaptive Newton (the default)
-    internal_vars=iv,
+    traced_params=iv,
     symmetric_bc=False,
 )
 ```

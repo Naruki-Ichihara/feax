@@ -1,6 +1,6 @@
 # Batched Dirichlet BC
 
-This tutorial demonstrates using `jax.vmap` to solve the same linear elasticity problem for **multiple prescribed boundary displacements** in a single vectorised call. While the [Vectorization Transform](./vmap_transform.md) tutorial vmaps over material parameters (`InternalVars`), this example vmaps over **Dirichlet boundary condition values**.
+This tutorial demonstrates using `jax.vmap` to solve the same linear elasticity problem for **multiple prescribed boundary displacements** in a single vectorised call. While the [Vectorization Transform](./vmap_transform.md) tutorial vmaps over material parameters (`TracedParams`), this example vmaps over **Dirichlet boundary condition values**.
 
 ## Overview
 
@@ -52,12 +52,12 @@ bc = bc_config.create_bc(problem)
 ## Solver
 
 ```python
-iv = fe.InternalVars(volume_vars=())
+iv = fe.TracedParams(volume_vars=())
 solver = fe.create_solver(
     problem, bc,
     solver_options=fe.DirectSolverOptions(),
     linear=True,
-    internal_vars=iv,
+    traced_params=iv,
 )
 ```
 
@@ -126,5 +126,5 @@ python examples/basic/batched_bc.py
 
 ## Further Reading
 
-- [Vectorization Transform](./vmap_transform.md) — vmap over material parameters (`InternalVars`)
+- [Vectorization Transform](./vmap_transform.md) — vmap over material parameters (`TracedParams`)
 - [JIT Transform](./jit_transform.md) — `jax.jit` for repeated single solves

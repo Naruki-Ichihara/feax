@@ -44,10 +44,10 @@ def elastic_setup():
             component='x', value=0.0,
         ),
     ]).create_bc(problem)
-    iv = fe.InternalVars(volume_vars=())
+    tp = fe.TracedParams(volume_vars=())
     bc1 = bc.replace_vals(bc.bc_vals.at[-1].set(0.1))
     initial = fe.zero_like_initial_guess(problem, bc)
-    return problem, bc, iv, bc1, initial
+    return problem, bc, tp, bc1, initial
 
 
 # ---------------------------------------------------------------------------
@@ -79,15 +79,15 @@ def _check_grad(loss_fn, bc_vals, rtol=1e-4):
 @pytest.mark.cpu
 def test_bc_grad_linear(elastic_setup):
     """Linear solver (linear=True): grad w.r.t. bc_vals matches FD."""
-    problem, bc, iv, bc1, initial = elastic_setup
+    problem, bc, tp, bc1, initial = elastic_setup
     solver = fe.create_solver(
         problem, bc,
         solver_options=fe.KrylovSolverOptions(solver='cg'),
-        linear=True, internal_vars=iv,
+        linear=True, traced_params=tp,
     )
 
     def loss(bc_vals_arg):
-        return np.sum(solver(iv, initial, bc=bc.replace_vals(bc_vals_arg)) ** 2)
+        return np.sum(solver(tp, initial, bc=bc.replace_vals(bc_vals_arg)) ** 2)
 
     analytic, fd, rel_err = _check_grad(loss, bc1.bc_vals)
     assert rel_err < 1e-4, (
@@ -99,16 +99,16 @@ def test_bc_grad_linear(elastic_setup):
 @pytest.mark.cpu
 def test_bc_grad_newton_jittable(elastic_setup):
     """Newton fori_loop (): grad w.r.t. bc_vals matches FD."""
-    problem, bc, iv, bc1, initial = elastic_setup
+    problem, bc, tp, bc1, initial = elastic_setup
     solver = fe.create_solver(
         problem, bc,
         solver_options=fe.KrylovSolverOptions(solver='cg'),
-        linear=False, internal_vars=iv,
+        linear=False, traced_params=tp,
         newton_options=NewtonOptions(),
     )
 
     def loss(bc_vals_arg):
-        return np.sum(solver(iv, initial, bc=bc.replace_vals(bc_vals_arg)) ** 2)
+        return np.sum(solver(tp, initial, bc=bc.replace_vals(bc_vals_arg)) ** 2)
 
     analytic, fd, rel_err = _check_grad(loss, bc1.bc_vals)
     assert rel_err < 1e-4, (
@@ -120,16 +120,16 @@ def test_bc_grad_newton_jittable(elastic_setup):
 @pytest.mark.cpu
 def test_bc_grad_newton_python_loop(elastic_setup):
     """Newton Python loop (): grad w.r.t. bc_vals matches FD."""
-    problem, bc, iv, bc1, initial = elastic_setup
+    problem, bc, tp, bc1, initial = elastic_setup
     solver = fe.create_solver(
         problem, bc,
         solver_options=fe.KrylovSolverOptions(solver='cg'),
-        linear=False, internal_vars=iv,
+        linear=False, traced_params=tp,
         newton_options=NewtonOptions(),
     )
 
     def loss(bc_vals_arg):
-        return np.sum(solver(iv, initial, bc=bc.replace_vals(bc_vals_arg)) ** 2)
+        return np.sum(solver(tp, initial, bc=bc.replace_vals(bc_vals_arg)) ** 2)
 
     analytic, fd, rel_err = _check_grad(loss, bc1.bc_vals)
     assert rel_err < 1e-4, (
@@ -141,17 +141,17 @@ def test_bc_grad_newton_python_loop(elastic_setup):
 @pytest.mark.cpu
 def test_bc_grad_newton_nonsymmetric(elastic_setup):
     """Newton with symmetric_bc=False: grad w.r.t. bc_vals matches FD."""
-    problem, bc, iv, bc1, initial = elastic_setup
+    problem, bc, tp, bc1, initial = elastic_setup
     solver = fe.create_solver(
         problem, bc,
         solver_options=fe.KrylovSolverOptions(solver='gmres'),
-        linear=False, internal_vars=iv,
+        linear=False, traced_params=tp,
         newton_options=NewtonOptions(),
         symmetric_bc=False,
     )
 
     def loss(bc_vals_arg):
-        return np.sum(solver(iv, initial, bc=bc.replace_vals(bc_vals_arg)) ** 2)
+        return np.sum(solver(tp, initial, bc=bc.replace_vals(bc_vals_arg)) ** 2)
 
     analytic, fd, rel_err = _check_grad(loss, bc1.bc_vals)
     assert rel_err < 1e-4, (

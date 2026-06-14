@@ -22,7 +22,7 @@ Example:
     Creating density field from custom node-edge graph:
 
     >>> from feax.flat.graph import create_lattice_function, create_lattice_density_field
-    >>> from feax import InternalVars
+    >>> from feax import TracedParams
     >>>
     >>> # Define nodes and edges for your structure
     >>> nodes = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]])
@@ -36,7 +36,7 @@ Example:
     ...                                    density_solid=1.0, density_void=0.1)
     >>>
     >>> # Use in FEAX simulation
-    >>> internal_vars = InternalVars(volume_vars=(rho,), surface_vars=[])
+    >>> traced_params = TracedParams(volume_vars=(rho,), surface_vars=[])
 """
 
 from functools import partial

@@ -251,6 +251,8 @@ def main():
         [fe.DirichletBCSpec(location=LEFT_EDGE, component="all", value=0.0)]
     ).create_bc(problem)
 
+    ts = fe.TracedStructure.from_problem(problem)
+
     solver_options = fe.DirectSolverOptions(
         solver="cudss",
     )
@@ -263,7 +265,7 @@ def main():
     case_surface_vars = [
         (
             (
-                fe.InternalVars.create_spatially_varying_surface_var(
+                fe.TracedParams.create_spatially_varying_surface_var(
                     problem,
                     make_right_edge_load_fn(center),
                     surface_index=0,
@@ -273,9 +275,9 @@ def main():
         for center in PATCH_CENTERS
     ]
 
-    # Create sample internal_vars for direct solver pre-warming (must happen before vmap)
+    # Create sample traced_params for direct solver pre-warming (must happen before vmap)
     sample_rho = jnp.full(problem.num_cells, TARGET_VOLUME_FRACTION)
-    sample_internal_vars = fe.InternalVars(
+    sample_internal_vars = fe.TracedParams(
         volume_vars=(sample_rho,),
         surface_vars=case_surface_vars[0],
     )
@@ -285,7 +287,8 @@ def main():
         solver_options=solver_options,
         adjoint_solver_options=solver_options,
         linear=True,
-        internal_vars=sample_internal_vars,
+        traced_params=sample_internal_vars,
+        traced_structure=ts,
     )
 
     batched_surface_vars = jax.tree_util.tree_map(
@@ -305,8 +308,8 @@ def main():
     coords = 2.0 * (cell_centroids - coord_min) / coord_range - 1.0
 
     def solve_forward(rho, surface_vars):
-        internal_vars = fe.InternalVars(volume_vars=(rho,), surface_vars=surface_vars)
-        solution = solver(internal_vars, initial_guess)
+        traced_params = fe.TracedParams(volume_vars=(rho,), surface_vars=surface_vars)
+        solution = solver(traced_params, initial_guess, traced_structure=ts)
         return compliance_fn(solution, surface_vars)
 
     @eqx.filter_jit

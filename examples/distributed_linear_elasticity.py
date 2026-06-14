@@ -64,15 +64,17 @@ try:
         left_fix = fe.DCboundary.DirichletBCSpec(location=left, component="all", value=0.)
         bc = fe.DCboundary.DirichletBCConfig([left_fix]).create_bc(problem)
 
+        ts = fe.TracedStructure.from_problem(problem)
+
         # Internal variables
-        traction_array = fe.InternalVars.create_uniform_surface_var(problem, traction)
-        internal_vars = fe.InternalVars(volume_vars=(), surface_vars=[(traction_array,)])
+        traction_array = fe.TracedParams.create_uniform_surface_var(problem, traction)
+        traced_params = fe.TracedParams(volume_vars=(), surface_vars=[(traction_array,)])
 
         # Solve
         solver_opts = fe.DirectSolverOptions()
-        solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+        solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params, traced_structure=ts)
         initial = fe.zero_like_initial_guess(problem, bc)
-        sol = solver(internal_vars, initial)
+        sol = solver(traced_params, initial, traced_structure=ts)
 
         # Results
         displacement = problem.unflatten_fn_sol_list(sol)[0]

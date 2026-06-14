@@ -55,7 +55,7 @@ requires_cudss = pytest.mark.skipif(
 @pytest.mark.cpu
 def test_cg_solver_jit_compatibility(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that CG solver works with and without JIT."""
@@ -74,11 +74,11 @@ def test_cg_solver_jit_compatibility(
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve without JIT
-    sol_no_jit = solver(internal_vars, initial)
+    sol_no_jit = solver(traced_params, initial)
 
     # Solve with JIT
     solver_jit = jax.jit(solver)
-    sol_with_jit = solver_jit(internal_vars, initial)
+    sol_with_jit = solver_jit(traced_params, initial)
 
     # Solutions should be identical
     diff = np.linalg.norm(sol_no_jit - sol_with_jit)
@@ -92,7 +92,7 @@ def test_cg_solver_jit_compatibility(
 @pytest.mark.cpu
 def test_bicgstab_solver_jit_compatibility(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that BICGSTAB solver works with and without JIT."""
@@ -111,11 +111,11 @@ def test_bicgstab_solver_jit_compatibility(
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve without JIT
-    sol_no_jit = solver(internal_vars, initial)
+    sol_no_jit = solver(traced_params, initial)
 
     # Solve with JIT
     solver_jit = jax.jit(solver)
-    sol_with_jit = solver_jit(internal_vars, initial)
+    sol_with_jit = solver_jit(traced_params, initial)
 
     # Solutions should be identical
     diff = np.linalg.norm(sol_no_jit - sol_with_jit)
@@ -129,7 +129,7 @@ def test_bicgstab_solver_jit_compatibility(
 @pytest.mark.cpu
 def test_gmres_solver_jit_compatibility(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that GMRES solver works with and without JIT."""
@@ -148,11 +148,11 @@ def test_gmres_solver_jit_compatibility(
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve without JIT
-    sol_no_jit = solver(internal_vars, initial)
+    sol_no_jit = solver(traced_params, initial)
 
     # Solve with JIT
     solver_jit = jax.jit(solver)
-    sol_with_jit = solver_jit(internal_vars, initial)
+    sol_with_jit = solver_jit(traced_params, initial)
 
     # Solutions should be identical
     diff = np.linalg.norm(sol_no_jit - sol_with_jit)
@@ -171,7 +171,7 @@ def test_gmres_solver_jit_compatibility(
 @requires_cudss
 def test_cudss_solver_jit_compatibility_full(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that cuDSS solver (FULL matrix) works with JIT."""
@@ -186,12 +186,12 @@ def test_cudss_solver_jit_compatibility_full(
 
     # Create solver with cuDSS
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve with JIT (only JIT version to avoid multiple solver creation)
     solver_jit = jax.jit(solver)
-    sol_with_jit = solver_jit(internal_vars, initial)
+    sol_with_jit = solver_jit(traced_params, initial)
 
     # Solution should be non-trivial and reasonable
     solution_norm = np.linalg.norm(sol_with_jit)
@@ -203,7 +203,7 @@ def test_cudss_solver_jit_compatibility_full(
 @requires_cudss
 def test_cudss_solver_jit_compatibility_upper(
     linear_elasticity_problem_upper,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that cuDSS solver (UPPER matrix) works with JIT."""
@@ -221,12 +221,12 @@ def test_cudss_solver_jit_compatibility_upper(
 
     # Create solver with cuDSS for UPPER matrix
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve with JIT (only JIT version to avoid multiple solver creation)
     solver_jit = jax.jit(solver)
-    sol_with_jit = solver_jit(internal_vars, initial)
+    sol_with_jit = solver_jit(traced_params, initial)
 
     # Solution should be non-trivial and reasonable
     solution_norm = np.linalg.norm(sol_with_jit)
@@ -241,7 +241,7 @@ def test_cudss_solver_jit_compatibility_upper(
 @pytest.mark.cpu
 def test_multiple_jit_compilations_cg(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that CG solver can be JIT-compiled multiple times."""
@@ -261,11 +261,11 @@ def test_multiple_jit_compilations_cg(
 
     # First JIT compilation
     solver_jit1 = jax.jit(solver)
-    sol1 = solver_jit1(internal_vars, initial)
+    sol1 = solver_jit1(traced_params, initial)
 
     # Second JIT compilation (should use cached version)
     solver_jit2 = jax.jit(solver)
-    sol2 = solver_jit2(internal_vars, initial)
+    sol2 = solver_jit2(traced_params, initial)
 
     # Solutions should be identical
     diff = np.linalg.norm(sol1 - sol2)
@@ -276,7 +276,7 @@ def test_multiple_jit_compilations_cg(
 @requires_cudss
 def test_multiple_jit_compilations_cudss(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that cuDSS solver can be JIT-compiled multiple times."""
@@ -291,16 +291,16 @@ def test_multiple_jit_compilations_cudss(
 
     # Create solver with cuDSS
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # First JIT compilation
     solver_jit1 = jax.jit(solver)
-    sol1 = solver_jit1(internal_vars, initial)
+    sol1 = solver_jit1(traced_params, initial)
 
     # Second JIT compilation (should use cached version)
     solver_jit2 = jax.jit(solver)
-    sol2 = solver_jit2(internal_vars, initial)
+    sol2 = solver_jit2(traced_params, initial)
 
     # Solutions should be very close
     diff = np.linalg.norm(sol1 - sol2) / np.linalg.norm(sol1)

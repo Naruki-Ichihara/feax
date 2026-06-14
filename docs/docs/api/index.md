@@ -26,7 +26,7 @@ Complete API documentation for FEAX (Finite Element Analysis with JAX).
 - **[feax.DCboundary](./reference/feax/DCboundary.md)** - Dirichlet boundary conditions
 
 ### Internal Variables
-- **[feax.internal_vars](./reference/feax/internal_vars.md)** - Material properties and parameters
+- **[feax.traced_params](./reference/feax/traced_params.md)** - Material properties and parameters
 
 ### Utilities
 - **[feax.utils](./reference/feax/utils.md)** - Utility functions (save_sol, etc.)

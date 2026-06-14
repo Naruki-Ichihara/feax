@@ -1,5 +1,36 @@
 import os as _os
 
+# ── GPU memory preallocation ────────────────────────────────────────────────
+# JAX/XLA preallocates ~75% of GPU memory on the first device op. For feax this
+# is usually harmful: the sparse direct solvers (cuDSS) allocate their large
+# factorization buffers *outside* XLA's pool via cudaMalloc, and on unified-
+# memory devices (e.g. GB10) the 75% grab competes with host RAM. feax therefore
+# **disables preallocation by default**.
+#
+# This MUST be set before JAX initializes the GPU backend (the first device
+# array / ``jax.devices()`` call), so it is done here at import — before
+# ``import jax`` — making the per-script ``os.environ[...]`` line unnecessary.
+#
+# Override with the ``FEAX_PREALLOCATE`` environment variable:
+#
+#     FEAX_PREALLOCATE=0  (default, or unset)  →  XLA_PYTHON_CLIENT_PREALLOCATE=false
+#     FEAX_PREALLOCATE=1                        →  XLA_PYTHON_CLIENT_PREALLOCATE=true
+#
+# or programmatically right after ``import feax`` via :func:`feax.enable_preallocate`.
+# An explicitly pre-set ``XLA_PYTHON_CLIENT_PREALLOCATE`` always takes precedence.
+
+
+def _resolve_preallocate_env() -> bool:
+    raw = _os.environ.get("FEAX_PREALLOCATE")
+    if raw is None:
+        return False                      # default: preallocation OFF
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+if "XLA_PYTHON_CLIENT_PREALLOCATE" not in _os.environ:
+    _os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = (
+        "true" if _resolve_preallocate_env() else "false")
+
 import jax
 
 # ── Floating-point precision ────────────────────────────────────────────────
@@ -50,12 +81,41 @@ def x64_enabled() -> bool:
     return bool(jax.config.read("jax_enable_x64"))
 
 
+def enable_preallocate(flag: bool = True) -> None:
+    """Enable (``flag=True``) or disable (``flag=False``) XLA's GPU memory
+    preallocation by setting ``XLA_PYTHON_CLIENT_PREALLOCATE``.
+
+    feax disables preallocation by default; call this to turn the ~75% upfront
+    grab back on (e.g. to reduce fragmentation for a fixed-shape workload).
+
+    .. warning::
+        XLA reads ``XLA_PYTHON_CLIENT_PREALLOCATE`` only when the GPU backend
+        initializes (the first device op). Call this — or set
+        ``FEAX_PREALLOCATE`` / ``XLA_PYTHON_CLIENT_PREALLOCATE`` — *before* any
+        JAX array is created; afterwards it has no effect. For a guaranteed-clean
+        run prefer the ``FEAX_PREALLOCATE`` environment variable.
+
+    Examples
+    --------
+    >>> import feax
+    >>> feax.enable_preallocate(True)   # re-enable XLA's 75% preallocation
+    """
+    _os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true" if flag else "false"
+
+
+def preallocate_enabled() -> bool:
+    """Return ``True`` if XLA GPU memory preallocation is currently enabled."""
+    return _os.environ.get(
+        "XLA_PYTHON_CLIENT_PREALLOCATE", "false").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 # Version info
 try:
     from importlib.metadata import PackageNotFoundError, version
     __version__ = version("feax")
 except (ImportError, PackageNotFoundError):
-    __version__ = "0.6.0"
+    __version__ = "0.6.1"
 
 # Main API
 from .assembler import create_energy_fn, create_J_bc_csr_function, create_res_bc_function, get_jacobian, get_jacobian_info, get_res
@@ -66,8 +126,8 @@ from .DCboundary import (
     apply_boundary_to_res,
     dirichlet_bc_config,
 )
-from .internal_vars import InternalVars
-from .static_vars import StaticVars
+from .traced_params import TracedParams
+from .traced_structure import TracedStructure
 from .mesh import Mesh
 from .problem import MatrixView, Problem
 from .solver import (

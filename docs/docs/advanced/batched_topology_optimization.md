@@ -133,7 +133,7 @@ The central data-engineering step is assembling `batched_surface_vars` from 10 s
 case_surface_vars = [
     (
         (
-            fe.InternalVars.create_spatially_varying_surface_var(
+            fe.TracedParams.create_spatially_varying_surface_var(
                 problem,
                 make_right_edge_load_fn(center),
                 surface_index=0,
@@ -153,11 +153,11 @@ This produces a PyTree where each leaf has a leading batch dimension of size `NU
 
 ## Solver Pre-warming
 
-The example passes a concrete `internal_vars` sample to `create_solver` before any `jax.vmap` tracing occurs. This lets FEAX initialize the direct solver and establish the sparse structure once up front:
+The example passes a concrete `traced_params` sample to `create_solver` before any `jax.vmap` tracing occurs. This lets FEAX initialize the direct solver and establish the sparse structure once up front:
 
 ```python
 sample_rho = jnp.full(problem.num_cells, TARGET_VOLUME_FRACTION)
-sample_internal_vars = fe.InternalVars(
+sample_internal_vars = fe.TracedParams(
     volume_vars=(sample_rho,),
     surface_vars=case_surface_vars[0],
 )
@@ -167,13 +167,13 @@ solver = fe.create_solver(
     solver_options=fe.DirectSolverOptions(solver="cudss"),
     adjoint_solver_options=fe.DirectSolverOptions(solver="cudss"),
     linear=True,
-    internal_vars=sample_internal_vars,
+    traced_params=sample_internal_vars,
 )
 ```
 
 :::warning
 ConcretizationTypeError without pre-warming
-If `internal_vars` is omitted, direct solver initialization is deferred to the first solve call. When that first call happens inside `jax.vmap`, JAX tracer values are passed where concrete values are required, resulting in a `ConcretizationTypeError`. Always provide `internal_vars` when combining direct solvers with `vmap`.
+If `traced_params` is omitted, direct solver initialization is deferred to the first solve call. When that first call happens inside `jax.vmap`, JAX tracer values are passed where concrete values are required, resulting in a `ConcretizationTypeError`. Always provide `traced_params` when combining direct solvers with `vmap`.
 :::
 
 ## Batched Loss and Optimization
@@ -184,8 +184,8 @@ Each case calls the same solver with different `(rho, surface_vars)`:
 
 ```python
 def solve_forward(rho, surface_vars):
-    internal_vars = fe.InternalVars(volume_vars=(rho,), surface_vars=surface_vars)
-    solution = solver(internal_vars, initial_guess)
+    traced_params = fe.TracedParams(volume_vars=(rho,), surface_vars=surface_vars)
+    solution = solver(traced_params, initial_guess)
     return compliance_fn(solution, surface_vars)
 ```
 
@@ -256,12 +256,12 @@ for case_index, case_name in enumerate(CASE_NAMES):
 | Concept | How it is used |
 |---|---|
 | `location_fns` | Define the single right-edge Neumann boundary on the `Problem` |
-| `InternalVars.surface_vars` | Store one spatially varying traction field per load case |
+| `TracedParams.surface_vars` | Store one spatially varying traction field per load case |
 | `jax.tree_util.tree_map` + `jnp.stack` | Stack per-case PyTrees into batched arrays |
 | `jax.vmap(solve_forward)` | Vectorize the FE solve + compliance over all load cases |
 | `eqx.filter_jit` / `eqx.filter_value_and_grad` | JIT-compile and differentiate through Equinox models |
 | `jax.vmap(optimizer.update)` | Independent optimizer state per case |
-| Solver pre-warming | Pass `internal_vars` to `create_solver` so direct-solver setup happens before the batched loop |
+| Solver pre-warming | Pass `traced_params` to `create_solver` so direct-solver setup happens before the batched loop |
 
 ## Complete Code
 

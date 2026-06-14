@@ -4,7 +4,7 @@ This tutorial demonstrates multi-physics topology optimization combining structu
 
 The key techniques are:
 
-1. **Coupling two physics through `InternalVars`**: the temperature field solved by the thermal problem is passed as a volume variable to the mechanical problem, driving thermal strain
+1. **Coupling two physics through `TracedParams`**: the temperature field solved by the thermal problem is passed as a volume variable to the mechanical problem, driving thermal strain
 2. **Post-processing with `gene.extract_surface` / `gene.extract_volume_mesh`**: extracting smooth surface and volume meshes from the optimised density field for re-analysis
 
 ## Problem Statement
@@ -156,9 +156,9 @@ $$
 \sigma_{\text{vM}} = \sqrt{\frac{3}{2}\,\mathbf{s}:\mathbf{s}}, \qquad \mathbf{s} = \boldsymbol{\sigma} - \frac{1}{3}\text{tr}(\boldsymbol{\sigma})\,\mathbf{I}
 $$
 
-## Coupling via InternalVars
+## Coupling via TracedParams
 
-`InternalVars` carries **any node-based or cell-based field** as extra arguments to the energy density function. This enables one-way (weak) coupling between physics without a monolithic formulation.
+`TracedParams` carries **any node-based or cell-based field** as extra arguments to the energy density function. This enables one-way (weak) coupling between physics without a monolithic formulation.
 
 ### Data flow
 
@@ -256,27 +256,27 @@ bc_therm = fe.DCboundary.DirichletBCConfig([
 ]).create_bc(prob_therm)
 ```
 
-### Solver Setup with Multiple InternalVars
+### Solver Setup with Multiple TracedParams
 
 ```python
 # Mechanical: volume_vars = (rho, T)
-sample_iv_mech = fe.InternalVars(volume_vars=(
-    fe.InternalVars.create_node_var(prob_mech, 0.5),
-    fe.InternalVars.create_node_var(prob_mech, T_ref),
+sample_iv_mech = fe.TracedParams(volume_vars=(
+    fe.TracedParams.create_node_var(prob_mech, 0.5),
+    fe.TracedParams.create_node_var(prob_mech, T_ref),
 ))
 self._solver_mech = fe.create_solver(
     prob_mech, bc_mech, solver_options=fe.DirectSolverOptions(),
     adjoint_solver_options=fe.DirectSolverOptions(),
-    linear=True, internal_vars=sample_iv_mech)
+    linear=True, traced_params=sample_iv_mech)
 
 # Thermal: volume_vars = (rho,)
-sample_iv_therm = fe.InternalVars(volume_vars=(
-    fe.InternalVars.create_node_var(prob_therm, 0.5),
+sample_iv_therm = fe.TracedParams(volume_vars=(
+    fe.TracedParams.create_node_var(prob_therm, 0.5),
 ))
 self._solver_therm = fe.create_solver(
     prob_therm, bc_therm, solver_options=fe.DirectSolverOptions(),
     adjoint_solver_options=fe.DirectSolverOptions(),
-    linear=True, internal_vars=sample_iv_therm)
+    linear=True, traced_params=sample_iv_therm)
 ```
 
 ### Objective Function
@@ -286,11 +286,11 @@ def objective(self, rho, beta=1.0):
     rho_p = self._phys_density(rho, beta)
 
     # Step 1: solve thermal
-    iv_therm = fe.InternalVars(volume_vars=(rho_p,))
+    iv_therm = fe.TracedParams(volume_vars=(rho_p,))
     sol_therm = self._solver_therm(iv_therm, self._init_therm)
 
     # Step 2: solve mechanics — T field as second volume variable
-    iv_mech = fe.InternalVars(volume_vars=(rho_p, sol_therm))
+    iv_mech = fe.TracedParams(volume_vars=(rho_p, sol_therm))
     sol_mech = self._solver_mech(iv_mech, self._init_mech)
 
     W_mech = self._compliance_fn(sol_mech) / self._W_mech_0
@@ -378,7 +378,7 @@ pin2_idx = bottom_idx[_onp.argmax(pts_r[bottom_idx, 0])]  # max-x on bottom
 
 Results (displacement, temperature, von Mises stress, strain tensors) are saved to VTU for visualisation in ParaView.
 
-## InternalVars: General Pattern for Coupled Problems
+## TracedParams: General Pattern for Coupled Problems
 
 The same pattern applies whenever one physics produces a field that another consumes:
 
@@ -397,7 +397,7 @@ Each entry in `volume_vars` is automatically interpolated to quadrature points:
 
 | Aspect | Detail |
 |---|---|
-| **Coupling** | `InternalVars.volume_vars` carries fields between solvers |
+| **Coupling** | `TracedParams.volume_vars` carries fields between solvers |
 | **Differentiability** | Full gradient through both solver VJPs via `jax.grad` |
 | **Energy density** | `psi(u_grad, rho, T)` — extra args auto-interpolated to quad points |
 | **Thermal stress** | $\varepsilon_\text{th} = \alpha(T - T_\text{ref})I$ from solved T field |

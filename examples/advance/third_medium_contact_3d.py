@@ -112,7 +112,7 @@ n_med = int((is_medium_np > 0.5).sum())
 print(f"Body cells: {n_body}, Medium cells: {n_med}")
 
 # ── Problem + internal variables via TMC API ─────────────────────────
-problem, iv = ThirdMediumContact.create(
+problem, tp = ThirdMediumContact.create(
     mesh,
     is_medium=is_medium,
     mu=G,
@@ -149,14 +149,18 @@ bc_z0 = fe.DirichletBCSpec(
 
 bc = fe.DirichletBCConfig([bc_fixed, bc_move, bc_z0]).create_bc(problem)
 
+# ── TracedStructure (memory-efficient assembly path) ─────────────────
+ts = fe.TracedStructure.from_problem(problem)
+
 # ── Solver setup ─────────────────────────────────────────────────────
 solver = fe.create_solver(
     problem, bc,
     solver_options=fe.DirectSolverOptions(solver='spsolve', verbose=True),
     newton_options=fe.NewtonOptions(tol=1e-6, rel_tol=1e-8, max_iter=30),
     linear=False,
-    internal_vars=iv,
+    traced_params=tp,
     symmetric_bc=False,
+    traced_structure=ts,
 )
 
 # ── Incremental loading ─────────────────────────────────────────────
@@ -207,7 +211,7 @@ for step in range(1, num_steps + 1):
     new_bc_vals = bc.bc_vals.at[move_bc_positions].set(disp)
     bc_step = bc.replace_vals(new_bc_vals)
 
-    sol = solver(iv, sol, bc=bc_step)
+    sol = solver(tp, sol, bc=bc_step, traced_structure=ts)
 
     sol_list = problem.unflatten_fn_sol_list(sol)
     u = sol_list[0]

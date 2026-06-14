@@ -120,7 +120,7 @@ def linear_solve(
     bc: DirichletBC,
     solver_options: AbstractSolverOptions,
     matrix_view: MatrixView,
-    internal_vars=None,
+    traced_params=None,
     P_mat=None,
     linear_solve_fn: Optional[Callable] = None,
     x0_fn: Optional[Callable] = None,
@@ -130,9 +130,9 @@ def linear_solve(
     if linear_solve_fn is None:
         linear_solve_fn = create_linear_solve_fn(solver_options)
 
-    if internal_vars is not None:
-        res = res_bc_applied(initial_guess, internal_vars)
-        J = J_bc_applied(initial_guess, internal_vars)
+    if traced_params is not None:
+        res = res_bc_applied(initial_guess, traced_params)
+        J = J_bc_applied(initial_guess, traced_params)
     else:
         res = res_bc_applied(initial_guess)
         J = J_bc_applied(initial_guess)
@@ -165,8 +165,9 @@ def create_linear_solver(
     bc: DirichletBC,
     solver_options: Optional[AbstractSolverOptions] = None,
     adjoint_solver_options: Optional[AbstractSolverOptions] = None,
-    internal_vars=None,
+    traced_params=None,
     symmetric_bc: bool = True,
+    traced_structure=None,
 ) -> Callable[[Any, np.ndarray], np.ndarray]:
     """Create a differentiable solver for linear FE problems.
 
@@ -186,7 +187,7 @@ def create_linear_solver(
     adjoint_solver_options : DirectSolverOptions or KrylovSolverOptions, optional
         Options for the adjoint solve used in the backward pass.
         Defaults to the same options as the forward solve.
-    internal_vars : InternalVars, optional
+    traced_params : TracedParams, optional
         Sample internal variables used to pre-warm cuDSS with concrete CSR
         structure before any JAX tracing. Recommended when using cuDSS and
         composing ``jax.jit`` with ``jax.grad``.
@@ -198,8 +199,8 @@ def create_linear_solver(
     Returns
     -------
     differentiable_solve : callable
-        A function with signature ``(internal_vars, initial_guess) -> solution``
-        that is differentiable w.r.t. ``internal_vars`` via ``jax.grad``.
+        A function with signature ``(traced_params, initial_guess) -> solution``
+        that is differentiable w.r.t. ``traced_params`` via ``jax.grad``.
 
     Notes
     -----
@@ -222,19 +223,19 @@ def create_linear_solver(
     J^T * adjoint = v
     ```
 
-    and returns the VJP of the residual w.r.t. ``internal_vars``.
+    and returns the VJP of the residual w.r.t. ``traced_params``.
 
     Examples
     --------
     >>> solver = create_linear_solver(problem, bc)
     >>> initial = fe.zero_like_initial_guess(problem, bc)
-    >>> sol = solver(internal_vars, initial)
+    >>> sol = solver(traced_params, initial)
     >>>
-    >>> # Gradient w.r.t. internal_vars
-    >>> def loss(internal_vars):
-    ...     sol = solver(internal_vars, initial)
+    >>> # Gradient w.r.t. traced_params
+    >>> def loss(traced_params):
+    ...     sol = solver(traced_params, initial)
     ...     return np.sum(sol ** 2)
-    >>> grad = jax.grad(loss)(internal_vars)
+    >>> grad = jax.grad(loss)(traced_params)
     """
     # Linear FE problems are typically SPD after Dirichlet elimination.
     # Resolve "auto" eagerly so low-level factories never receive unresolved options.
@@ -318,23 +319,25 @@ def create_linear_solver(
     prewarm_direct_solvers(
         problem=problem,
         bc=bc,
-        internal_vars=internal_vars,
+        traced_params=traced_params,
         J_bc_func=J_bc_csr_func,
         forward_options=solver_options,
         adjoint_options=adjoint_solver_options,
         forward_solve_fn=linear_solve_fn,
         adjoint_solve_fn=adjoint_linear_solve_fn,
+        traced_structure=traced_structure,
+        J_bc_func_parametric=J_bc_csr_parametric,
     )
 
     @jax.custom_vjp
-    def differentiable_solve(internal_vars, initial_guess, effective_bc, sv):
+    def differentiable_solve(traced_params, initial_guess, effective_bc, ts):
         # Operator follows the solve method: direct assembles a CSR matrix;
         # Krylov uses the matrix-free (residual JVP) matvec — no assembly.
         if _fwd_direct:
-            res = res_bc_parametric(initial_guess, internal_vars, effective_bc, sv)
-            op = J_bc_csr_parametric(initial_guess, internal_vars, effective_bc, sv)
+            res = res_bc_parametric(initial_guess, traced_params, effective_bc, ts)
+            op = J_bc_csr_parametric(initial_guess, traced_params, effective_bc, ts)
         else:
-            res, op = matfree_res_J_param(initial_guess, internal_vars, effective_bc, sv)
+            res, op = matfree_res_J_param(initial_guess, traced_params, effective_bc, ts)
 
         b = -res
         x0 = None
@@ -355,12 +358,12 @@ def create_linear_solver(
 
         return initial_guess + delta_sol
 
-    def f_fwd(internal_vars, initial_guess, effective_bc, sv):
-        sol = differentiable_solve(internal_vars, initial_guess, effective_bc, sv)
-        return sol, (internal_vars, sol, effective_bc, sv)
+    def f_fwd(traced_params, initial_guess, effective_bc, ts):
+        sol = differentiable_solve(traced_params, initial_guess, effective_bc, ts)
+        return sol, (traced_params, sol, effective_bc, ts)
 
     def f_bwd(res, v):
-        internal_vars, sol, effective_bc, sv = res
+        traced_params, sol, effective_bc, ts = res
 
         # Adjoint solve: J^T @ adjoint = v
         use_transpose = problem.matrix_view not in (MatrixView.UPPER, MatrixView.LOWER)
@@ -368,18 +371,18 @@ def create_linear_solver(
             # CSR-direct adjoint: assemble J, then form J^T via precomputed
             # transpose maps (a pure gather, no sort). UPPER/LOWER store a
             # symmetric view so no transpose is applied.
-            src = sv if sv is not None else problem
-            J = J_bc_csr_parametric(sol, internal_vars, effective_bc, sv)
+            src = ts if ts is not None else problem
+            J = J_bc_csr_parametric(sol, traced_params, effective_bc, ts)
             J_adjoint = transpose_with_maps(
                 J, src.csr_T_perm, src.csr_T_indptr, src.csr_T_indices
             ) if use_transpose else J
         elif symmetric_bc:
             # Symmetric BC ⇒ J is symmetric ⇒ Jᵀ = J (matrix-free matvec).
-            _, J_adjoint = matfree_res_J_param(sol, internal_vars, effective_bc, sv)
+            _, J_adjoint = matfree_res_J_param(sol, traced_params, effective_bc, ts)
         else:
             # Non-symmetric BC: Jᵀ is the VJP of the BC-applied residual.
             _, _vjp = jax.vjp(
-                lambda s: res_bc_parametric(s, internal_vars, effective_bc, sv), sol)
+                lambda s: res_bc_parametric(s, traced_params, effective_bc, ts), sol)
             J_adjoint = lambda w: _vjp(w)[0]
         adjoint_vec = linear_solve_adjoint(
             J_adjoint, v, adjoint_solver_options, problem.matrix_view,
@@ -387,14 +390,14 @@ def create_linear_solver(
             linear_solve_fn=adjoint_linear_solve_fn
         )
 
-        # VJP of residual w.r.t. internal_vars and bc
-        def res_fn(iv, bc_arg):
+        # VJP of residual w.r.t. traced_params and bc
+        def res_fn(tp, bc_arg):
             return problem.unflatten_fn_sol_list(
-                res_bc_parametric(sol, iv, bc_arg, sv)
+                res_bc_parametric(sol, tp, bc_arg, ts)
             )
 
         adjoint_list = problem.unflatten_fn_sol_list(adjoint_vec)
-        _, f_vjp = jax.vjp(res_fn, internal_vars, effective_bc)
+        _, f_vjp = jax.vjp(res_fn, traced_params, effective_bc)
         vjp_iv, vjp_bc = f_vjp(adjoint_list)
         vjp_iv = jax.tree_util.tree_map(_safe_negate, vjp_iv)
         vjp_bc = jax.tree_util.tree_map(_safe_negate, vjp_bc)
@@ -410,11 +413,11 @@ def create_linear_solver(
 
     default_initial_guess = zero_like_initial_guess(problem, bc)
 
-    def solver_wrapper(internal_vars, initial_guess=None, bc=None, static_vars=None):
+    def solver_wrapper(traced_params, initial_guess=None, bc=None, traced_structure=None):
         effective_bc = bc if isinstance(bc, DirichletBC) else _default_bc
         ig = default_initial_guess if (can_omit_initial_guess and initial_guess is None) else initial_guess
         if ig is None:
             ig = default_initial_guess
-        return differentiable_solve(internal_vars, ig, effective_bc, static_vars)
+        return differentiable_solve(traced_params, ig, effective_bc, traced_structure)
 
     return solver_wrapper

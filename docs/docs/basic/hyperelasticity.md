@@ -108,8 +108,8 @@ bc_config = fe.DCboundary.DirichletBCConfig([
 ```python
 feax_problem = HyperElasticityFeax(mesh, vec=3, dim=3, location_fns=[right])
 
-traction_surface = fe.InternalVars.create_uniform_surface_var(feax_problem, T)
-internal_vars = fe.InternalVars(
+traction_surface = fe.TracedParams.create_uniform_surface_var(feax_problem, T)
+traced_params = fe.TracedParams(
     volume_vars=[],
     surface_vars=[(traction_surface,)]
 )
@@ -117,7 +117,7 @@ internal_vars = fe.InternalVars(
 bc = bc_config.create_bc(feax_problem)
 
 solver_options = fe.DirectSolverOptions()
-solver = fe.create_solver(feax_problem, bc, solver_options, internal_vars=internal_vars)
+solver = fe.create_solver(feax_problem, bc, solver_options, traced_params=traced_params)
 ```
 
 The default `linear=False` runs Newton's method for the nonlinear problem.
@@ -129,7 +129,7 @@ def solve_fn(iv):
     sol = solver(iv, fe.zero_like_initial_guess(feax_problem, bc))
     return sol
 
-sol = solve_fn(internal_vars)
+sol = solve_fn(traced_params)
 sol_unflat = feax_problem.unflatten_fn_sol_list(sol)
 displacement = sol_unflat[0]
 ```

@@ -171,11 +171,11 @@ def test_feax_direct_vmap_shared_lhs_batched_rhs(simple_mesh, solver_name):
     )
     solver = _create_direct_solver(problem, solver_name)
 
-    traction = fe.InternalVars.create_uniform_surface_var(problem, _TRACTION)
+    traction = fe.TracedParams.create_uniform_surface_var(problem, _TRACTION)
     traction_batch = jnp.stack([traction, traction * 0.7, traction * 1.4], axis=0)
 
     def solve_case(traction_i):
-        return solver(fe.InternalVars((), [(traction_i,)]))
+        return solver(fe.TracedParams((), [(traction_i,)]))
 
     x_loop = jnp.stack([solve_case(traction_i) for traction_i in traction_batch], axis=0)
     x_vmap = jax.vmap(solve_case)(traction_batch)
@@ -194,14 +194,14 @@ def test_feax_direct_vmap_batched_lhs_shared_rhs(simple_mesh, solver_name):
     )
     solver = _create_direct_solver(problem, solver_name)
 
-    youngs_modulus = fe.InternalVars.create_node_var(problem, _E)
+    youngs_modulus = fe.TracedParams.create_node_var(problem, _E)
     youngs_modulus_batch = jnp.stack(
         [youngs_modulus, youngs_modulus * 0.8, youngs_modulus * 1.25],
         axis=0,
     )
 
     def solve_case(youngs_modulus_i):
-        return solver(fe.InternalVars((youngs_modulus_i,), [tuple()]))
+        return solver(fe.TracedParams((youngs_modulus_i,), [tuple()]))
 
     x_loop = jnp.stack(
         [solve_case(youngs_modulus_i) for youngs_modulus_i in youngs_modulus_batch],
@@ -223,8 +223,8 @@ def test_feax_direct_vmap_batched_lhs_batched_rhs(simple_mesh, solver_name):
     )
     solver = _create_direct_solver(problem, solver_name)
 
-    youngs_modulus = fe.InternalVars.create_node_var(problem, _E)
-    traction = fe.InternalVars.create_uniform_surface_var(problem, _TRACTION)
+    youngs_modulus = fe.TracedParams.create_node_var(problem, _E)
+    traction = fe.TracedParams.create_uniform_surface_var(problem, _TRACTION)
     youngs_modulus_batch = jnp.stack(
         [youngs_modulus, youngs_modulus * 1.25, youngs_modulus * 0.9],
         axis=0,
@@ -232,7 +232,7 @@ def test_feax_direct_vmap_batched_lhs_batched_rhs(simple_mesh, solver_name):
     traction_batch = jnp.stack([traction, traction * 0.8, traction * 1.3], axis=0)
 
     def solve_case(youngs_modulus_i, traction_i):
-        return solver(fe.InternalVars((youngs_modulus_i,), [(traction_i,)]))
+        return solver(fe.TracedParams((youngs_modulus_i,), [(traction_i,)]))
 
     x_loop = jnp.stack(
         [

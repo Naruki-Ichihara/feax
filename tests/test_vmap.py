@@ -62,7 +62,7 @@ requires_cudss = pytest.mark.skipif(
 @pytest.mark.cpu
 def test_cg_solver_vmap_compatibility(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that CG solver works with vmap."""
@@ -77,24 +77,24 @@ def test_cg_solver_vmap_compatibility(
 
     # Create solver with CG
     solver_opts = fe.KrylovSolverOptions(solver="cg")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
     initial = fe.zero_like_initial_guess(problem, bc)
 
-    # Create batch of internal_vars (3 copies with small perturbations)
+    # Create batch of traced_params (3 copies with small perturbations)
     batch_size = 3
-    surface_var = internal_vars.surface_vars[0][0]
+    surface_var = traced_params.surface_vars[0][0]
 
     # Create batch with small perturbations
     batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
-    # Reconstruct batched internal_vars
+    # Reconstruct batched traced_params
     def make_internal_vars(surf_var):
-        return fe.InternalVars((), [(surf_var,)])
+        return fe.TracedParams((), [(surf_var,)])
 
     # Apply vmap over batch dimension
-    vmapped_solver = jax.vmap(lambda sv: solver(make_internal_vars(sv), initial))
+    vmapped_solver = jax.vmap(lambda ts: solver(make_internal_vars(ts), initial))
     batch_solutions = vmapped_solver(batch_surface_vars)
 
     # Check solutions
@@ -108,7 +108,7 @@ def test_cg_solver_vmap_compatibility(
 @pytest.mark.cpu
 def test_bicgstab_solver_vmap_compatibility(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that BICGSTAB solver works with vmap."""
@@ -123,19 +123,19 @@ def test_bicgstab_solver_vmap_compatibility(
 
     # Create solver with BICGSTAB
     solver_opts = fe.KrylovSolverOptions(solver="bicgstab")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
 
-    # Create batch of internal_vars
+    # Create batch of traced_params
     batch_size = 3
-    surface_var = internal_vars.surface_vars[0][0]
+    surface_var = traced_params.surface_vars[0][0]
     batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
     def make_internal_vars(surf_var):
-        return fe.InternalVars((), [(surf_var,)])
+        return fe.TracedParams((), [(surf_var,)])
     # Apply vmap
-    vmapped_solver = jax.vmap(lambda sv: solver(make_internal_vars(sv)))
+    vmapped_solver = jax.vmap(lambda ts: solver(make_internal_vars(ts)))
     batch_solutions = vmapped_solver(batch_surface_vars)
 
     # Check solutions
@@ -149,7 +149,7 @@ def test_bicgstab_solver_vmap_compatibility(
 @pytest.mark.cpu
 def test_gmres_solver_vmap_compatibility(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that GMRES solver works with vmap."""
@@ -164,19 +164,19 @@ def test_gmres_solver_vmap_compatibility(
 
     # Create solver with GMRES
     solver_opts = fe.KrylovSolverOptions(solver="gmres")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
 
-    # Create batch of internal_vars
+    # Create batch of traced_params
     batch_size = 3
-    surface_var = internal_vars.surface_vars[0][0]
+    surface_var = traced_params.surface_vars[0][0]
     batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
     def make_internal_vars(surf_var):
-        return fe.InternalVars((), [(surf_var,)])
+        return fe.TracedParams((), [(surf_var,)])
     # Apply vmap
-    vmapped_solver = jax.vmap(lambda sv: solver(make_internal_vars(sv)))
+    vmapped_solver = jax.vmap(lambda ts: solver(make_internal_vars(ts)))
     batch_solutions = vmapped_solver(batch_surface_vars)
 
     # Check solutions
@@ -194,7 +194,7 @@ def test_gmres_solver_vmap_compatibility(
 @pytest.mark.cpu
 def test_vmap_jit_composition_cg(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that vmap and JIT can be composed with CG solver."""
@@ -209,25 +209,25 @@ def test_vmap_jit_composition_cg(
 
     # Create solver with CG
     solver_opts = fe.KrylovSolverOptions(solver="cg")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
     initial = fe.zero_like_initial_guess(problem, bc)
 
-    # Create batch of internal_vars
+    # Create batch of traced_params
     batch_size = 3
-    surface_var = internal_vars.surface_vars[0][0]
+    surface_var = traced_params.surface_vars[0][0]
     batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
     def make_internal_vars(surf_var):
-        return fe.InternalVars((), [(surf_var,)])
+        return fe.TracedParams((), [(surf_var,)])
     # Test both composition orders
     # 1. jax.jit(jax.vmap(...))
-    vmapped_solver_1 = jax.jit(jax.vmap(lambda sv: solver(make_internal_vars(sv), initial)))
+    vmapped_solver_1 = jax.jit(jax.vmap(lambda ts: solver(make_internal_vars(ts), initial)))
     batch_sol_1 = vmapped_solver_1(batch_surface_vars)
 
     # 2. jax.vmap(jax.jit(...))
-    vmapped_solver_2 = jax.vmap(jax.jit(lambda sv: solver(make_internal_vars(sv), initial)))
+    vmapped_solver_2 = jax.vmap(jax.jit(lambda ts: solver(make_internal_vars(ts), initial)))
     batch_sol_2 = vmapped_solver_2(batch_surface_vars)
 
     # Solutions should be similar
@@ -242,7 +242,7 @@ def test_vmap_jit_composition_cg(
 @pytest.mark.cpu
 def test_vmap_grad_composition_cg(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that vmap and grad can be composed with CG solver."""
@@ -257,17 +257,17 @@ def test_vmap_grad_composition_cg(
 
     # Create solver with CG
     solver_opts = fe.KrylovSolverOptions(solver="cg")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
 
-    # Create batch of internal_vars
+    # Create batch of traced_params
     batch_size = 3
-    surface_var = internal_vars.surface_vars[0][0]
+    surface_var = traced_params.surface_vars[0][0]
     batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
     def make_internal_vars(surf_var):
-        return fe.InternalVars((), [(surf_var,)])
+        return fe.TracedParams((), [(surf_var,)])
     def loss_fn(surf_var):
         sol = solver(make_internal_vars(surf_var))
         return np.linalg.norm(sol)
@@ -291,7 +291,7 @@ def test_vmap_grad_composition_cg(
 @pytest.mark.cpu
 def test_vmap_jit_grad_composition_cg(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that vmap, JIT, and grad can all be composed with CG solver."""
@@ -306,17 +306,17 @@ def test_vmap_jit_grad_composition_cg(
 
     # Create solver with CG
     solver_opts = fe.KrylovSolverOptions(solver="cg")
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
 
-    # Create batch of internal_vars
+    # Create batch of traced_params
     batch_size = 3
-    surface_var = internal_vars.surface_vars[0][0]
+    surface_var = traced_params.surface_vars[0][0]
     batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
     def make_internal_vars(surf_var):
-        return fe.InternalVars((), [(surf_var,)])
+        return fe.TracedParams((), [(surf_var,)])
     def loss_fn(surf_var):
         sol = solver(make_internal_vars(surf_var))
         return np.linalg.norm(sol)
@@ -341,7 +341,7 @@ def test_vmap_jit_grad_composition_cg(
 @requires_cudss
 def test_cudss_solver_vmap_compatibility(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that cuDSS solver works with vmap."""
@@ -356,19 +356,19 @@ def test_cudss_solver_vmap_compatibility(
 
     # Create solver with cuDSS
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
 
-    # Create batch of internal_vars
+    # Create batch of traced_params
     batch_size = 3
-    surface_var = internal_vars.surface_vars[0][0]
+    surface_var = traced_params.surface_vars[0][0]
     batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
     def make_internal_vars(surf_var):
-        return fe.InternalVars((), [(surf_var,)])
+        return fe.TracedParams((), [(surf_var,)])
     # Apply vmap
-    vmapped_solver = jax.vmap(lambda sv: solver(make_internal_vars(sv)))
+    vmapped_solver = jax.vmap(lambda ts: solver(make_internal_vars(ts)))
     batch_solutions = vmapped_solver(batch_surface_vars)
 
     # Check solutions
@@ -387,7 +387,7 @@ def test_cudss_solver_vmap_compatibility(
 @requires_cudss
 def test_vmap_composition_cudss(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that vmap works with cuDSS solver."""
@@ -402,19 +402,19 @@ def test_vmap_composition_cudss(
 
     # Create solver with cuDSS
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
 
-    # Create batch of internal_vars
+    # Create batch of traced_params
     batch_size = 3
-    surface_var = internal_vars.surface_vars[0][0]
+    surface_var = traced_params.surface_vars[0][0]
     batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
     def make_internal_vars(surf_var):
-        return fe.InternalVars((), [(surf_var,)])
+        return fe.TracedParams((), [(surf_var,)])
     # Test jax.vmap(...)
-    vmapped_solver = jax.vmap(lambda sv: solver(make_internal_vars(sv)))
+    vmapped_solver = jax.vmap(lambda ts: solver(make_internal_vars(ts)))
     batch_solutions = vmapped_solver(batch_surface_vars)
 
     # Check solutions
@@ -432,7 +432,7 @@ def test_vmap_composition_cudss(
 @requires_cudss
 def test_vmap_grad_composition_cudss(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that vmap and grad can be composed with cuDSS solver."""
@@ -447,17 +447,17 @@ def test_vmap_grad_composition_cudss(
 
     # Create solver with cuDSS
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
 
-    # Create batch of internal_vars
+    # Create batch of traced_params
     batch_size = 3
-    surface_var = internal_vars.surface_vars[0][0]
+    surface_var = traced_params.surface_vars[0][0]
     batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
     def make_internal_vars(surf_var):
-        return fe.InternalVars((), [(surf_var,)])
+        return fe.TracedParams((), [(surf_var,)])
     def loss_fn(surf_var):
         sol = solver(make_internal_vars(surf_var))
         return np.linalg.norm(sol)
@@ -482,7 +482,7 @@ def test_vmap_grad_composition_cudss(
 @requires_cudss
 def test_vmap_jit_grad_composition_cudss(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that vmap, JIT, and grad can all be composed with cuDSS solver."""
@@ -497,17 +497,17 @@ def test_vmap_jit_grad_composition_cudss(
 
     # Create solver with cuDSS
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
 
-    # Create batch of internal_vars
+    # Create batch of traced_params
     batch_size = 3
-    surface_var = internal_vars.surface_vars[0][0]
+    surface_var = traced_params.surface_vars[0][0]
     batch_surface_vars = np.stack([
         surface_var * (1.0 + 0.01 * i) for i in range(batch_size)
     ])
 
     def make_internal_vars(surf_var):
-        return fe.InternalVars((), [(surf_var,)])
+        return fe.TracedParams((), [(surf_var,)])
     def loss_fn(surf_var):
         sol = solver(make_internal_vars(surf_var))
         return np.linalg.norm(sol)

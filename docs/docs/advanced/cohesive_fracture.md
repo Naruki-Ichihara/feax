@@ -233,7 +233,7 @@ solver = fe.create_solver(
     extra_residual_fn=lambda u: cohesive_residual(u, history['delta_max']),
     linear=False,
 )
-EMPTY_IV = fe.InternalVars()  # bulk elasticity carries no internal variables
+EMPTY_IV = fe.TracedParams()  # bulk elasticity carries no internal variables
 ```
 
 **Key points:**

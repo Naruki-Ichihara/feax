@@ -40,5 +40,5 @@ solver = create_homogenization_solver(
 )
 
 # Compute homogenized stiffness
-C_hom = solver(internal_vars)
+C_hom = solver(traced_params)
 ```

@@ -39,7 +39,7 @@ def create_newton_solver(problem,
                          linear_options,
                          adjoint_linear_options,
                          newton_options: Optional[NewtonOptions] = None,
-                         internal_vars=None,
+                         traced_params=None,
                          extra_residual_fn=None,
                          symmetric_bc: bool = True)
 ```
@@ -74,7 +74,7 @@ def create_callback_newton_solver(problem,
                                   linear_options,
                                   adjoint_linear_options,
                                   newton_options: NewtonOptions = None,
-                                  internal_vars=None,
+                                  traced_params=None,
                                   symmetric_bc: bool = True)
 ```
 
@@ -90,5 +90,5 @@ host loop (block-diagonal direct solves). The backward pass is a single
 adjoint linear solve plus the residual VJP — ordinary traced JAX, so it is
 natively jit/vmap/grad compatible.
 
-Returns ``solver(internal_vars, initial_guess, bc=None) -&gt; solution``.
+Returns ``solver(traced_params, initial_guess, bc=None) -&gt; solution``.
 

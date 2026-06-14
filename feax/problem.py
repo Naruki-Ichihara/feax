@@ -304,7 +304,7 @@ class Problem:
             # TODO: assert all vars face quad points be the same
             self.physical_surface_quad_points.append(physical_surface_quad_points)
 
-        # Initialize without internal_vars - kernels will be created separately
+        # Initialize without traced_params - kernels will be created separately
         self.custom_init(*self.additional_info)
 
         # Validate multi-variable problem setup
@@ -480,6 +480,51 @@ class Problem:
         self.res_face_perm = np.array(res_face_perm.astype(onp.int32))
         self.res_face_sorted_dofs = np.array(res_face_dofs[res_face_perm].astype(onp.int32))
 
+    def free_assembly_scratch(self, drop_no_ts_maps: bool = False) -> None:
+        """Release large host-side index arrays no longer needed after build.
+
+        The CSR assembly structure (``csr_indptr`` / ``csr_indices`` /
+        ``csr_row_of_slot`` and the slot sorts) is built once in
+        ``__post_init__``. After that, several num_cells·ndof²-sized *host*
+        numpy arrays are kept only for object construction, the BCOO path
+        (:func:`feax.assembler.get_jacobian`, now assembled from the
+        deduplicated CSR instead), and the reference scatter paths. They are the
+        largest static arrays in feax — and on unified-memory devices (e.g.
+        GB10) host numpy shares physical RAM with the device allocator, so
+        pinning them directly raises the peak that drives OOM.
+
+        This drops those arrays (sets them to ``None``). The CSR-direct solver
+        path (``create_J_bc_csr_function`` / ``*_parametric`` / Newton) and
+        ``get_jacobian`` / ``get_jacobian_info`` keep working unchanged.
+
+        Parameters
+        ----------
+        drop_no_ts_maps : bool, default False
+            Also drop ``csr_volume_slots`` / ``res_volume_dofs`` and the cached
+            slot sorts. These feed the **no-TracedStructure** assembly path
+            (``assembler._vol_slot_sort`` / ``_res_vol_slot_sort``). Only set
+            this once a :class:`feax.TracedStructure` has been built from this problem
+            (it carries the slot sort as device leaves) **and** you will not call
+            ``get_jacobian`` or a ``traced_structure=None`` assembly afterward.
+
+        Notes
+        -----
+        Disables the reference-only helpers ``assembler._assemble_jacobian_values``
+        / ``_csr_data_from_values`` (they read ``I`` / ``csr_perm``); the solver
+        and CSR-direct paths do not use them.
+        """
+        always = ['I', 'J', 'I_filtered', 'J_filtered', 'filter_indices',
+                  'csr_perm', 'csr_seg_ids', 'csr_slot', 'csr_full_slot',
+                  '_res_scatter_dofs_np']
+        for name in always:
+            if getattr(self, name, None) is not None:
+                setattr(self, name, None)
+        if drop_no_ts_maps:
+            for name in ['csr_volume_slots', 'res_volume_dofs',
+                         '_vol_slot_sort_cache', '_res_vol_slot_sort_cache']:
+                if getattr(self, name, None) is not None:
+                    setattr(self, name, None)
+
     def custom_init(self, *args: Any) -> None:
         """Custom initialization for problem-specific setup.
 
@@ -558,7 +603,7 @@ class Problem:
         -------
         Optional[Callable]
             Function that maps gradients to stress/flux tensors.
-            Signature: ``(u_grad, *internal_vars) -> stress_tensor``
+            Signature: ``(u_grad, *traced_params) -> stress_tensor``
             Returns ``None`` if not defined (default).
 
         Examples
@@ -593,7 +638,7 @@ class Problem:
         -------
         Optional[Callable]
             Scalar energy density function.
-            Signature: ``(u_grad, *internal_vars) -> scalar``
+            Signature: ``(u_grad, *traced_params) -> scalar``
             Returns ``None`` if not defined (default).
 
         Examples
@@ -622,7 +667,7 @@ class Problem:
         -------
         List[SurfaceMap]
             List of functions for surface loads. Each function has signature:
-            (u: Array, x: Array, *internal_vars) -> traction: Array
+            (u: Array, x: Array, *traced_params) -> traction: Array
             
         Notes
         -----
@@ -641,7 +686,7 @@ class Problem:
         -------
         Optional[MassMap]
             Function for mass/reaction terms with signature:
-            (u: Array, x: Array, *internal_vars) -> mass_term: Array
+            (u: Array, x: Array, *traced_params) -> mass_term: Array
             Returns None if no mass terms are present
         """
         return None
@@ -662,7 +707,7 @@ class Problem:
             Weak form function with signature:
 
             ```python
-            (vals, grads, x, *internal_vars) -> (mass_terms, grad_terms)
+            (vals, grads, x, *traced_params) -> (mass_terms, grad_terms)
             ```
 
             where:
@@ -709,7 +754,7 @@ class Problem:
             ``location_fns``). Each function has signature:
 
             ```python
-            (vals, x, *internal_vars) -> tractions
+            (vals, x, *traced_params) -> tractions
             ```
 
             where:

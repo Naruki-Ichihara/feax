@@ -93,6 +93,8 @@ class CahnHilliardPipeline(ImplicitPipeline):
         # No Dirichlet BCs (natural zero-flux boundaries)
         bc = fe.DirichletBCConfig([]).create_bc(self.problem)
 
+        ts = fe.TracedStructure.from_problem(self.problem)
+
         # Initial c for solver shape detection
         self._c0 = 0.63 + 0.02 * (
             0.5 - random.uniform(random.PRNGKey(42), shape=(num_nodes, 1)))
@@ -110,12 +112,15 @@ class CahnHilliardPipeline(ImplicitPipeline):
             rel_tol=1e-8,
             max_iter=25,
         )
-        self.solver = fe.create_solver(
+        _solver = fe.create_solver(
             self.problem, bc,
             solver_options=solver_opts,
             newton_options=newton_opts,
-            internal_vars=fe.InternalVars(volume_vars=(self._c0[:, 0],)),
+            traced_params=fe.TracedParams(volume_vars=(self._c0[:, 0],)),
+            traced_structure=ts,
         )
+        # Thread the TracedStructure through every framework solver call.
+        self.solver = lambda tp, state: _solver(tp, state, traced_structure=ts)
 
     def initial_state(self):
         mu0 = np.zeros((self.mesh.points.shape[0], 1))
@@ -124,7 +129,7 @@ class CahnHilliardPipeline(ImplicitPipeline):
     def update_vars(self, state, t, dt_val):
         sol_list = self.problem.unflatten_fn_sol_list(state)
         c_old = sol_list[0][:, 0]   # (num_nodes,)
-        return fe.InternalVars(volume_vars=(c_old,))
+        return fe.TracedParams(volume_vars=(c_old,))
 
     def save(self, state, step, t, output_dir):
         sol_list = self.problem.unflatten_fn_sol_list(state)

@@ -149,8 +149,8 @@ bc = bc_config.create_bc(problem)
 
 # Density-based Young's modulus (rho is nodal, from create_lattice_density_field_nodal)
 E_field = E_base * rho
-nu_field = fe.internal_vars.InternalVars.create_cell_var(problem, nu)
-internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
+nu_field = fe.traced_params.TracedParams.create_cell_var(problem, nu)
+traced_params = fe.traced_params.TracedParams(volume_vars=(E_field, nu_field), surface_vars=())
 ```
 
 **Notes:**
@@ -176,7 +176,7 @@ compute_C_hom = flat.solver.create_homogenization_solver(
     problem, bc, P, mesh, solver_options=solver_options, dim=3
 )
 
-result = compute_C_hom(internal_vars)
+result = compute_C_hom(traced_params)
 C_hom = result.C_hom
 ```
 
@@ -189,7 +189,7 @@ For 3D, the solver:
 4. Assembles stiffness matrix: $\mathbf{C}_{\text{hom}}$ (6×6 in Voigt notation)
 
 **Key properties:**
-- Fully differentiable w.r.t. `internal_vars` (topology optimization)
+- Fully differentiable w.r.t. `traced_params` (topology optimization)
 - Uses affine displacement method for efficiency
 - Automatically handles periodic constraints via $\mathbf{P}$ matrix
 
@@ -203,7 +203,7 @@ import time
 
 # Without JIT
 t0 = time.time()
-result = compute_C_hom(internal_vars)
+result = compute_C_hom(traced_params)
 jax.block_until_ready(result)
 t_no_jit = time.time() - t0
 
@@ -211,13 +211,13 @@ t_no_jit = time.time() - t0
 compute_C_hom_jit = jax.jit(compute_C_hom)
 
 t0 = time.time()
-result = compute_C_hom_jit(internal_vars)
+result = compute_C_hom_jit(traced_params)
 jax.block_until_ready(result)
 t_jit_compile = time.time() - t0
 
 # With JIT (2nd call = cached)
 t0 = time.time()
-result = compute_C_hom_jit(internal_vars)
+result = compute_C_hom_jit(traced_params)
 jax.block_until_ready(result)
 t_jit_cached = time.time() - t0
 
@@ -342,8 +342,8 @@ P = flat.pbc.prolongation_matrix(pairings, mesh, vec=3)
 # Boundary conditions and internal variables
 bc = fe.DCboundary.DirichletBCConfig([]).create_bc(problem)
 E_field = E_base * rho  # rho is nodal, from create_lattice_density_field_nodal
-nu_field = fe.internal_vars.InternalVars.create_cell_var(problem, nu)
-internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
+nu_field = fe.traced_params.TracedParams.create_cell_var(problem, nu)
+traced_params = fe.traced_params.TracedParams(volume_vars=(E_field, nu_field), surface_vars=())
 
 # Homogenization
 solver_options = fe.KrylovSolverOptions(solver="cg", tol=1e-10, atol=1e-10, maxiter=10000, verbose=True)
@@ -353,20 +353,20 @@ compute_C_hom = flat.solver.create_homogenization_solver(
 
 # Benchmark: without JIT
 t0 = time.time()
-result = compute_C_hom(internal_vars)
+result = compute_C_hom(traced_params)
 jax.block_until_ready(result)
 t_no_jit = time.time() - t0
 
 # Benchmark: with JIT (1st call = compile + run)
 compute_C_hom_jit = jax.jit(compute_C_hom)
 t0 = time.time()
-result = compute_C_hom_jit(internal_vars)
+result = compute_C_hom_jit(traced_params)
 jax.block_until_ready(result)
 t_jit_compile = time.time() - t0
 
 # Benchmark: with JIT (2nd call = cached)
 t0 = time.time()
-result = compute_C_hom_jit(internal_vars)
+result = compute_C_hom_jit(traced_params)
 jax.block_until_ready(result)
 t_jit_cached = time.time() - t0
 

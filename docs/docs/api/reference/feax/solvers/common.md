@@ -63,7 +63,7 @@ Create a linear solve function based on solver options.
 #### prewarm\_direct\_solvers
 
 ```python
-def prewarm_direct_solvers(problem, bc, internal_vars, J_bc_func,
+def prewarm_direct_solvers(problem, bc, traced_params, J_bc_func,
                            forward_options, adjoint_options, forward_solve_fn,
                            adjoint_solve_fn)
 ```

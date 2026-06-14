@@ -78,9 +78,9 @@ Encapsulate a solve for one density value:
 
 ```python
 def single_solve(density):
-    rho       = fe.InternalVars.create_uniform_volume_var(problem, density)
-    traction_z = fe.InternalVars.create_uniform_surface_var(problem, T)
-    iv = fe.InternalVars(
+    rho       = fe.TracedParams.create_uniform_volume_var(problem, density)
+    traction_z = fe.TracedParams.create_uniform_surface_var(problem, T)
+    iv = fe.TracedParams(
         volume_vars=[rho],
         surface_vars=[(traction_z,)]
     )

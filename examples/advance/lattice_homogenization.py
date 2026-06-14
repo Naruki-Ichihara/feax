@@ -69,8 +69,8 @@ bc = bc_config.create_bc(problem)
 # Internal variables with density-based Young's modulus
 print("Setting up material properties...")
 E_field = E_base * rho  # rho is nodal, from create_lattice_density_field_nodal
-nu_field = fe.internal_vars.InternalVars.create_cell_var(problem, nu)
-internal_vars = fe.internal_vars.InternalVars(volume_vars=(E_field, nu_field), surface_vars=())
+nu_field = fe.traced_params.TracedParams.create_cell_var(problem, nu)
+traced_params = fe.traced_params.TracedParams(volume_vars=(E_field, nu_field), surface_vars=())
 
 # Homogenization solver
 print("Creating homogenization solver...")
@@ -82,7 +82,7 @@ compute_C_hom = flat.solver.create_homogenization_solver(
 
 print("\n--- Without JIT ---")
 t0 = time.time()
-result = compute_C_hom(internal_vars)
+result = compute_C_hom(traced_params)
 jax.block_until_ready(result)
 t_no_jit = time.time() - t0
 print(f"  Time: {t_no_jit:.4f}s")

@@ -380,7 +380,7 @@ Parameters
 
 Returns
 -------
-- **weak_form** (*callable*): ``(vals, grads, x, *internal_vars) -&gt; (mass_terms, grad_terms)``.
+- **weak_form** (*callable*): ``(vals, grads, x, *traced_params) -&gt; (mass_terms, grad_terms)``.
 
 
 ## MindlinPlate Objects

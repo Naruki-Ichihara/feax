@@ -56,13 +56,13 @@ bc = bc_config.create_bc(problem)
 ## Creating JIT and Non-JIT Solvers
 
 ```python
-traction_array = fe.InternalVars.create_uniform_surface_var(problem, traction)
-internal_vars  = fe.InternalVars(volume_vars=(), surface_vars=[(traction_array,)])
+traction_array = fe.TracedParams.create_uniform_surface_var(problem, traction)
+traced_params  = fe.TracedParams(volume_vars=(), surface_vars=[(traction_array,)])
 
 solver_option = fe.DirectSolverOptions()
 
-solver_no_jit = fe.create_solver(problem, bc, solver_option, linear=True, internal_vars=internal_vars)
-solver_jit    = jax.jit(fe.create_solver(problem, bc, solver_option, linear=True, internal_vars=internal_vars))
+solver_no_jit = fe.create_solver(problem, bc, solver_option, linear=True, traced_params=traced_params)
+solver_jit    = jax.jit(fe.create_solver(problem, bc, solver_option, linear=True, traced_params=traced_params))
 
 initial = fe.zero_like_initial_guess(problem, bc)
 ```
@@ -74,17 +74,17 @@ initial = fe.zero_like_initial_guess(problem, bc)
 ```python
 # No JIT
 start = time.perf_counter()
-sol_no_jit = solver_no_jit(internal_vars, initial).block_until_ready()
+sol_no_jit = solver_no_jit(traced_params, initial).block_until_ready()
 time_no_jit = time.perf_counter() - start
 
 # JIT — first call (includes compilation)
 start = time.perf_counter()
-sol_jit_first = solver_jit(internal_vars, initial).block_until_ready()
+sol_jit_first = solver_jit(traced_params, initial).block_until_ready()
 time_jit_with_compile = time.perf_counter() - start
 
 # JIT — second call (compiled, fast)
 start = time.perf_counter()
-sol_jit_second = solver_jit(internal_vars, initial).block_until_ready()
+sol_jit_second = solver_jit(traced_params, initial).block_until_ready()
 time_jit_compiled = time.perf_counter() - start
 
 compile_overhead = time_jit_with_compile - time_jit_compiled

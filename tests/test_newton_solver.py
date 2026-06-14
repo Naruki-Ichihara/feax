@@ -109,8 +109,8 @@ def test_neohookean_solver_convergence(
 
     # Internal variables (surface traction)
     traction = material_params['traction']
-    surf_var = fe.InternalVars.create_uniform_surface_var(problem, traction)
-    internal_vars = fe.InternalVars((), [(surf_var,)])
+    surf_var = fe.TracedParams.create_uniform_surface_var(problem, traction)
+    traced_params = fe.TracedParams((), [(surf_var,)])
 
     # Create Newton solver with CG for linear solve
     solver_opts = fe.KrylovSolverOptions(
@@ -122,7 +122,7 @@ def test_neohookean_solver_convergence(
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve
-    solution = solver(internal_vars, initial)
+    solution = solver(traced_params, initial)
 
     # Check solution is non-trivial
     solution_norm = np.linalg.norm(solution)
@@ -177,8 +177,8 @@ def test_neohookean_residual_convergence(
     bc = bc_config.create_bc(problem)
 
     traction = material_params['traction']
-    surf_var = fe.InternalVars.create_uniform_surface_var(problem, traction)
-    internal_vars = fe.InternalVars((), [(surf_var,)])
+    surf_var = fe.TracedParams.create_uniform_surface_var(problem, traction)
+    traced_params = fe.TracedParams((), [(surf_var,)])
 
     solver_opts = fe.KrylovSolverOptions(
         solver="cg",
@@ -189,11 +189,11 @@ def test_neohookean_residual_convergence(
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve
-    solution = solver(internal_vars, initial)
+    solution = solver(traced_params, initial)
 
     # Check final residual
     sol_list = problem.unflatten_fn_sol_list(solution)
-    residual_list = fe.get_res(problem, sol_list, internal_vars)
+    residual_list = fe.get_res(problem, sol_list, traced_params)
     residual = np.concatenate([r.flatten() for r in residual_list])
     residual_bc = fe.apply_boundary_to_res(bc, residual, solution)
     residual_norm = np.linalg.norm(residual_bc)
@@ -242,8 +242,8 @@ def test_neohookean_different_solvers(
     bc = bc_config.create_bc(problem)
 
     traction = material_params['traction']
-    surf_var = fe.InternalVars.create_uniform_surface_var(problem, traction)
-    internal_vars = fe.InternalVars((), [(surf_var,)])
+    surf_var = fe.TracedParams.create_uniform_surface_var(problem, traction)
+    traced_params = fe.TracedParams((), [(surf_var,)])
 
     # Test with CG, BICGSTAB, and GMRES
     solvers = ["cg", "bicgstab", "gmres"]
@@ -258,7 +258,7 @@ def test_neohookean_different_solvers(
         solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=False)
         initial = fe.zero_like_initial_guess(problem, bc)
 
-        solution = solver(internal_vars, initial)
+        solution = solver(traced_params, initial)
         solutions.append(solution)
 
         # Check solution is non-trivial
@@ -313,22 +313,22 @@ def test_newton_cudss_grad_prewarm_regression(
     bc = fe.DirichletBCConfig([left_fix]).create_bc(problem)
 
     traction0 = material_params["traction"]
-    surf0 = fe.InternalVars.create_uniform_surface_var(problem, traction0)
-    sample_internal_vars = fe.InternalVars((), [(surf0,)])
+    surf0 = fe.TracedParams.create_uniform_surface_var(problem, traction0)
+    sample_internal_vars = fe.TracedParams((), [(surf0,)])
 
     solver = fe.create_solver(
         problem,
         bc,
         solver_options=fe.DirectSolverOptions(solver="cudss"),
         newton_options=fe.NewtonOptions(max_iter=5, tol=1e-6),
-        internal_vars=sample_internal_vars,
+        traced_params=sample_internal_vars,
     )
     initial = fe.zero_like_initial_guess(problem, bc)
 
     def loss(traction):
-        surf = fe.InternalVars.create_uniform_surface_var(problem, traction)
-        iv = fe.InternalVars((), [(surf,)])
-        sol = solver(iv, initial)
+        surf = fe.TracedParams.create_uniform_surface_var(problem, traction)
+        tp = fe.TracedParams((), [(surf,)])
+        sol = solver(tp, initial)
         return np.sum(sol ** 2)
 
     grad_val = jax.grad(loss)(traction0)

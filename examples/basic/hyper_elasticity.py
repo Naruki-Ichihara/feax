@@ -63,29 +63,32 @@ bc_config = fe.DCboundary.DirichletBCConfig([
 
 feax_problem = HyperElasticityFeax(mesh, vec=3, dim=3, location_fns=[right])
 
-traction_surface = fe.internal_vars.InternalVars.create_uniform_surface_var(feax_problem, T)
-internal_vars = fe.internal_vars.InternalVars(
+traction_surface = fe.traced_params.TracedParams.create_uniform_surface_var(feax_problem, T)
+traced_params = fe.traced_params.TracedParams(
     volume_vars=[],
     surface_vars=[(traction_surface,)]
 )
 
 bc = bc_config.create_bc(feax_problem)
 
+ts = fe.traced_structure.TracedStructure.from_problem(feax_problem)
 solver_options = fe.solver.DirectSolverOptions(verbose=True)
-newton_options = fe.NewtonOptions()
+newton_options = fe.NewtonOptions(verbose=True)
 solver = fe.solver.create_solver(
     feax_problem,
     bc,
     solver_options,
-    internal_vars=internal_vars,
+    traced_params=traced_params,
     newton_options=newton_options,
+    traced_structure=ts
 )
 
-def solve_fn(iv):
-    sol = solver(iv, fe.utils.zero_like_initial_guess(feax_problem, bc))
+def solve_fn(tp):
+    sol = solver(tp, fe.utils.zero_like_initial_guess(feax_problem, bc),
+                 traced_structure=ts)
     return sol
 
-sol = solve_fn(internal_vars)
+sol = solve_fn(traced_params)
 sol_unflat = feax_problem.unflatten_fn_sol_list(sol)
 displacement = sol_unflat[0]
 

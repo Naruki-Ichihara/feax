@@ -60,7 +60,7 @@ def linear_solve(J_bc_applied,
                  bc: DirichletBC,
                  solver_options: AbstractSolverOptions,
                  matrix_view: MatrixView,
-                 internal_vars=None,
+                 traced_params=None,
                  P_mat=None,
                  linear_solve_fn: Optional[Callable] = None,
                  x0_fn: Optional[Callable] = None)
@@ -76,7 +76,7 @@ def create_linear_solver(
         bc: DirichletBC,
         solver_options: Optional[AbstractSolverOptions] = None,
         adjoint_solver_options: Optional[AbstractSolverOptions] = None,
-        internal_vars=None,
+        traced_params=None,
         symmetric_bc: bool = True) -> Callable[[Any, np.ndarray], np.ndarray]
 ```
 
@@ -93,13 +93,13 @@ Parameters
 - **bc** (*DirichletBC*): Boundary conditions.
 - **solver_options** (*DirectSolverOptions or KrylovSolverOptions, optional*): Options for the forward linear solve (defaults to KrylovSolverOptions()).
 - **adjoint_solver_options** (*DirectSolverOptions or KrylovSolverOptions, optional*): Options for the adjoint solve used in the backward pass. Defaults to the same options as the forward solve.
-- **internal_vars** (*InternalVars, optional*): Sample internal variables used to pre-warm cuDSS with concrete CSR structure before any JAX tracing. Recommended when using cuDSS and composing ``jax.jit`` with ``jax.grad``.
+- **traced_params** (*TracedParams, optional*): Sample internal variables used to pre-warm cuDSS with concrete CSR structure before any JAX tracing. Recommended when using cuDSS and composing ``jax.jit`` with ``jax.grad``.
 - **symmetric_bc** (*bool, default True*): Use symmetric Dirichlet elimination (zero BC rows *and* columns). Linear FE operators are symmetric after symmetric elimination, so the Krylov adjoint reuses the forward matvec (``Jᵀ = J``).
 
 
 Returns
 -------
-- **differentiable_solve** (*callable*): A function with signature ``(internal_vars, initial_guess) -&gt; solution`` that is differentiable w.r.t. ``internal_vars`` via ``jax.grad``.
+- **differentiable_solve** (*callable*): A function with signature ``(traced_params, initial_guess) -&gt; solution`` that is differentiable w.r.t. ``traced_params`` via ``jax.grad``.
 
 
 Notes
@@ -123,19 +123,19 @@ Backward pass solves the adjoint system:
 J^T * adjoint = v
 ```
 
-and returns the VJP of the residual w.r.t. ``internal_vars``.
+and returns the VJP of the residual w.r.t. ``traced_params``.
 
 Examples
 --------
 ```python
 >>> solver = create_linear_solver(problem, bc)
 >>> initial = fe.zero_like_initial_guess(problem, bc)
->>> sol = solver(internal_vars, initial)
+>>> sol = solver(traced_params, initial)
 >>>
->>> # Gradient w.r.t. internal_vars
->>> def loss(internal_vars):
-...     sol = solver(internal_vars, initial)
+>>> # Gradient w.r.t. traced_params
+>>> def loss(traced_params):
+...     sol = solver(traced_params, initial)
 ...     return np.sum(sol ** 2)
->>> grad = jax.grad(loss)(internal_vars)
+>>> grad = jax.grad(loss)(traced_params)
 ```
 

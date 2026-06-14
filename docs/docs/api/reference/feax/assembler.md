@@ -3,7 +3,7 @@ sidebar_label: assembler
 title: feax.assembler
 ---
 
-Assembler functions that work with Problem and InternalVars.
+Assembler functions that work with Problem and TracedParams.
 
 This module provides the main assembler API for finite element analysis with
 separated internal variables. It handles the assembly of residual vectors and
@@ -204,7 +204,7 @@ np.ndarray
 ```python
 @staticmethod
 def gather_internal_vars(
-        problem: 'Problem', internal_vars: Tuple[np.ndarray,
+        problem: 'Problem', traced_params: Tuple[np.ndarray,
                                                  ...]) -> List[np.ndarray]
 ```
 
@@ -217,7 +217,7 @@ connectivity. Cell-based and quad-based variables are passed through.
 Parameters
 ----------
 - **problem** (*Problem*): The finite element problem with connectivity information.
-- **internal_vars** (*tuple of np.ndarray*): Global internal variables.
+- **traced_params** (*tuple of np.ndarray*): Global internal variables.
 
 
 Returns
@@ -273,7 +273,7 @@ tensor computed from the gradient.
 Parameters
 ----------
 - **problem** (*Problem*): The finite element problem containing mesh and element information.
-- **tensor_map** (*Callable*): Function that maps gradient tensor to stress/flux tensor. Signature: (u_grad: ndarray, *internal_vars) -&gt; ndarray where u_grad has shape (vec, dim) and returns (vec, dim).
+- **tensor_map** (*Callable*): Function that maps gradient tensor to stress/flux tensor. Signature: (u_grad: ndarray, *traced_params) -&gt; ndarray where u_grad has shape (vec, dim) and returns (vec, dim).
 
 
 Returns
@@ -299,7 +299,7 @@ term: ∫ m(u, x) · v dΩ where m is a mass-like term.
 Parameters
 ----------
 - **problem** (*Problem*): The finite element problem containing mesh and element information.
-- **mass_map** (*Callable*): Function that computes the mass term. Signature: (u: ndarray, x: ndarray, *internal_vars) -&gt; ndarray where u has shape (vec,), x has shape (dim,), and returns (vec,).
+- **mass_map** (*Callable*): Function that computes the mass term. Signature: (u: ndarray, x: ndarray, *traced_params) -&gt; ndarray where u has shape (vec,), x has shape (dim,), and returns (vec,).
 
 
 Returns
@@ -323,7 +323,7 @@ surface tractions, pressures, or fluxes. It implements the integral term:
 Parameters
 ----------
 - **problem** (*Problem*): The finite element problem containing mesh and element information.
-- **surface_map** (*Callable*): Function that computes the surface traction/flux. Signature: (u: ndarray, x: ndarray, *internal_vars) -&gt; ndarray where u has shape (vec,), x has shape (dim,), and returns (vec,).
+- **surface_map** (*Callable*): Function that computes the surface traction/flux. Signature: (u: ndarray, x: ndarray, *traced_params) -&gt; ndarray where u has shape (vec,), x has shape (dim,), and returns (vec,).
 
 
 Returns
@@ -507,7 +507,7 @@ atomics), matching the CSR-direct Jacobian assembly.
 
 ```python
 def get_jacobian(problem: 'Problem', sol_list: List[np.ndarray],
-                 internal_vars: InternalVars) -> sparse.BCOO
+                 traced_params: TracedParams) -> sparse.BCOO
 ```
 
 Assemble the global tangent (Jacobian) as a sparse ``BCOO`` matrix.
@@ -527,7 +527,7 @@ Parameters
 ----------
 - **problem** (*Problem*): The finite element problem containing mesh and physics definitions.
 - **sol_list** (*list of np.ndarray*): Solution arrays for each variable.
-- **internal_vars** (*InternalVars*): Container with material properties and loading parameters.
+- **traced_params** (*TracedParams*): Container with material properties and loading parameters.
 
 
 Returns
@@ -546,7 +546,7 @@ traced region (or use the CSR-direct path) in that setting.
 
 ```python
 def get_jacobian_info(problem: 'Problem', sol_list: List[np.ndarray],
-                      internal_vars: InternalVars) -> dict
+                      traced_params: TracedParams) -> dict
 ```
 
 Get Jacobian matrix information without full matrix construction.
@@ -559,7 +559,7 @@ Parameters
 ----------
 - **problem** (*Problem*): The finite element problem definition.
 - **sol_list** (*list of np.ndarray*): Solution arrays for each variable.
-- **internal_vars** (*InternalVars*): Internal variables container.
+- **traced_params** (*TracedParams*): Internal variables container.
 
 
 Returns
@@ -573,7 +573,7 @@ dict
 Examples
 --------
 ```python
->>> info = get_jacobian_info(problem, sol_list, internal_vars)
+>>> info = get_jacobian_info(problem, sol_list, traced_params)
 >>> print(f&quot;Jacobian NNZ: {`info[&#x27;nnz&#x27;]:,`}&quot;)
 >>> print(f&quot;Matrix view: {`info[&#x27;matrix_view&#x27;].name`}&quot;)
 ```
@@ -587,7 +587,7 @@ with JIT-compiled solvers using cuDSS backend.
 
 ```python
 def get_res(problem: 'Problem', sol_list: List[np.ndarray],
-            internal_vars: InternalVars) -> List[np.ndarray]
+            traced_params: TracedParams) -> List[np.ndarray]
 ```
 
 Compute residual vector with separated internal variables.
@@ -600,7 +600,7 @@ Parameters
 ----------
 - **problem** (*Problem*): The finite element problem containing mesh and physics definitions.
 - **sol_list** (*list of np.ndarray*): Solution arrays for each variable. Each array has shape (num_total_nodes, vec).
-- **internal_vars** (*InternalVars*): Container with material properties and loading parameters.
+- **traced_params** (*TracedParams*): Container with material properties and loading parameters.
 
 
 Returns
@@ -612,7 +612,7 @@ list of np.ndarray
 Examples
 --------
 ```python
->>> residual = get_res(problem, [solution], internal_vars)
+>>> residual = get_res(problem, [solution], traced_params)
 >>> res_norm = np.linalg.norm(jax.flatten_util.ravel_pytree(residual)[0])
 >>> print(f&quot;Residual norm: {`res_norm`}&quot;)
 ```
@@ -629,12 +629,12 @@ def create_J_bc_csr_function(
     problem: 'Problem',
     bc: 'DirichletBC',
     symmetric: bool = True
-) -> Callable[[np.ndarray, InternalVars], 'CSRMatrix']
+) -> Callable[[np.ndarray, TracedParams], 'CSRMatrix']
 ```
 
 Assemble the BC-applied Jacobian directly as a deduplicated CSRMatrix.
 
-Returns ``(sol_flat, internal_vars) -&gt; CSRMatrix`` that assembles the
+Returns ``(sol_flat, traced_params) -&gt; CSRMatrix`` that assembles the
 BC-applied Jacobian straight into deduplicated CSR form — no BCOO, no
 per-solve ``sum_duplicates`` sort — using the slot map precomputed in
 :meth:`Problem._build_csr_assembly_structure`, ready for direct backends
@@ -661,7 +661,7 @@ def create_res_J_bc_csr_parametric(problem: 'Problem',
 
 Fused BC-applied residual + CSR Jacobian, ``bc`` as an explicit argument.
 
-Returns ``(sol_flat, internal_vars, bc) -&gt; (res_bc, J_bc_csr)`` computed from
+Returns ``(sol_flat, traced_params, bc) -&gt; (res_bc, J_bc_csr)`` computed from
 a single element-kernel pass (see :func:`_get_res_J_csr`) — used by the
 Newton step so it does not evaluate the volume kernel twice (once for the
 residual, once for the Jacobian).
@@ -675,7 +675,7 @@ def create_matfree_res_J_parametric(problem: 'Problem',
 
 Matrix-free counterpart of :func:`create_res_J_bc_csr_parametric` (Krylov).
 
-Returns ``(sol_flat, internal_vars, bc) -&gt; (res_bc, J_matvec)`` where
+Returns ``(sol_flat, traced_params, bc) -&gt; (res_bc, J_matvec)`` where
 ``J_matvec(v)`` applies the BC-eliminated tangent **without assembling it**:
 the bulk action ``K @ v`` is a forward-mode ``jax.jvp`` of the residual, and
 the Dirichlet rows/columns are handled by masking. It reproduces
@@ -695,7 +695,7 @@ def create_matfree_Kt_parametric(problem: 'Problem') -> Callable
 Matrix-free ``K_bulk^T`` (un-eliminated residual transpose) for the
 symmetric-BC adjoint correction.
 
-Returns ``(sol_flat, internal_vars) -&gt; (w -&gt; K_bulk^T @ w)`` via reverse-mode
+Returns ``(sol_flat, traced_params) -&gt; (w -&gt; K_bulk^T @ w)`` via reverse-mode
 ``jax.vjp`` of the residual — used to recover the correct ``bc_vals``
 gradient without assembling the bulk Jacobian.
 
@@ -704,7 +704,7 @@ gradient without assembling the bulk Jacobian.
 ```python
 def create_res_bc_function(
         problem: 'Problem',
-        bc: 'DirichletBC') -> Callable[[np.ndarray, InternalVars], np.ndarray]
+        bc: 'DirichletBC') -> Callable[[np.ndarray, TracedParams], np.ndarray]
 ```
 
 Create residual function with Dirichlet BC applied.
@@ -722,7 +722,7 @@ Parameters
 Returns
 -------
 Callable
-    Function with signature (sol_flat, internal_vars) -&gt; np.ndarray
+    Function with signature (sol_flat, traced_params) -&gt; np.ndarray
     that returns the BC-modified residual vector.
 
 Notes
@@ -751,7 +751,7 @@ Parameters
 Returns
 -------
 Callable
-    Function with signature ``(sol_flat, internal_vars, bc) -&gt; np.ndarray``.
+    Function with signature ``(sol_flat, traced_params, bc) -&gt; np.ndarray``.
 
 #### create\_energy\_fn
 
@@ -764,7 +764,7 @@ Create a total-energy integration function from a feax Problem.
 Builds a pure JAX function that integrates the problem&#x27;s energy density
 over the domain::
 
-    E(u) = ∫ ψ(∇u, *internal_vars) dΩ
+    E(u) = ∫ ψ(∇u, *traced_params) dΩ
 
 The energy density is obtained from ``problem.get_energy_density()``. This
 is the same density the residual assembler differentiates (``tensor_map =
@@ -779,7 +779,7 @@ Parameters
 
 Returns
 -------
-- **energy** (*callable*): ``energy(u_flat)`` or ``energy(u_flat, internal_vars)`` returning a scalar. Without ``internal_vars`` the density receives only ``∇u``; with it, each volume variable is interpolated to quadrature points (node-based via shape functions, cell-based by broadcast) and passed as extra arguments ``ψ(∇u, var0_q, var1_q, …)``.
+- **energy** (*callable*): ``energy(u_flat)`` or ``energy(u_flat, traced_params)`` returning a scalar. Without ``traced_params`` the density receives only ``∇u``; with it, each volume variable is interpolated to quadrature points (node-based via shape functions, cell-based by broadcast) and passed as extra arguments ``ψ(∇u, var0_q, var1_q, …)``.
 
 
 Raises

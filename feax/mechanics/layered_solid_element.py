@@ -45,7 +45,7 @@ import jax.flatten_util
 
 import feax as fe
 from feax.basis import get_elements
-from feax.internal_vars import InternalVars
+from feax.traced_params import TracedParams
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +409,7 @@ def create_layered_solid(
     n_thick_per_ply: int = 2,
     location_fns: Optional[Iterable[Callable]] = None,
     normal: Sequence[float] = (0.0, 0.0, 1.0),
-) -> Tuple[LayeredSolid, InternalVars]:
+) -> Tuple[LayeredSolid, TracedParams]:
     """Build a :class:`LayeredSolid` with exact per-ply through-thickness
     integration (many plies in one element).
 
@@ -444,7 +444,7 @@ def create_layered_solid(
     Returns
     -------
     problem : LayeredSolid
-    internal_vars : feax.InternalVars
+    traced_params : feax.TracedParams
         Holds per-cell node coordinates ``(num_cells, num_nodes, 3)``.
     """
     if ele_type != "HEX8":
@@ -476,8 +476,8 @@ def create_layered_solid(
         additional_info=(dNdxi, np.asarray(weights), C_quad),
     )
     cell_nodes = np.asarray(mesh.points)[np.asarray(mesh.cells)]
-    internal_vars = InternalVars(volume_vars=(cell_nodes,))
-    return problem, internal_vars
+    traced_params = TracedParams(volume_vars=(cell_nodes,))
+    return problem, traced_params
 
 
 class OrientedLayeredSolid(fe.Problem):
@@ -586,7 +586,7 @@ def create_oriented_layered_solid(
     problem_class: type = OrientedLayeredSolid,
     with_thermal: bool = False,
     cte_cell_ply: Optional[np.ndarray] = None,
-) -> Tuple[OrientedLayeredSolid, InternalVars]:
+) -> Tuple[OrientedLayeredSolid, TracedParams]:
     """Build an :class:`OrientedLayeredSolid` from *already-rotated*, per-cell,
     per-ply stiffness tensors (global axes).
 
@@ -613,9 +613,9 @@ def create_oriented_layered_solid(
         Enable thermal coupling. When ``True`` the element uses
         ``σ = C : (ε − ε_th)`` and expects a **third** volume internal variable,
         the per-quad thermal eigenstrain ``eps_th`` ``(num_cells, nq, 3, 3)``.
-        The returned ``internal_vars`` carry a default ``eps_th`` (zero, or
+        The returned ``traced_params`` carry a default ``eps_th`` (zero, or
         ``cte_quad · 1`` from ``cte_cell_ply``); recompute it per solve as
-        ``cte_quad * dT`` and rebuild :class:`InternalVars` with it.
+        ``cte_quad * dT`` and rebuild :class:`TracedParams` with it.
     cte_cell_ply : array, optional
         ``(num_cells, n_ply, 3, 3)`` per-ply CTE in **global** axes (rotate with
         :func:`rotate_cte_3d` using the same frame as the stiffness). Only used
@@ -625,7 +625,7 @@ def create_oriented_layered_solid(
     Returns
     -------
     problem : OrientedLayeredSolid
-    internal_vars : feax.InternalVars
+    traced_params : feax.TracedParams
         ``volume_vars = (cell_nodes, C_quad)``, or
         ``(cell_nodes, C_quad, eps_th)`` when ``with_thermal=True``.
     """
@@ -668,10 +668,10 @@ def create_oriented_layered_solid(
             eps_th = cte[:, np.asarray(ply_of)]            # ΔT = 1 seed
         else:
             eps_th = np.zeros((num_cells, nq, 3, 3))
-        internal_vars = InternalVars(volume_vars=(cell_nodes, C_quad, eps_th))
+        traced_params = TracedParams(volume_vars=(cell_nodes, C_quad, eps_th))
     else:
-        internal_vars = InternalVars(volume_vars=(cell_nodes, C_quad))
-    return problem, internal_vars
+        traced_params = TracedParams(volume_vars=(cell_nodes, C_quad))
+    return problem, traced_params
 
 
 class GeometricStiffnessSolid(fe.Problem):
@@ -730,7 +730,7 @@ def create_layered_solid_geometric_stiffness(
     ele_type: str = "HEX8",
     n_inplane: int = 2,
     n_thick_per_ply: int = 2,
-) -> Tuple[GeometricStiffnessSolid, InternalVars]:
+) -> Tuple[GeometricStiffnessSolid, TracedParams]:
     """Build a :class:`GeometricStiffnessSolid` from a per-quad prestress field.
 
     Uses the **same** per-ply through-thickness quadrature as
@@ -750,7 +750,7 @@ def create_layered_solid_geometric_stiffness(
     Returns
     -------
     problem : GeometricStiffnessSolid
-    internal_vars : feax.InternalVars
+    traced_params : feax.TracedParams
         ``volume_vars = (cell_nodes, sigma0)``.
     """
     if ele_type != "HEX8":
@@ -764,8 +764,8 @@ def create_layered_solid_geometric_stiffness(
         additional_info=(dNdxi, np.asarray(weights)),
     )
     cell_nodes = np.asarray(mesh.points)[np.asarray(mesh.cells)]
-    internal_vars = InternalVars(volume_vars=(cell_nodes, np.asarray(cell_sigma0)))
-    return problem, internal_vars
+    traced_params = TracedParams(volume_vars=(cell_nodes, np.asarray(cell_sigma0)))
+    return problem, traced_params
 
 
 def layered_quad_stress(
@@ -791,7 +791,7 @@ def layered_quad_stress(
     u_cells : array
         ``(num_cells, n_nodes, 3)`` nodal displacements gathered per cell.
     C_quad : array
-        ``(num_cells, nq, 3,3,3,3)`` per-quad stiffness (``internal_vars`` from
+        ``(num_cells, nq, 3,3,3,3)`` per-quad stiffness (``traced_params`` from
         :func:`create_oriented_layered_solid`).
     eps_th_quad : array, optional
         ``(num_cells, nq, 3, 3)`` thermal eigenstrain ``α·ΔT`` in global axes

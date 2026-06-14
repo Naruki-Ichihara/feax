@@ -96,8 +96,8 @@ bc = bc_config.create_bc(problem)
 
 ```python
 theta = 1.0
-theta_array = fe.InternalVars.create_uniform_volume_var(problem, theta)
-internal_vars = fe.InternalVars(volume_vars=(theta_array,), surface_vars=())
+theta_array = fe.TracedParams.create_uniform_volume_var(problem, theta)
+traced_params = fe.TracedParams(volume_vars=(theta_array,), surface_vars=())
 ```
 
 ### Step 6: Solver
@@ -113,7 +113,7 @@ Pass prolongation matrix `P` to `create_solver()`.
 
 ```python
 initial_guess = np.zeros(problem.num_total_dofs_all_vars)
-sol_full = solver(internal_vars, initial_guess)
+sol_full = solver(traced_params, initial_guess)
 fe.utils.save_sol(mesh, "periodic_poisson.vtu", point_infos=[("u", sol_full.reshape(-1, 1))])
 ```
 
@@ -204,8 +204,8 @@ bc = bc_config.create_bc(problem)
 
 # Internal variables
 theta = 1.0
-theta_array = fe.InternalVars.create_uniform_volume_var(problem, theta)
-internal_vars = fe.InternalVars(volume_vars=(theta_array,), surface_vars=())
+theta_array = fe.TracedParams.create_uniform_volume_var(problem, theta)
+traced_params = fe.TracedParams(volume_vars=(theta_array,), surface_vars=())
 
 # Solver
 solver_options = fe.KrylovSolverOptions(solver="cg", tol=1e-8)
@@ -213,7 +213,7 @@ solver = fe.create_solver(problem, bc, solver_options=solver_options, linear=Tru
 
 # Solve
 initial_guess = np.zeros(problem.num_total_dofs_all_vars)
-sol_full = solver(internal_vars, initial_guess)
+sol_full = solver(traced_params, initial_guess)
 
 # Save
 fe.utils.save_sol(mesh, "periodic_poisson.vtu", point_infos=[("u", sol_full.reshape(-1, 1))])

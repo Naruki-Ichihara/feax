@@ -10,7 +10,7 @@ Three pipeline levels:
   Use for staggered multi-physics (thermal + phase-field + mechanics).
 * **ImplicitPipeline** — one implicit solve per step (backward Euler
   pattern).  Implement ``update_vars()``; ``step()`` calls
-  ``self.solver(iv, state)`` automatically.
+  ``self.solver(tp, state)`` automatically.
 * **ExplicitPipeline** — explicit ODE integration with lumped mass.
   Implement ``compute_rhs()``; ``step()`` applies Forward Euler / RK2 / RK4.
 
@@ -29,7 +29,7 @@ class HeatPipeline(ImplicitPipeline):
 
     def update_vars(self, state, t, dt):
         T_old = ...
-        return fe.InternalVars(volume_vars=(T_old,))
+        return fe.TracedParams(volume_vars=(T_old,))
 
 result = run(HeatPipeline(), mesh, TimeConfig(dt=1e-5, t_end=1e-2))
 ```
@@ -155,8 +155,8 @@ class ImplicitPipeline(TimePipeline):
     Covers the common backward-Euler pattern where each time step
     solves one (non)linear system:
 
-    1. ``update_vars(state, t, dt)`` → ``InternalVars``
-    2. ``self.solver(iv, state)`` → new state
+    1. ``update_vars(state, t, dt)`` → ``TracedParams``
+    2. ``self.solver(tp, state)`` → new state
 
     Set ``self.solver`` in :meth:`build` and implement
     :meth:`update_vars`.
@@ -198,7 +198,7 @@ class ImplicitPipeline(TimePipeline):
 
             def update_vars(self, state, t, dt):
                 c_old = self.problem.unflatten_fn_sol_list(state)[0][:, 0]
-                return fe.InternalVars(volume_vars=(c_old,))
+                return fe.TracedParams(volume_vars=(c_old,))
 
         # Pseudo-time / load-stepping example (gradient-friendly)::
 
@@ -207,7 +207,7 @@ class ImplicitPipeline(TimePipeline):
 
             def update_vars(self, state, t, dt):
                 lam = t + dt
-                return fe.InternalVars(
+                return fe.TracedParams(
                     volume_vars=(jnp.full(self._n_nodes, lam),),
                 )
     """
@@ -219,7 +219,7 @@ class ImplicitPipeline(TimePipeline):
 
     @abstractmethod
     def update_vars(self, state: Any, t: float, dt: float):
-        """Prepare ``InternalVars`` for the implicit solve.
+        """Prepare ``TracedParams`` for the implicit solve.
 
         Parameters
         ----------
@@ -232,7 +232,7 @@ class ImplicitPipeline(TimePipeline):
 
         Returns
         -------
-        feax.InternalVars
+        feax.TracedParams
             Internal variables encoding the transient term
             (e.g. ``T_old`` for backward Euler).
         """
@@ -250,8 +250,8 @@ class ImplicitPipeline(TimePipeline):
         if self.pseudo_time:
             import jax
             state = jax.lax.stop_gradient(state)
-        iv = self.update_vars(state, t, dt)
-        return self.solver(iv, state)
+        tp = self.update_vars(state, t, dt)
+        return self.solver(tp, state)
 
 
 # ---------------------------------------------------------------------------

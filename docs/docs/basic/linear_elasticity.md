@@ -79,8 +79,8 @@ bc = bc_config.create_bc(problem)
 Internal variables separate problem structure from parameter values, enabling efficient parameter studies and gradient-based optimization.
 
 ```python
-traction_array = fe.InternalVars.create_uniform_surface_var(problem, traction)
-internal_vars  = fe.InternalVars(
+traction_array = fe.TracedParams.create_uniform_surface_var(problem, traction)
+traced_params  = fe.TracedParams(
     volume_vars=(),
     surface_vars=[(traction_array,)]
 )
@@ -98,7 +98,7 @@ solver = fe.create_solver(
     problem, bc,
     solver_options=solver_opts,
     linear=True,
-    internal_vars=internal_vars
+    traced_params=traced_params
 )
 initial = fe.zero_like_initial_guess(problem, bc)
 ```
@@ -111,7 +111,7 @@ initial = fe.zero_like_initial_guess(problem, bc)
 def solve_forward(iv):
     return solver(iv, initial)
 
-sol          = solve_forward(internal_vars)
+sol          = solve_forward(traced_params)
 displacement = problem.unflatten_fn_sol_list(sol)[0]
 ```
 
@@ -171,15 +171,15 @@ bc_config = fe.DCboundary.DirichletBCConfig([
 ])
 bc = bc_config.create_bc(problem)
 
-traction_array = fe.InternalVars.create_uniform_surface_var(problem, traction)
-internal_vars  = fe.InternalVars(volume_vars=(), surface_vars=[(traction_array,)])
+traction_array = fe.TracedParams.create_uniform_surface_var(problem, traction)
+traced_params  = fe.TracedParams(volume_vars=(), surface_vars=[(traction_array,)])
 
 solver_opts = fe.DirectSolverOptions()
 solver      = fe.create_solver(problem, bc, solver_options=solver_opts,
-                               linear=True, internal_vars=internal_vars)
+                               linear=True, traced_params=traced_params)
 initial     = fe.zero_like_initial_guess(problem, bc)
 
-sol          = solver(internal_vars, initial)
+sol          = solver(traced_params, initial)
 displacement = problem.unflatten_fn_sol_list(sol)[0]
 
 data_dir = os.path.join(os.path.dirname(__file__), 'data')

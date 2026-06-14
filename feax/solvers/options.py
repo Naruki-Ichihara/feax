@@ -494,6 +494,12 @@ class NewtonOptions:
         or a wrong linear-solve result), so failing loudly is the safer
         default.  Enforced by the unified callback Newton solver (the
         iteration runs as a host loop, so the error surfaces normally).
+    verbose : bool, default False
+        Print the residual norm at each Newton iteration. Emitted with
+        ``jax.debug.print`` so it works inside the traced ``lax.while_loop``
+        (and under ``jax.jit`` / ``jax.vmap``). This is independent of the
+        *linear* solver's ``verbose`` (``DirectSolverOptions`` /
+        ``KrylovSolverOptions``), which controls linear-solve diagnostics.
     """
 
     tol: float = 1e-6
@@ -503,6 +509,7 @@ class NewtonOptions:
     line_search_c1: float = 1e-4
     line_search_rho: float = 0.5
     raise_on_line_search_failure: bool = True
+    verbose: bool = False
 
 
 @dataclass(frozen=True)

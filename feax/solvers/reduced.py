@@ -52,11 +52,11 @@ def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options
     else:
         adj_linear_solve_fn = create_iterative_solve_fn(resolved_adjoint_options)
 
-    def reduced_solve_fn(internal_vars, initial_guess_full, effective_bc):
+    def reduced_solve_fn(traced_params, initial_guess_full, effective_bc):
         # One matfree pass returns the BC-applied residual and the tangent
         # matvec (J_bc @ w via JVP); the reduced operator is Pᵀ J_bc P.
         res_full, J_matvec = matfree_res_J(
-            initial_guess_full, internal_vars, effective_bc
+            initial_guess_full, traced_params, effective_bc
         )
         res_reduced = P.T @ res_full
 
@@ -69,19 +69,19 @@ def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options
         return sol_full, None
 
     @jax.custom_vjp
-    def differentiable_solve(internal_vars, initial_guess, effective_bc):
-        return reduced_solve_fn(internal_vars, initial_guess, effective_bc)[0]
+    def differentiable_solve(traced_params, initial_guess, effective_bc):
+        return reduced_solve_fn(traced_params, initial_guess, effective_bc)[0]
 
-    def f_fwd(internal_vars, initial_guess, effective_bc):
-        sol = differentiable_solve(internal_vars, initial_guess, effective_bc)
-        return sol, (internal_vars, sol, initial_guess, effective_bc)
+    def f_fwd(traced_params, initial_guess, effective_bc):
+        sol = differentiable_solve(traced_params, initial_guess, effective_bc)
+        return sol, (traced_params, sol, initial_guess, effective_bc)
 
     def f_bwd(res, v):
-        internal_vars, sol, initial_guess, effective_bc = res
+        traced_params, sol, initial_guess, effective_bc = res
 
         # sol already includes initial_guess (total solution). Symmetric BC ⇒
         # J_bc is symmetric ⇒ Jᵀ = J, so the forward matvec serves the adjoint.
-        _, J_matvec = matfree_res_J(sol, internal_vars, effective_bc)
+        _, J_matvec = matfree_res_J(sol, traced_params, effective_bc)
         rhs_reduced = P.T @ v
 
         def adjoint_matvec(adjoint_reduced):
@@ -92,17 +92,17 @@ def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options
 
         adjoint_full = P @ adjoint_reduced
 
-        # VJP of residual w.r.t. internal_vars and bc
+        # VJP of residual w.r.t. traced_params and bc
         u_total_list = problem.unflatten_fn_sol_list(sol)
         adjoint_list = problem.unflatten_fn_sol_list(adjoint_full)
 
-        def res_fn(iv, bc_arg):
+        def res_fn(tp, bc_arg):
             dofs = jax.flatten_util.ravel_pytree(u_total_list)[0]
             return problem.unflatten_fn_sol_list(
-                res_bc_parametric(dofs, iv, bc_arg)
+                res_bc_parametric(dofs, tp, bc_arg)
             )
 
-        _, f_vjp = jax.vjp(res_fn, internal_vars, effective_bc)
+        _, f_vjp = jax.vjp(res_fn, traced_params, effective_bc)
         vjp_iv, vjp_bc = f_vjp(adjoint_list)
         vjp_iv = jax.tree_util.tree_map(_safe_negate, vjp_iv)
         vjp_bc = jax.tree_util.tree_map(_safe_negate, vjp_bc)
@@ -114,9 +114,9 @@ def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options
     from ..utils import zero_like_initial_guess
     default_initial_guess = zero_like_initial_guess(problem, bc)
 
-    def solver_wrapper(internal_vars, initial_guess=None, bc=None):
+    def solver_wrapper(traced_params, initial_guess=None, bc=None):
         effective_bc = bc if isinstance(bc, DirichletBC) else _default_bc
         ig = default_initial_guess if initial_guess is None else initial_guess
-        return differentiable_solve(internal_vars, ig, effective_bc)
+        return differentiable_solve(traced_params, ig, effective_bc)
 
     return solver_wrapper

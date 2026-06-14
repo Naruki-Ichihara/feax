@@ -60,7 +60,7 @@ requires_cudss = pytest.mark.skipif(
 @requires_cudss
 def test_cudss_full_matrix_solver(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test cuDSS solver with FULL matrix view."""
@@ -75,11 +75,11 @@ def test_cudss_full_matrix_solver(
 
     # Create solver with cuDSS (default on GPU)
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve
-    solution = solver(internal_vars, initial)
+    solution = solver(traced_params, initial)
 
     # Check solution is non-trivial
     solution_norm = np.linalg.norm(solution)
@@ -93,7 +93,7 @@ def test_cudss_full_matrix_solver(
 @requires_cudss
 def test_cudss_upper_matrix_solver(
     linear_elasticity_problem_upper,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test cuDSS solver with UPPER triangular matrix view."""
@@ -111,11 +111,11 @@ def test_cudss_upper_matrix_solver(
 
     # Create solver with cuDSS for UPPER matrix
     solver_opts = fe.DirectSolverOptions()
-    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, internal_vars=internal_vars)
+    solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True, traced_params=traced_params)
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve
-    solution = solver(internal_vars, initial)
+    solution = solver(traced_params, initial)
 
     # Check solution is non-trivial
     solution_norm = np.linalg.norm(solution)
@@ -130,7 +130,7 @@ def test_cudss_upper_matrix_solver(
 def test_cudss_full_vs_upper_consistency(
     linear_elasticity_problem,
     linear_elasticity_problem_upper,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that cuDSS produces consistent solutions for FULL vs UPPER matrix views."""
@@ -146,20 +146,20 @@ def test_cudss_full_vs_upper_consistency(
     solver_opts_full = fe.DirectSolverOptions()
     solver_full = fe.create_solver(
         linear_elasticity_problem, bc_full,
-        solver_options=solver_opts_full, linear=True, internal_vars=internal_vars
+        solver_options=solver_opts_full, linear=True, traced_params=traced_params
     )
     initial_full = fe.zero_like_initial_guess(linear_elasticity_problem, bc_full)
-    sol_full = solver_full(internal_vars, initial_full)
+    sol_full = solver_full(traced_params, initial_full)
 
     # Solve with UPPER matrix view
     bc_upper = bc_config.create_bc(linear_elasticity_problem_upper)
     solver_opts_upper = fe.DirectSolverOptions()
     solver_upper = fe.create_solver(
         linear_elasticity_problem_upper, bc_upper,
-        solver_options=solver_opts_upper, linear=True, internal_vars=internal_vars
+        solver_options=solver_opts_upper, linear=True, traced_params=traced_params
     )
     initial_upper = fe.zero_like_initial_guess(linear_elasticity_problem_upper, bc_upper)
-    sol_upper = solver_upper(internal_vars, initial_upper)
+    sol_upper = solver_upper(traced_params, initial_upper)
 
     # Solutions should be very close
     solution_tol = 1e-6
@@ -172,7 +172,7 @@ def test_cudss_full_vs_upper_consistency(
 @requires_cudss
 def test_cudss_options_configuration(
     linear_elasticity_problem_upper,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test cuDSS with explicit CUDSSOptions configuration."""
@@ -202,7 +202,7 @@ def test_cudss_options_configuration(
     initial = fe.zero_like_initial_guess(problem, bc)
 
     # Solve
-    solution = solver(internal_vars, initial)
+    solution = solver(traced_params, initial)
 
     # Check solution
     solution_norm = np.linalg.norm(solution)
@@ -240,7 +240,7 @@ def test_cudss_memory_efficiency(
 @requires_cudss
 def test_cudss_vs_cg_consistency(
     linear_elasticity_problem,
-    internal_vars,
+    traced_params,
     material_params
 ):
     """Test that cuDSS and JAX CG produce consistent solutions."""
@@ -255,15 +255,15 @@ def test_cudss_vs_cg_consistency(
 
     # Solve with cuDSS (default on GPU with FULL matrix)
     solver_opts_cudss = fe.DirectSolverOptions()
-    solver_cudss = fe.create_solver(problem, bc, solver_options=solver_opts_cudss, linear=True, internal_vars=internal_vars)
+    solver_cudss = fe.create_solver(problem, bc, solver_options=solver_opts_cudss, linear=True, traced_params=traced_params)
     initial_cudss = fe.zero_like_initial_guess(problem, bc)
-    sol_cudss = solver_cudss(internal_vars, initial_cudss)
+    sol_cudss = solver_cudss(traced_params, initial_cudss)
 
     # Solve with JAX CG
     solver_opts_cg = fe.KrylovSolverOptions(solver="cg")
     solver_cg = fe.create_solver(problem, bc, solver_options=solver_opts_cg, linear=True)
     initial_cg = fe.zero_like_initial_guess(problem, bc)
-    sol_cg = solver_cg(internal_vars, initial_cg)
+    sol_cg = solver_cg(traced_params, initial_cg)
 
     # Solutions should be very close
     solution_tol = 1e-6

@@ -129,7 +129,7 @@ for name, angles_deg in LAMINATES:
     Ex_clt, nu_xy_clt = clt_moduli(angles_rad, n_ply)
 
     # FEM
-    problem, iv = create_layered_solid(
+    problem, tp = create_layered_solid(
         mesh,
         ply_C=ply_C,
         ply_angles=angles_rad,
@@ -138,17 +138,20 @@ for name, angles_deg in LAMINATES:
         n_thick_per_ply=2,
     )
     bc = bc_config.create_bc(problem)
+    # get_res below is a no-TracedStructure assembly path, so keep host scratch.
+    ts = fe.TracedStructure.from_problem(problem, free_scratch=False)
     solver = fe.create_solver(
         problem, bc,
         solver_options=fe.DirectSolverOptions(),
         linear=True,
-        internal_vars=iv,
+        traced_params=tp,
+        traced_structure=ts,
     )
-    sol = solver(iv)
+    sol = solver(tp, traced_structure=ts)
 
     # Reaction force → E_x
     sol_list  = problem.unflatten_fn_sol_list(sol)
-    res_list  = get_res(problem, sol_list, iv)
+    res_list  = get_res(problem, sol_list, tp)
     res_array = onp.asarray(res_list[0])
     F_x       = float(res_array[left_mask, 0].sum())
     Ex_fem    = abs(F_x) / (W * H) / (delta_u / L)

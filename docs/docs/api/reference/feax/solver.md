@@ -29,7 +29,7 @@ def create_solver(
         newton_options: Optional[NewtonOptions] = None,
         linear: bool = False,
         P: Optional[BCOO] = None,
-        internal_vars=None,
+        traced_params=None,
         extra_residual_fn: Optional[Callable] = None,
         symmetric_bc: bool = True) -> Callable
 ```
@@ -45,7 +45,7 @@ Parameters
 - **newton_options** (*NewtonOptions, optional*): Newton-specific nonlinear controls (tolerances and line search). Only used for the nonlinear path (``linear=False``).
 - **linear** (*bool, default False*): Selects the solve path:
 - **P** (*BCOO matrix, optional*): Prolongation matrix for periodic boundary conditions.
-- **internal_vars** (*InternalVars, optional*): Sample internal variables for auto solver selection and cuDSS pre-warming. Required when ``solver=&quot;auto&quot;`` or cuDSS is used.
+- **traced_params** (*TracedParams, optional*): Sample internal variables for auto solver selection and cuDSS pre-warming. Required when ``solver=&quot;auto&quot;`` or cuDSS is used.
 - **extra_residual_fn** (*callable, optional*): Additional residual contribution: ``extra_residual_fn(sol_flat) -&gt; residual_flat``. Combined with feax&#x27;s bulk residual via hybrid matrix-free Newton-Krylov: the bulk Jacobian is assembled (sparse), while the extra contribution&#x27;s Jacobian-vector product is computed via ``jax.jvp`` (forward-mode AD). Requires ``KrylovSolverOptions`` and the nonlinear path (``linear=False``).
 - **symmetric_bc** (*bool, default True*): Controls how Dirichlet BCs are applied to the Jacobian matrix.
 
@@ -54,10 +54,10 @@ Returns
 -------
 callable
     When ``DirectSolverOptions`` is used:
-        ``solver(internal_vars) -&gt; solution``
+        ``solver(traced_params) -&gt; solution``
         (``initial_guess`` is optional and ignored if provided.)
     When ``KrylovSolverOptions`` is used:
-        ``solver(internal_vars, initial_guess, bc=None) -&gt; solution``
+        ``solver(traced_params, initial_guess, bc=None) -&gt; solution``
 
     The optional ``bc`` parameter accepts a
     :class:``8 whose ``bc_rows`` match the
@@ -70,28 +70,28 @@ Examples
 ```python
 >>> # Direct solver (auto-selects cuDSS on GPU, spsolve on CPU)
 >>> solver = create_solver(problem, bc, solver_options=DirectSolverOptions(),
-...                        linear=True, internal_vars=internal_vars)
->>> solution = solver(internal_vars)
+...                        linear=True, traced_params=traced_params)
+>>> solution = solver(traced_params)
 >>>
 >>> # Iterative solver with auto selection
 >>> solver = create_solver(problem, bc, solver_options=KrylovSolverOptions(),
-...                        linear=True, internal_vars=internal_vars)
->>> solution = solver(internal_vars, initial_guess)
+...                        linear=True, traced_params=traced_params)
+>>> solution = solver(traced_params, initial_guess)
 >>>
->>> # Explicit solver selection (no internal_vars needed for non-cuDSS)
+>>> # Explicit solver selection (no traced_params needed for non-cuDSS)
 >>> solver = create_solver(problem, bc, solver_options=KrylovSolverOptions(solver=&quot;gmres&quot;),
 ...                        linear=True)
->>> solution = solver(internal_vars, initial_guess)
+>>> solution = solver(traced_params, initial_guess)
 >>>
 >>> # Incremental loading with non-symmetric BC elimination
 >>> solver = create_solver(problem, bc,
 ...                        solver_options=DirectSolverOptions(solver=&quot;spsolve&quot;),
 ...                        newton_options=NewtonOptions(tol=1e-6, max_iter=20),
 ...                        symmetric_bc=False,
-...                        internal_vars=internal_vars)
+...                        traced_params=traced_params)
 >>> sol = zero_like_initial_guess(problem, bc)
 >>> for step in range(1, num_steps + 1):
 ...     bc_step = bc.replace_vals(new_vals)  # update prescribed values
-...     sol = solver(internal_vars, sol, bc=bc_step)
+...     sol = solver(traced_params, sol, bc=bc_step)
 ```
 

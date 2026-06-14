@@ -69,21 +69,21 @@ bc_config = fe.DCboundary.DirichletBCConfig([
 bc = bc_config.create_bc(problem)
 
 # Internal variables (surface traction magnitude)
-traction = fe.InternalVars.create_uniform_surface_var(problem, 1e-3)
-internal_vars = fe.InternalVars(volume_vars=(), surface_vars=[(traction,)])
+traction = fe.TracedParams.create_uniform_surface_var(problem, 1e-3)
+traced_params = fe.TracedParams(volume_vars=(), surface_vars=[(traction,)])
 
 # Create solver (auto-selects cuDSS on GPU, sparse direct on CPU)
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(), linear=True,
-    internal_vars=internal_vars)
+    traced_params=traced_params)
 initial = fe.zero_like_initial_guess(problem, bc)
 
 # Solve
-sol = solver(internal_vars, initial)
+sol = solver(traced_params, initial)
 
 # Differentiate through the entire solve
 grad_fn = jax.grad(lambda iv: np.sum(solver(iv, initial) ** 2))
-grads = grad_fn(internal_vars)
+grads = grad_fn(traced_params)
 ```
 
 See [examples/](examples/) for more, including topology optimization.

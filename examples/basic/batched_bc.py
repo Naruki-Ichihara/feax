@@ -43,13 +43,16 @@ bc_config = fe.DirichletBCConfig([
 ])
 bc = bc_config.create_bc(problem)
 
+ts = fe.TracedStructure.from_problem(problem)
+
 # ── Solver (iterative — pure JAX, vmappable) ───────────────────────────────
-iv = fe.InternalVars(volume_vars=())
+tp = fe.TracedParams(volume_vars=())
 solver = fe.create_solver(
     problem, bc,
     solver_options=fe.DirectSolverOptions(),
     linear=True,
-    internal_vars=iv,
+    traced_params=tp,
+    traced_structure=ts,
 )
 
 # ── Batch of prescribed displacements ──────────────────────────────────────
@@ -77,7 +80,7 @@ bc_vals_batch = jax.vmap(make_bc_vals)(displacements)
 # ── Solve (vectorised) ─────────────────────────────────────────────────────
 @jax.jit
 def solve_batch(vals_batch):
-    return jax.vmap(lambda v: solver(iv, bc=bc.replace_vals(v)))(vals_batch)
+    return jax.vmap(lambda v: solver(tp, bc=bc.replace_vals(v), traced_structure=ts))(vals_batch)
 
 sols = solve_batch(bc_vals_batch)  # (n_batch, total_dofs)
 

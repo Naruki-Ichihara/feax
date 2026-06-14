@@ -34,7 +34,7 @@ class HeatPipeline(ImplicitPipeline):
 
     def update_vars(self, state, t, dt):
         T_old = ...
-        return fe.InternalVars(volume_vars=(T_old,))
+        return fe.TracedParams(volume_vars=(T_old,))
 
 result = run(HeatPipeline(), mesh, TimeConfig(dt=1e-5, t_end=1e-2))
 ```
@@ -158,7 +158,7 @@ Implicit time stepping with a single solver call per step.
 Covers the common backward-Euler pattern where each time step
 solves one (non)linear system:
 
-1. ``update_vars(state, t, dt)`` → ``InternalVars``
+1. ``update_vars(state, t, dt)`` → ``TracedParams``
 2. ``self.solver(iv, state)`` → new state
 
 Set ``self.solver`` in :meth:`build` and implement
@@ -201,7 +201,7 @@ return jax.flatten_util.ravel_pytree([c0, mu0])[0]
 
 def update_vars(self, state, t, dt):
 c_old = self.problem.unflatten_fn_sol_list(state)[0][:, 0]
-return fe.InternalVars(volume_vars=(c_old,))
+return fe.TracedParams(volume_vars=(c_old,))
 
 # Pseudo-time / load-stepping example (gradient-friendly)::
 
@@ -210,7 +210,7 @@ pseudo_time = True            # ← enable adjoint short-circuit
 
 def update_vars(self, state, t, dt):
 lam = t + dt
-return fe.InternalVars(
+return fe.TracedParams(
 volume_vars=(jnp.full(self._n_nodes, lam),),
 )
 
@@ -227,7 +227,7 @@ full transient adjoint behaviour.
 def update_vars(state: Any, t: float, dt: float)
 ```
 
-Prepare ``InternalVars`` for the implicit solve.
+Prepare ``TracedParams`` for the implicit solve.
 
 Parameters
 ----------
@@ -237,7 +237,7 @@ Parameters
 
 Returns
 -------
-feax.InternalVars
+feax.TracedParams
     Internal variables encoding the transient term
     (e.g. ``T_old`` for backward Euler).
 

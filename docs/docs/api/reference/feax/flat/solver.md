@@ -40,7 +40,7 @@ ndarray
 #### average\_stress
 
 ```python
-def average_stress(problem, u_total: np.ndarray, internal_vars,
+def average_stress(problem, u_total: np.ndarray, traced_params,
                    dim: int) -> np.ndarray
 ```
 
@@ -50,7 +50,7 @@ Parameters
 ----------
 - **problem** (*FEAX Problem instance.*)
 - **u_total** (*ndarray, shape (num_dofs,)*): Total displacement field.
-- **internal_vars** (*FEAX InternalVars.*)
+- **traced_params** (*FEAX TracedParams.*)
 - **dim** (*int*): Problem dimension (2 or 3).
 
 
@@ -110,13 +110,13 @@ Parameters
 Returns
 -------
 callable
-    ``solve(internal_vars) -&gt; HomogenizationResult``
+    ``solve(traced_params) -&gt; HomogenizationResult``
 
 Examples
 --------
 ```python
 >>> solve = create_homogenization_solver(problem, bc, P, mesh, dim=3)
->>> result = solve(internal_vars)
+>>> result = solve(traced_params)
 >>> result.C_hom   # ndarray, shape (6, 6)
 >>> result.u_totals[0]  # displacement field for first strain case
 ```

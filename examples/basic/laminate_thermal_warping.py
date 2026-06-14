@@ -44,7 +44,7 @@ response, giving a converged finite-rotation answer below the linear
 prediction.
 
 The pseudo-time variable ``t ∈ [0, 1]`` represents the load fraction.
-``InternalVars.volume_vars[0]`` carries this fraction as a node-based
+``TracedParams.volume_vars[0]`` carries this fraction as a node-based
 scalar, and the weak form scales the thermal pre-force / pre-moment
 ``(N_T, M_T)`` by it.
 """
@@ -192,7 +192,9 @@ class ThermalRampPipeline(ImplicitPipeline):
 
         self._n_nodes = mesh.points.shape[0]
 
-        sample_iv = fe.InternalVars(
+        self.ts = fe.TracedStructure.from_problem(self.problem)
+
+        sample_iv = fe.TracedParams(
             volume_vars=(jnp.zeros(self._n_nodes),),
         )
         # Use umfpack (general LU) rather than the auto-selected cholmod:
@@ -209,8 +211,19 @@ class ThermalRampPipeline(ImplicitPipeline):
                 tol=1e-6, rel_tol=1e-8, max_iter=30,
             ),
             linear=False,
-            internal_vars=sample_iv,
+            traced_params=sample_iv,
+            traced_structure=self.ts,
         )
+
+    def step(self, state, t, dt):
+        # Override the base ImplicitPipeline.step to thread the
+        # TracedStructure into the solver call (the problem's host-side
+        # scratch maps were freed by TracedStructure.from_problem above).
+        import jax
+        if self.pseudo_time:
+            state = jax.lax.stop_gradient(state)
+        tp = self.update_vars(state, t, dt)
+        return self.solver(tp, state, traced_structure=self.ts)
 
     def initial_state(self):
         return fe.zero_like_initial_guess(self.problem, self.bc)
@@ -219,7 +232,7 @@ class ThermalRampPipeline(ImplicitPipeline):
         # Pseudo-time t goes from 0 to 1 — t + dt is the load fraction at
         # the *end* of this step (backward-Euler convention).
         lam = t + dt
-        return fe.InternalVars(
+        return fe.TracedParams(
             volume_vars=(jnp.full(self._n_nodes, lam),),
         )
 

@@ -271,6 +271,8 @@ def make_bc(disp):
 bc0 = make_bc(0.0)
 history = {'delta_max': np.zeros(interface.n_nodes)}
 
+ts = fe.TracedStructure.from_problem(problem)
+
 solver = fe.create_solver(
     problem, bc0,
     solver_options=fe.KrylovSolverOptions(
@@ -280,8 +282,9 @@ solver = fe.create_solver(
     newton_options=fe.NewtonOptions(tol=1e-6, max_iter=1000),
     extra_residual_fn=lambda u: cohesive_residual(u, history['delta_max']),
     linear=False,
+    traced_structure=ts,
 )
-EMPTY_IV = fe.InternalVars()  # bulk elasticity carries no internal variables
+EMPTY_IV = fe.TracedParams()  # bulk elasticity carries no internal variables
 
 
 # ============================================================
@@ -323,7 +326,7 @@ for step in range(1, n_steps + 1):
     bc = make_bc(disp)
     u_flat = u_flat.at[bc.bc_rows].set(bc.bc_vals)
     history['delta_max'] = delta_max
-    u_flat = solver(EMPTY_IV, u_flat, bc=bc)
+    u_flat = solver(EMPTY_IV, u_flat, bc=bc, traced_structure=ts)
 
     # Update state variables
     delta_current = interface.get_opening(u_flat)

@@ -67,20 +67,23 @@ def build(L):
     )
     bc = bc_config.create_bc(problem)
 
-    traction_array = fe.InternalVars.create_uniform_surface_var(problem, TRACTION)
-    internal_vars = fe.InternalVars(volume_vars=(), surface_vars=[(traction_array,)])
+    ts = fe.TracedStructure.from_problem(problem)
+
+    traction_array = fe.TracedParams.create_uniform_surface_var(problem, TRACTION)
+    traced_params = fe.TracedParams(volume_vars=(), surface_vars=[(traction_array,)])
 
     solver = fe.create_solver(
         problem,
         bc,
         solver_options=fe.DirectSolverOptions(),
         linear=True,
-        internal_vars=internal_vars,
+        traced_params=traced_params,
+        traced_structure=ts,
     )
     initial = fe.zero_like_initial_guess(problem, bc)
     n_dofs = problem.num_total_dofs_all_vars
     n_cells = problem.num_cells
-    return solver, internal_vars, initial, n_dofs, n_cells
+    return solver, traced_params, initial, ts, n_dofs, n_cells
 
 
 def median_time(fn, repeats):
@@ -120,14 +123,14 @@ def main():
         writer.writeheader()
 
     for L in args.lengths:
-        solver, internal_vars, initial, n_dofs, n_cells = build(L)
+        solver, traced_params, initial, ts, n_dofs, n_cells = build(L)
 
         def solve_eager():
-            return solver(internal_vars, initial)
+            return solver(traced_params, initial, traced_structure=ts)
 
-        solve_jit = jax.jit(lambda iv: solver(iv, initial))
+        solve_jit = jax.jit(lambda tp: solver(tp, initial, traced_structure=ts))
 
-        for mode, fn in [("jit", lambda: solve_jit(internal_vars)), ("eager", solve_eager)]:
+        for mode, fn in [("jit", lambda: solve_jit(traced_params)), ("eager", solve_eager)]:
             t0 = time.perf_counter()
             sol = jax.block_until_ready(fn())  # compile (jit) / cache warmup (eager)
             first_call_s = time.perf_counter() - t0

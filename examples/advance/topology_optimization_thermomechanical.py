@@ -117,28 +117,34 @@ class ThermomechOpt(Pipeline):
             fe.DCboundary.DirichletBCSpec(location=top, component="all", value=T_hot),
         ]).create_bc(prob_therm)
 
+        # ── Traced structures (memory-efficient assembly) ──────────────
+        self._ts_mech = fe.TracedStructure.from_problem(prob_mech)
+        self._ts_therm = fe.TracedStructure.from_problem(prob_therm)
+
         # ── Solvers ────────────────────────────────────────────────────
         solver_opts = fe.DirectSolverOptions()
 
         # Mechanical: volume_vars = (rho, T)
-        sample_iv_mech = fe.InternalVars(
+        sample_iv_mech = fe.TracedParams(
             volume_vars=(
-                fe.InternalVars.create_node_var(prob_mech, 0.5),
-                fe.InternalVars.create_node_var(prob_mech, T_ref),
+                fe.TracedParams.create_node_var(prob_mech, 0.5),
+                fe.TracedParams.create_node_var(prob_mech, T_ref),
             ), surface_vars=())
         self._solver_mech = fe.create_solver(
             prob_mech, bc_mech, solver_options=solver_opts,
             adjoint_solver_options=solver_opts,
-            linear=True, internal_vars=sample_iv_mech)
+            linear=True, traced_params=sample_iv_mech,
+            traced_structure=self._ts_mech)
 
         # Thermal: volume_vars = (rho,)
-        sample_iv_therm = fe.InternalVars(
-            volume_vars=(fe.InternalVars.create_node_var(prob_therm, 0.5),),
+        sample_iv_therm = fe.TracedParams(
+            volume_vars=(fe.TracedParams.create_node_var(prob_therm, 0.5),),
             surface_vars=())
         self._solver_therm = fe.create_solver(
             prob_therm, bc_therm, solver_options=solver_opts,
             adjoint_solver_options=solver_opts,
-            linear=True, internal_vars=sample_iv_therm)
+            linear=True, traced_params=sample_iv_therm,
+            traced_structure=self._ts_therm)
 
         # ── Filter ────────────────────────────────────────────────────
         self._filter_fn = gene.create_density_filter(mesh, radius=filter_radius)
@@ -156,12 +162,14 @@ class ThermomechOpt(Pipeline):
         # ── Reference energies for normalisation ───────────────────────
         rho_ones = np.ones(self._num_nodes)
 
-        iv_therm_ref = fe.InternalVars(volume_vars=(rho_ones,), surface_vars=())
-        sol_t_ref = self._solver_therm(iv_therm_ref, self._init_therm)
+        iv_therm_ref = fe.TracedParams(volume_vars=(rho_ones,), surface_vars=())
+        sol_t_ref = self._solver_therm(
+            iv_therm_ref, self._init_therm, traced_structure=self._ts_therm)
 
-        iv_mech_ref = fe.InternalVars(
+        iv_mech_ref = fe.TracedParams(
             volume_vars=(rho_ones, sol_t_ref), surface_vars=())
-        sol_m_ref = self._solver_mech(iv_mech_ref, self._init_mech)
+        sol_m_ref = self._solver_mech(
+            iv_mech_ref, self._init_mech, traced_structure=self._ts_mech)
 
         self._W_mech_0 = abs(float(self._compliance_fn(sol_m_ref)))
         self._W_therm_0 = abs(float(self._energy_therm(sol_t_ref, iv_therm_ref)))
@@ -175,13 +183,15 @@ class ThermomechOpt(Pipeline):
         rho_p = self._phys_density(rho, beta)
 
         # Step 1: solve thermal → T field (node-based)
-        iv_therm = fe.InternalVars(volume_vars=(rho_p,), surface_vars=())
-        sol_therm = self._solver_therm(iv_therm, self._init_therm)
+        iv_therm = fe.TracedParams(volume_vars=(rho_p,), surface_vars=())
+        sol_therm = self._solver_therm(
+            iv_therm, self._init_therm, traced_structure=self._ts_therm)
 
         # Step 2: solve mechanics with T-dependent thermal strain
-        iv_mech = fe.InternalVars(
+        iv_mech = fe.TracedParams(
             volume_vars=(rho_p, sol_therm), surface_vars=())
-        sol_mech = self._solver_mech(iv_mech, self._init_mech)
+        sol_mech = self._solver_mech(
+            iv_mech, self._init_mech, traced_structure=self._ts_mech)
 
         # Objectives
         W_mech = self._compliance_fn(sol_mech) / self._W_mech_0
@@ -268,18 +278,21 @@ bc_therm_r = fe.DCboundary.DirichletBCConfig([
     fe.DCboundary.DirichletBCSpec(location=top_r, component="all", value=T_hot),
 ]).create_bc(prob_therm_r)
 
+ts_therm_r = fe.TracedStructure.from_problem(prob_therm_r)
+
 # Full density (solid structure after remesh)
 rho_solid = np.ones(remesh.points.shape[0])
-iv_therm_r = fe.InternalVars(volume_vars=(rho_solid,))
+iv_therm_r = fe.TracedParams(volume_vars=(rho_solid,))
 
 solver_opts_r = fe.DirectSolverOptions()
 solver_therm_r = fe.create_solver(
     prob_therm_r, bc_therm_r, solver_options=solver_opts_r,
     adjoint_solver_options=solver_opts_r,
-    linear=True, internal_vars=iv_therm_r)
+    linear=True, traced_params=iv_therm_r,
+    traced_structure=ts_therm_r)
 
 init_therm_r = fe.zero_like_initial_guess(prob_therm_r, bc_therm_r)
-sol_therm_r = solver_therm_r(iv_therm_r, init_therm_r)
+sol_therm_r = solver_therm_r(iv_therm_r, init_therm_r, traced_structure=ts_therm_r)
 T_field_r = onp.array(sol_therm_r).reshape(-1)
 print(f"  T range: {T_field_r.min():.1f} K .. {T_field_r.max():.1f} K")
 
@@ -306,15 +319,18 @@ bc_mech_r = fe.DCboundary.DirichletBCConfig([
     fe.DCboundary.DirichletBCSpec(location=pin2_fn, component="y", value=0.),
 ]).create_bc(prob_mech_r)
 
-iv_mech_r = fe.InternalVars(
+ts_mech_r = fe.TracedStructure.from_problem(prob_mech_r)
+
+iv_mech_r = fe.TracedParams(
     volume_vars=(rho_solid, np.array(T_field_r)))
 solver_mech_r = fe.create_solver(
     prob_mech_r, bc_mech_r, solver_options=solver_opts_r,
     adjoint_solver_options=solver_opts_r,
-    linear=True, internal_vars=iv_mech_r)
+    linear=True, traced_params=iv_mech_r,
+    traced_structure=ts_mech_r)
 
 init_mech_r = fe.zero_like_initial_guess(prob_mech_r, bc_mech_r)
-sol_mech_r = solver_mech_r(iv_mech_r, init_mech_r)
+sol_mech_r = solver_mech_r(iv_mech_r, init_mech_r, traced_structure=ts_mech_r)
 
 # ── Compute stress & strain at nodes ───────────────────────────────────────
 

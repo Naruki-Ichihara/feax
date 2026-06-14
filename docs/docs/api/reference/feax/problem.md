@@ -122,7 +122,7 @@ Returns
 -------
 Optional[Callable]
     Function that maps gradients to stress/flux tensors.
-    Signature: ``(u_grad, *internal_vars) -&gt; stress_tensor``
+    Signature: ``(u_grad, *traced_params) -&gt; stress_tensor``
     Returns ``None`` if not defined (default).
 
 Examples
@@ -159,7 +159,7 @@ Returns
 -------
 Optional[Callable]
     Scalar energy density function.
-    Signature: ``(u_grad, *internal_vars) -&gt; scalar``
+    Signature: ``(u_grad, *traced_params) -&gt; scalar``
     Returns ``None`` if not defined (default).
 
 Examples
@@ -190,7 +190,7 @@ Returns
 -------
 List[SurfaceMap]
     List of functions for surface loads. Each function has signature:
-    (u: Array, x: Array, *internal_vars) -&gt; traction: Array
+    (u: Array, x: Array, *traced_params) -&gt; traction: Array
 
 Notes
 -----
@@ -212,7 +212,7 @@ Returns
 -------
 Optional[MassMap]
     Function for mass/reaction terms with signature:
-    (u: Array, x: Array, *internal_vars) -&gt; mass_term: Array
+    (u: Array, x: Array, *traced_params) -&gt; mass_term: Array
     Returns None if no mass terms are present
 
 #### get\_weak\_form
@@ -236,7 +236,7 @@ Optional[Callable]
     Weak form function with signature:
 
     ```python
-    (vals, grads, x, *internal_vars) -&gt; (mass_terms, grad_terms)
+    (vals, grads, x, *traced_params) -&gt; (mass_terms, grad_terms)
     ```
 
     where:
@@ -285,7 +285,7 @@ List[Callable]
     ``location_fns``). Each function has signature:
 
     ```python
-    (vals, x, *internal_vars) -&gt; tractions
+    (vals, x, *traced_params) -&gt; tractions
     ```
 
     where:

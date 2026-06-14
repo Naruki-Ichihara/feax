@@ -125,13 +125,13 @@ def create_helmholtz_filter(mesh, radius, P=None, solver_options=None):
         """
         # Create internal variables with rho_source as node-based variable
         r_sq_array = np.full(num_nodes, r_squared)
-        internal_vars = fe.internal_vars.InternalVars(
+        traced_params = fe.traced_params.TracedParams(
             volume_vars=(rho_source, r_sq_array),
             surface_vars=()
         )
 
         # Solve
-        rho_filtered = solver(internal_vars, initial_guess)
+        rho_filtered = solver(traced_params, initial_guess)
         return rho_filtered
 
     return filter_fn

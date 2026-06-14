@@ -11,28 +11,28 @@ them into giant literals (e.g. an nnz-sized boolean mask for the Dirichlet
 row/column elimination), and each new mesh shape leaves another copy pinned in
 the global compilation cache until ``jax.clear_caches()``.
 
-``StaticVars`` is the runtime-argument counterpart, mirroring how
-:class:`feax.internal_vars.InternalVars` carries material parameters. It holds
+``TracedStructure`` is the runtime-argument counterpart, mirroring how
+:class:`feax.traced_params.TracedParams` carries material parameters. It holds
 the same arrays as **pytree leaves**, so a solve function with signature
 
-    solver(internal_vars, initial_guess, static_vars=sv)
+    solver(traced_params, initial_guess, traced_structure=ts)
 
 receives them as traced arguments: nothing mesh-sized is baked into the
 executable, no structural constant folding happens at compile time, and one
 compiled executable can be reused across problems that share shapes.
 
 Field names intentionally match the corresponding ``Problem`` attributes so
-assembly code can read from either source (``src = sv if sv is not None else
+assembly code can read from either source (``src = ts if ts is not None else
 problem``).
 
 Usage
 -----
->>> sv = feax.StaticVars.from_problem(problem)
+>>> ts = feax.TracedStructure.from_problem(problem)
 >>> solver = feax.create_solver(problem, bc, solver_options=opts, linear=True,
-...                             internal_vars=iv)
->>> sol = solver(iv, initial, static_vars=sv)          # eager
->>> jit_solve = jax.jit(lambda iv, sv: solver(iv, initial, static_vars=sv))
->>> sol = jit_solve(iv, sv)                            # nothing baked
+...                             traced_params=tp)
+>>> sol = solver(tp, initial, traced_structure=ts)          # eager
+>>> jit_solve = jax.jit(lambda tp, ts: solver(tp, initial, traced_structure=ts))
+>>> sol = jit_solve(tp, ts)                            # nothing baked
 """
 
 from dataclasses import dataclass, fields
@@ -44,7 +44,7 @@ import jax.numpy as np
 
 @jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class StaticVars:
+class TracedStructure:
     """Pytree of the structural arrays consumed by the assembly/solve path.
 
     All fields are leaves (arrays or tuples of arrays). Static metadata
@@ -95,8 +95,25 @@ class StaticVars:
     csr_face_sorted_slots: np.ndarray
 
     @classmethod
-    def from_problem(cls, problem) -> "StaticVars":
-        """Collect the structural arrays of ``problem`` into a pytree."""
+    def from_problem(cls, problem, free_scratch: bool = True) -> "TracedStructure":
+        """Collect the structural arrays of ``problem`` into a pytree.
+
+        Parameters
+        ----------
+        free_scratch : bool, default True
+            After collecting the structural arrays (including the slot sorts,
+            which become device leaves here), release the large host-side
+            scratch arrays on ``problem`` via
+            :meth:`feax.problem.Problem.free_assembly_scratch` with
+            ``drop_no_ts_maps=True``. Building a TracedStructure signals commitment to
+            the TracedStructure (``traced_structure=ts``) assembly path, which no longer
+            needs those host arrays — so freeing them by default removes the
+            largest static memory cost (critical on unified-memory devices such
+            as GB10). Set ``free_scratch=False`` if you will *also* call
+            ``get_jacobian`` / a ``traced_structure=None`` assembly on the same
+            ``problem`` afterward (e.g. a linear-buckling ``K`` / ``K_g`` build),
+            which still reads those arrays.
+        """
         from feax.assembler import _res_vol_slot_sort, _vol_slot_sort
 
         vol_perm, vol_sorted = _vol_slot_sort(problem)
@@ -105,7 +122,7 @@ class StaticVars:
         def arr(x):
             return np.asarray(x)
 
-        return cls(
+        result = cls(
             cells_list=tuple(arr(c) for c in problem.cells_list),
             physical_quad_points=arr(problem.physical_quad_points),
             shape_grads=arr(problem.shape_grads),
@@ -137,6 +154,14 @@ class StaticVars:
             csr_face_perm=arr(problem.csr_face_perm),
             csr_face_sorted_slots=arr(problem.csr_face_sorted_slots),
         )
+
+        # The slot sorts above are now device leaves of ``result``; the host
+        # scratch arrays they (and the no-TracedStructure path) read are no longer
+        # needed for the TracedStructure assembly path. Release them by default.
+        if free_scratch:
+            problem.free_assembly_scratch(drop_no_ts_maps=True)
+
+        return result
 
     def tree_flatten(self):
         leaves = tuple(getattr(self, f.name) for f in fields(self))

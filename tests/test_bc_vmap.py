@@ -21,7 +21,7 @@ bc = fe.DirichletBCConfig([
     fe.DirichletBCSpec(location=lambda p: np.isclose(p[0], 1., atol=1e-6), component='x', value=0.),
 ]).create_bc(problem)
 
-iv = fe.InternalVars(volume_vars=())
+tp = fe.TracedParams(volume_vars=())
 bc1 = bc.replace_vals(bc.bc_vals.at[-1].set(0.1))
 bc2 = bc.replace_vals(bc.bc_vals.at[-1].set(0.5))
 vals_batch = np.stack([bc.bc_vals.at[-1].set(0.1), bc.bc_vals.at[-1].set(0.5)])
@@ -30,11 +30,11 @@ vals_batch = np.stack([bc.bc_vals.at[-1].set(0.1), bc.bc_vals.at[-1].set(0.5)])
 print("[Test 1] Sequential bc= override (DirectSolver)")
 solver_direct = fe.create_solver(
     problem, bc, solver_options=fe.DirectSolverOptions(),
-    linear=True, internal_vars=iv,
+    linear=True, traced_params=tp,
 )
 
-s1 = solver_direct(iv, bc=bc1)
-s2 = solver_direct(iv, bc=bc2)
+s1 = solver_direct(tp, bc=bc1)
+s2 = solver_direct(tp, bc=bc2)
 print(f"  d=0.1 -> max|u|={float(np.max(np.abs(s1))):.6f}")
 print(f"  d=0.5 -> max|u|={float(np.max(np.abs(s2))):.6f}")
 assert float(np.max(np.abs(s2))) > float(np.max(np.abs(s1)))
@@ -44,16 +44,16 @@ print("  PASS")
 print("\n[Test 2] jax.vmap over bc_vals (IterativeSolver/CG)")
 solver_iter = fe.create_solver(
     problem, bc, solver_options=fe.KrylovSolverOptions(solver='cg'),
-    linear=True, internal_vars=iv,
+    linear=True, traced_params=tp,
 )
 
-s1_iter = solver_iter(iv, bc=bc1)
-s2_iter = solver_iter(iv, bc=bc2)
+s1_iter = solver_iter(tp, bc=bc1)
+s2_iter = solver_iter(tp, bc=bc2)
 print(f"  sequential d=0.1 -> max|u|={float(np.max(np.abs(s1_iter))):.6f}")
 print(f"  sequential d=0.5 -> max|u|={float(np.max(np.abs(s2_iter))):.6f}")
 
 try:
-    sols = jax.vmap(lambda v: solver_iter(iv, bc=bc.replace_vals(v)))(vals_batch)
+    sols = jax.vmap(lambda v: solver_iter(tp, bc=bc.replace_vals(v)))(vals_batch)
     err = float(np.max(np.abs(sols[0] - s1_iter))) + float(np.max(np.abs(sols[1] - s2_iter)))
     print(f"  vmap error vs sequential: {err:.2e}")
     assert err < 1e-6, f"err={err}"
@@ -65,16 +65,16 @@ except Exception as e:
 print("\n[Test 3] jax.vmap over bc_vals (DirectSolver/cuDSS)")
 solver_cudss = fe.create_solver(
     problem, bc, solver_options=fe.DirectSolverOptions(),
-    linear=True, internal_vars=iv,
+    linear=True, traced_params=tp,
 )
 
-s1_cudss = solver_cudss(iv, bc=bc1)
-s2_cudss = solver_cudss(iv, bc=bc2)
+s1_cudss = solver_cudss(tp, bc=bc1)
+s2_cudss = solver_cudss(tp, bc=bc2)
 print(f"  sequential d=0.1 -> max|u|={float(np.max(np.abs(s1_cudss))):.6f}")
 print(f"  sequential d=0.5 -> max|u|={float(np.max(np.abs(s2_cudss))):.6f}")
 
 try:
-    sols = jax.vmap(lambda v: solver_cudss(iv, bc=bc.replace_vals(v)))(vals_batch)
+    sols = jax.vmap(lambda v: solver_cudss(tp, bc=bc.replace_vals(v)))(vals_batch)
     err = float(np.max(np.abs(sols[0] - s1_cudss))) + float(np.max(np.abs(sols[1] - s2_cudss)))
     print(f"  vmap error vs sequential: {err:.2e}")
     assert err < 1e-6, f"err={err}"
@@ -89,18 +89,18 @@ solver_newton = fe.create_solver(
     problem, bc,
     solver_options=fe.KrylovSolverOptions(solver='cg'),
     linear=False,
-    internal_vars=iv,
+    traced_params=tp,
     newton_options=NewtonOptions(),
 )
 
 initial = fe.zero_like_initial_guess(problem, bc)
-s1_newton = solver_newton(iv, initial, bc=bc1)
-s2_newton = solver_newton(iv, initial, bc=bc2)
+s1_newton = solver_newton(tp, initial, bc=bc1)
+s2_newton = solver_newton(tp, initial, bc=bc2)
 print(f"  sequential d=0.1 -> max|u|={float(np.max(np.abs(s1_newton))):.6f}")
 print(f"  sequential d=0.5 -> max|u|={float(np.max(np.abs(s2_newton))):.6f}")
 
 try:
-    sols = jax.vmap(lambda v: solver_newton(iv, initial, bc=bc.replace_vals(v)))(vals_batch)
+    sols = jax.vmap(lambda v: solver_newton(tp, initial, bc=bc.replace_vals(v)))(vals_batch)
     err = float(np.max(np.abs(sols[0] - s1_newton))) + float(np.max(np.abs(sols[1] - s2_newton)))
     print(f"  vmap error vs sequential: {err:.2e}")
     assert err < 1e-6, f"err={err}"
@@ -121,14 +121,14 @@ solver_reduced = fe.create_solver(
     linear=True, P=P_identity,
 )
 
-s1_red = solver_reduced(iv, bc=bc1)
-s2_red = solver_reduced(iv, bc=bc2)
+s1_red = solver_reduced(tp, bc=bc1)
+s2_red = solver_reduced(tp, bc=bc2)
 print(f"  sequential d=0.1 -> max|u|={float(np.max(np.abs(s1_red))):.6f}")
 print(f"  sequential d=0.5 -> max|u|={float(np.max(np.abs(s2_red))):.6f}")
 assert float(np.max(np.abs(s2_red))) > float(np.max(np.abs(s1_red)))
 
 try:
-    sols = jax.vmap(lambda v: solver_reduced(iv, bc=bc.replace_vals(v)))(vals_batch)
+    sols = jax.vmap(lambda v: solver_reduced(tp, bc=bc.replace_vals(v)))(vals_batch)
     err = float(np.max(np.abs(sols[0] - s1_red))) + float(np.max(np.abs(sols[1] - s2_red)))
     print(f"  vmap error vs sequential: {err:.2e}")
     assert err < 1e-6, f"err={err}"
@@ -141,7 +141,7 @@ print("\n[Test 6] jax.grad w.r.t. bc_vals (Linear, IterativeSolver/CG)")
 try:
     def loss_bc(bc_vals_arg):
         bc_arg = bc.replace_vals(bc_vals_arg)
-        sol = solver_iter(iv, bc=bc_arg)
+        sol = solver_iter(tp, bc=bc_arg)
         return np.sum(sol ** 2)
 
     grad_bc = jax.grad(loss_bc)(bc1.bc_vals)
@@ -171,7 +171,7 @@ print("\n[Test 7] jax.grad w.r.t. bc_vals (Newton fori_loop, IterativeSolver/CG)
 try:
     def loss_bc_newton(bc_vals_arg):
         bc_arg = bc.replace_vals(bc_vals_arg)
-        sol = solver_newton(iv, initial, bc=bc_arg)
+        sol = solver_newton(tp, initial, bc=bc_arg)
         return np.sum(sol ** 2)
 
     grad_bc_newton = jax.grad(loss_bc_newton)(bc1.bc_vals)

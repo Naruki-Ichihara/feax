@@ -253,7 +253,7 @@ def create_layered_solid(
     n_thick_per_ply: int = 2,
     location_fns: Optional[Iterable[Callable]] = None,
     normal: Sequence[float] = (0.0, 0.0, 1.0)
-) -> Tuple[LayeredSolid, InternalVars]
+) -> Tuple[LayeredSolid, TracedParams]
 ```
 
 Build a :class:`LayeredSolid` with exact per-ply through-thickness
@@ -281,7 +281,7 @@ Parameters
 Returns
 -------
 - **problem** (*LayeredSolid*)
-- **internal_vars** (*feax.InternalVars*): Holds per-cell node coordinates ``(num_cells, num_nodes, 3)``.
+- **traced_params** (*feax.TracedParams*): Holds per-cell node coordinates ``(num_cells, num_nodes, 3)``.
 
 
 ## OrientedLayeredSolid Objects
@@ -352,7 +352,7 @@ def create_oriented_layered_solid(
     problem_class: type = OrientedLayeredSolid,
     with_thermal: bool = False,
     cte_cell_ply: Optional[np.ndarray] = None
-) -> Tuple[OrientedLayeredSolid, InternalVars]
+) -> Tuple[OrientedLayeredSolid, TracedParams]
 ```
 
 Build an :class:`OrientedLayeredSolid` from *already-rotated*, per-cell,
@@ -369,14 +369,14 @@ Parameters
 - **mesh** (*feax.Mesh*): 3D mesh, one element through the laminate thickness, laminate stacked along the element&#x27;s local ζ-axis (last reference axis, i.e. nodes 0-3 = inner thickness face, nodes 4-7 = outer face for a HEX8).
 - **C_cell_ply** (*array*): ``(num_cells, n_ply, 3,3,3,3)`` rotated lamina stiffness in global axes, bottom → top through the thickness.
 - **ply_thicknesses** (*sequence of float*): Per-ply thicknesses, bottom → top (length ``n_ply``).
-- **with_thermal** (*bool*): Enable thermal coupling. When ``True`` the element uses ``σ = C : (ε − ε_th)`` and expects a **third** volume internal variable, the per-quad thermal eigenstrain ``eps_th`` ``(num_cells, nq, 3, 3)``. The returned ``internal_vars`` carry a default ``eps_th`` (zero, or ``cte_quad · 1`` from ``cte_cell_ply``); recompute it per solve as ``cte_quad * dT`` and rebuild :class:``4 with it.
+- **with_thermal** (*bool*): Enable thermal coupling. When ``True`` the element uses ``σ = C : (ε − ε_th)`` and expects a **third** volume internal variable, the per-quad thermal eigenstrain ``eps_th`` ``(num_cells, nq, 3, 3)``. The returned ``traced_params`` carry a default ``eps_th`` (zero, or ``cte_quad · 1`` from ``cte_cell_ply``); recompute it per solve as ``cte_quad * dT`` and rebuild :class:``4 with it.
 - **cte_cell_ply** (*array, optional*): ``(num_cells, n_ply, 3, 3)`` per-ply CTE in **global** axes (rotate with :func:``7 using the same frame as the stiffness). Only used when ``with_thermal=True`` to seed the default ``eps_th`` at ``ΔT = 1``; if omitted the default ``eps_th`` is zero.
 
 
 Returns
 -------
 - **problem** (*OrientedLayeredSolid*)
-- **internal_vars** (*feax.InternalVars*): ``volume_vars = (cell_nodes, C_quad)``, or ``(cell_nodes, C_quad, eps_th)`` when ``with_thermal=True``.
+- **traced_params** (*feax.TracedParams*): ``volume_vars = (cell_nodes, C_quad)``, or ``(cell_nodes, C_quad, eps_th)`` when ``with_thermal=True``.
 
 
 ## GeometricStiffnessSolid Objects
@@ -415,7 +415,7 @@ def create_layered_solid_geometric_stiffness(
         ele_type: str = "HEX8",
         n_inplane: int = 2,
         n_thick_per_ply: int = 2
-) -> Tuple[GeometricStiffnessSolid, InternalVars]
+) -> Tuple[GeometricStiffnessSolid, TracedParams]
 ```
 
 Build a :class:`GeometricStiffnessSolid` from a per-quad prestress field.
@@ -434,7 +434,7 @@ Parameters
 Returns
 -------
 - **problem** (*GeometricStiffnessSolid*)
-- **internal_vars** (*feax.InternalVars*): ``volume_vars = (cell_nodes, sigma0)``.
+- **traced_params** (*feax.TracedParams*): ``volume_vars = (cell_nodes, sigma0)``.
 
 
 #### layered\_quad\_stress
@@ -460,7 +460,7 @@ Parameters
 - **dNdxi_ref** (*array*): ``(nq, n_nodes, 3)`` reference shape gradients (``problem._dNdxi_ref``).
 - **cell_nodes** (*array*): ``(num_cells, n_nodes, 3)`` physical node coordinates.
 - **u_cells** (*array*): ``(num_cells, n_nodes, 3)`` nodal displacements gathered per cell.
-- **C_quad** (*array*): ``(num_cells, nq, 3,3,3,3)`` per-quad stiffness (``internal_vars`` from :func:``0).
+- **C_quad** (*array*): ``(num_cells, nq, 3,3,3,3)`` per-quad stiffness (``traced_params`` from :func:``0).
 - **eps_th_quad** (*array, optional*): ``(num_cells, nq, 3, 3)`` thermal eigenstrain ``α·ΔT`` in global axes (e.g. ``expand_cte_to_quad(...) * dT``). ``None`` → no thermal term.
 
 

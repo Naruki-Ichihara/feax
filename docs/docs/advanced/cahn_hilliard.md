@@ -94,7 +94,7 @@ Key points:
 
 - **`vals`**: list of field values at the quadrature point — `vals[0]` is $c$, `vals[1]` is $\mu$
 - **`grads`**: list of field gradients — `grads[0]` is $\nabla c$, `grads[1]` is $\nabla \mu$
-- **`c_old`**: concentration from the previous time step, passed through `InternalVars`
+- **`c_old`**: concentration from the previous time step, passed through `TracedParams`
 - The return format is `([mass_terms], [grad_terms])` — FEAX assembles $\int R_\text{mass} \cdot v\, d\Omega + \int R_\text{grad} : \nabla v\, d\Omega$ automatically
 
 ### Mixed Formulation Setup
@@ -116,7 +116,7 @@ Passing lists for `mesh`, `vec`, and `ele_type` tells FEAX to create a mixed pro
 
 The `ImplicitPipeline` provides a structured interface for implicit time integration. Each time step:
 
-1. `update_vars()` packs the previous solution into `InternalVars`
+1. `update_vars()` packs the previous solution into `TracedParams`
 2. `step()` calls `self.solver(iv, state)` to solve the nonlinear system
 
 ```python
@@ -149,7 +149,7 @@ class CahnHilliardPipeline(ImplicitPipeline):
             self.problem, bc,
             solver_options=solver_opts,
             newton_options=newton_opts,
-            internal_vars=fe.InternalVars(volume_vars=(self._c0[:, 0],)),
+            traced_params=fe.TracedParams(volume_vars=(self._c0[:, 0],)),
         )
 
     def initial_state(self):
@@ -159,7 +159,7 @@ class CahnHilliardPipeline(ImplicitPipeline):
     def update_vars(self, state, t, dt_val):
         sol_list = self.problem.unflatten_fn_sol_list(state)
         c_old = sol_list[0][:, 0]   # (num_nodes,)
-        return fe.InternalVars(volume_vars=(c_old,))
+        return fe.TracedParams(volume_vars=(c_old,))
 
     def save(self, state, step, t, output_dir):
         sol_list = self.problem.unflatten_fn_sol_list(state)
@@ -180,7 +180,7 @@ class CahnHilliardPipeline(ImplicitPipeline):
 |---|---|
 | `build(mesh)` | Create problem, BCs, solver; called once before the time loop |
 | `initial_state()` | Return the initial flat solution vector (random $c$ near 0.63, $\mu = 0$) |
-| `update_vars(state, t, dt)` | Extract $c_\text{old}$ from the current state and wrap it in `InternalVars` |
+| `update_vars(state, t, dt)` | Extract $c_\text{old}$ from the current state and wrap it in `TracedParams` |
 | `save(state, step, t, output_dir)` | Write VTK files with $c$ and $\mu$ fields |
 | `monitor(state, step, t)` | Return scalar diagnostics ($c_\text{min}$, $c_\text{max}$) for logging |
 

@@ -179,6 +179,8 @@ def main():
         fe.DirichletBCSpec(location=left_face, component="all", value=0.0),
     ]).create_bc(problem)
 
+    ts = fe.TracedStructure.from_problem(problem)
+
     # ── Filters & response functions ─────────────────────────────────────
     initial_guess = fe.zero_like_initial_guess(problem, bc)
     compliance_fn = gene.create_compliance_fn(problem)
@@ -186,10 +188,10 @@ def main():
     filter_rho = gene.create_helmholtz_filter(mesh, radius=FILTER_RHO)
     filter_theta = gene.create_helmholtz_filter(mesh, radius=FILTER_THETA)
 
-    # Pre-warm solver with sample InternalVars matching 7 fields.
-    sample_iv = fe.InternalVars(
+    # Pre-warm solver with sample TracedParams matching 7 fields.
+    sample_iv = fe.TracedParams(
         volume_vars=tuple(
-            fe.InternalVars.create_node_var(problem, v) for v in (
+            fe.TracedParams.create_node_var(problem, v) for v in (
                 TARGET_VF,                  # rho
                 -1.0 + 1e-2,                # x1
                 -1.0 + 1e-2,                # x2
@@ -206,7 +208,8 @@ def main():
         problem, bc=bc,
         solver_options=solver_opts,
         adjoint_solver_options=solver_opts,
-        linear=True, internal_vars=sample_iv,
+        linear=True, traced_params=sample_iv,
+        traced_structure=ts,
     )
 
     n_nodes = mesh.points.shape[0]
@@ -225,11 +228,11 @@ def main():
         proc = _process(x_flat, beta)
         rho_p = proc[1]
         oris = proc[2:]                # (x1, x2, x3, x12, x13, x23)
-        iv = fe.InternalVars(
+        tp = fe.TracedParams(
             volume_vars=(rho_p, *oris),
             surface_vars=(),
         )
-        sol = solver(iv, initial_guess)
+        sol = solver(tp, initial_guess, traced_structure=ts)
         return compliance_fn(sol)
 
     def volume_fn_packed(x_flat, beta):
