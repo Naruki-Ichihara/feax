@@ -8,6 +8,7 @@ physics kernels (Laplace, mass, surface, and universal).
 """
 
 import functools
+import warnings
 from typing import TYPE_CHECKING, Any, Callable, List, Tuple
 
 import jax
@@ -21,6 +22,33 @@ if TYPE_CHECKING:
     from feax.problem import Problem
 
 from feax.traced_params import TracedParams
+
+
+# ---------------------------------------------------------------------------
+# Deprecation: assembling without a TracedStructure
+# ---------------------------------------------------------------------------
+# The no-TracedStructure ("closure") assembly path bakes every mesh-sized array
+# into the compiled executable as a constant and keeps the large host-side slot
+# maps alive on the Problem. The TracedStructure path passes them as traced
+# arguments instead (smaller executables, no host index arrays, far lower peak
+# memory). The closure path is scheduled for removal; warn once when it runs.
+_NO_TS_WARNED = False
+
+
+def _warn_no_traced_structure() -> None:
+    """Emit a one-time ``FutureWarning`` for the no-TracedStructure assembly path."""
+    global _NO_TS_WARNED
+    if _NO_TS_WARNED:
+        return
+    _NO_TS_WARNED = True
+    warnings.warn(
+        "feax: assembling on the no-TracedStructure (closure) path. This path is "
+        "deprecated and will be removed in a future release. Build a "
+        "`ts = feax.TracedStructure.from_problem(problem)` and pass "
+        "`traced_structure=ts` to create_solver and to the solver call. If you also "
+        "assemble via get_jacobian() on the same problem (e.g. linear buckling), "
+        "use `TracedStructure.from_problem(problem, free_scratch=False)`.",
+        FutureWarning, stacklevel=3)
 
 
 # ---------------------------------------------------------------------------
@@ -1306,6 +1334,8 @@ def _get_J_csr(problem: 'Problem',
     This is the CSR-direct counterpart of :func:`get_jacobian`. No Dirichlet BCs are
     applied here (see the BC-aware CSR path).
     """
+    if ts is None:
+        _warn_no_traced_structure()
     src = ts if ts is not None else problem
     cells_sol_list = [sol[cells] for cells, sol in zip(src.cells_list, sol_list)]
     cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
@@ -1410,6 +1440,8 @@ def _get_res_J_csr(problem: 'Problem',
     Returns ``(res_list, csr_data, csr_indptr, csr_indices)``. No Dirichlet BCs
     applied (see :func:`create_res_J_bc_csr_parametric`).
     """
+    if ts is None:
+        _warn_no_traced_structure()
     src = ts if ts is not None else problem
     cells_sol_list = [sol[cells] for cells, sol in zip(src.cells_list, sol_list)]
     cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
@@ -1435,15 +1467,23 @@ def _get_res_J_csr(problem: 'Problem',
 
 def get_jacobian(problem: 'Problem',
                  sol_list: List[np.ndarray],
-                 traced_params: TracedParams) -> sparse.BCOO:
-    """Assemble the global tangent (Jacobian) as a sparse ``BCOO`` matrix.
+                 traced_params: TracedParams,
+                 ts=None) -> 'CSRMatrix':
+    """Assemble the global tangent (Jacobian) as a :class:`feax.csr.CSRMatrix`.
 
     Companion to :func:`get_res` (which assembles the global residual): this
     assembles the element tangents into the global Jacobian **without applying
-    Dirichlet boundary conditions**, returned as a JAX ``BCOO``. It is the entry
-    point for callers that need the raw assembled operator — e.g. building the
-    material/geometric stiffness pair ``(K, K_g)`` for the linear-buckling
-    eigensolver (:func:`feax.solvers.eigen.create_linear_buckling_solver`).
+    Dirichlet boundary conditions**, returned as the deduplicated CSR triple
+    ``(data, indptr, indices)`` wrapped in a :class:`~feax.csr.CSRMatrix`. It is
+    the entry point for callers that need the raw assembled operator — e.g.
+    building the material/geometric stiffness pair ``(K, K_g)`` for the
+    linear-buckling eigensolver
+    (:func:`feax.solvers.eigen.create_linear_buckling_solver`).
+
+    The assembly is already CSR-native (:func:`_get_J_csr`); returning the CSR
+    matrix directly avoids the redundant BCOO round-trip (``stack`` to COO-style
+    indices here, re-sort back to CSR in the consumer). ``CSRMatrix`` supports
+    ``@`` (mat-vec), ``.todense()``, ``.T``, etc.
 
     For the solver stack, prefer the CSR-direct, BC-applied assembly
     (:func:`create_J_bc_csr_function`); for cheap statistics without
@@ -1457,33 +1497,23 @@ def get_jacobian(problem: 'Problem',
         Solution arrays for each variable.
     traced_params : TracedParams
         Container with material properties and loading parameters.
+    ts : TracedStructure, optional
+        When given, assembles on the TracedStructure path (avoids the
+        no-TracedStructure host slot maps / deprecation warning). Omit it on a
+        problem whose host scratch is still alive
+        (``TracedStructure.from_problem(problem, free_scratch=False)``).
 
     Returns
     -------
-    sparse.BCOO
-        The assembled global Jacobian with no boundary conditions applied,
-        shape ``(num_total_dofs_all_vars, num_total_dofs_all_vars)``.
-
-    Notes
-    -----
-    With a JIT-compiled cuDSS solver, materializing this BCOO outside the JIT
-    boundary can contend with the backend's GPU memory; assemble inside the
-    traced region (or use the CSR-direct path) in that setting.
+    feax.csr.CSRMatrix
+        The assembled global Jacobian (no BCs applied), shape
+        ``(num_total_dofs_all_vars, num_total_dofs_all_vars)``, with ``nse``
+        deduplicated nonzeros.
     """
-    # Assemble the deduplicated CSR ``data`` (no BC) and wrap it as a BCOO built
-    # from the static CSR sparsity — rows from ``csr_row_of_slot``, cols from
-    # ``csr_indices`` (both kept on the device). This replaces the legacy path
-    # that built the BCOO from the raw, un-deduplicated COO (``I_filtered`` /
-    # ``J_filtered``, length num_cells·ndof²): the represented matrix is identical
-    # (duplicates in the old BCOO summed on densify), but the result is smaller
-    # (``nse`` entries), carries ``unique_indices`` / ``indices_sorted``, and —
-    # crucially — no longer pins the large host COO arrays, so they can be
-    # released via :meth:`Problem.free_assembly_scratch`.
+    from feax.csr import CSRMatrix
     shape = (problem.num_total_dofs_all_vars, problem.num_total_dofs_all_vars)
-    csr_data, _, _ = _get_J_csr(problem, sol_list, traced_params)
-    indices = np.stack([problem.csr_row_of_slot, problem.csr_indices], axis=1)
-    return sparse.BCOO((csr_data, indices), shape=shape,
-                       indices_sorted=True, unique_indices=True)
+    csr_data, indptr, indices = _get_J_csr(problem, sol_list, traced_params, ts)
+    return CSRMatrix(csr_data, indptr, indices, shape)
 
 
 def get_jacobian_info(problem: 'Problem',
@@ -1573,6 +1603,8 @@ def get_res(problem: 'Problem',
     The residual represents the imbalance in the weak form equations.
     For converged solutions, the residual should be near zero.
     """
+    if ts is None:
+        _warn_no_traced_structure()
     src = ts if ts is not None else problem
     cells_sol_list = [sol[cells] for cells, sol in zip(src.cells_list, sol_list)]
     cells_sol_flat = jax.vmap(lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)

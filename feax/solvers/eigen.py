@@ -30,10 +30,7 @@ import jax.numpy as jnp
 import numpy as onp
 from jax.scipy.linalg import solve_triangular
 
-try:                                   # jax.experimental.sparse.BCOO, if available
-    from jax.experimental.sparse import BCOO
-except Exception:                      # pragma: no cover
-    BCOO = ()
+from feax.csr import CSRMatrix
 
 try:                                   # matfree: optional opt-in backend (solver="matfree")
     from matfree import eig as _mf_eig, decomp as _mf_decomp
@@ -101,7 +98,7 @@ def _dense_buckling(K, Kg, free_dofs, num_modes: int = 6,
 
     Parameters
     ----------
-    K, Kg : (N, N) BCOO or dense array
+    K, Kg : (N, N) CSRMatrix or dense array
         Material tangent stiffness and geometric (initial-stress) stiffness.
     free_dofs : int array
         Indices of the unconstrained DoFs.
@@ -124,10 +121,10 @@ def _dense_buckling(K, Kg, free_dofs, num_modes: int = 6,
         jax.debug.print("[buckling/dense] dense generalized eigh | N={N}, free={nf}, "
                         "constrained={nc}, num_modes={m}",
                         N=N, nf=nf, nc=N - nf, m=num_modes)
-    if BCOO and isinstance(K, BCOO):
+    if isinstance(K, CSRMatrix):
         # slice to the free DoFs while still sparse, then densify only the small block
-        Kf = _restrict_bcoo(K, free).todense()
-        Kgf = _restrict_bcoo(Kg, free).todense()
+        Kf = jnp.asarray(_restrict_csr(K, free).toarray())
+        Kgf = jnp.asarray(_restrict_csr(Kg, free).toarray())
     else:
         fj = jnp.asarray(free)
         Kf = jnp.asarray(K)[jnp.ix_(fj, fj)]
@@ -168,39 +165,42 @@ def _dense_buckling(K, Kg, free_dofs, num_modes: int = 6,
     return lam[order], modes
 
 
-def _restrict_bcoo(M, free):
-    """Extract the ``free × free`` sub-matrix of a BCOO as a new BCOO (host-side).
+def _to_scipy_csr(M):
+    """A :class:`~feax.csr.CSRMatrix` -> SciPy CSR, with no COO re-sort.
 
-    Done once up front so the Arnoldi mat-vecs are plain reduced-space sparse
-    products (``M_free @ v``) — avoiding a scatter into a length-``N`` zero vector
-    inside the JIT, which XLA tries (slowly) to constant-fold.
+    The assembled matrix is already CSR (deduplicated, within-row sorted), so the
+    SciPy matrix is built directly from ``(data, indices, indptr)`` — O(nnz), no
+    COO -> CSR conversion.
     """
-    idx = onp.asarray(M.indices); dat = onp.asarray(M.data)
-    N = M.shape[0]
-    remap = -onp.ones(N, dtype=onp.int64)
-    remap[onp.asarray(free)] = onp.arange(len(free))
-    r = remap[idx[:, 0]]; c = remap[idx[:, 1]]
-    keep = (r >= 0) & (c >= 0)
-    new_idx = onp.stack([r[keep], c[keep]], axis=1)
-    return BCOO((jnp.asarray(dat[keep]), jnp.asarray(new_idx)),
-                shape=(len(free), len(free)))
+    import scipy.sparse as sp
+    return sp.csr_matrix(
+        (onp.asarray(M.data), onp.asarray(M.indices), onp.asarray(M.indptr)),
+        shape=M.shape)
 
 
 def _restrict_csr(M, free):
-    """``free × free`` sub-matrix of a BCOO as a SciPy CSR — pure NumPy/SciPy.
+    """``free × free`` sub-matrix of a :class:`~feax.csr.CSRMatrix` as SciPy CSR.
 
-    Use this (not :func:`_restrict_bcoo`) inside the host eigensolve callback: building
-    JAX BCOOs and dispatching JAX ops (matmul / vmap) from within a ``jax.pure_callback``
-    accumulates runtime state and leaks memory across repeated calls.
+    Pure NumPy/SciPy (used inside the host eigensolve callback, where dispatching
+    JAX ops would leak runtime state across repeated calls). The input is already
+    CSR, so this is a direct ``csr_matrix(...)[free][:, free]`` — no COO resort.
     """
-    import scipy.sparse as sp
-    idx = onp.asarray(M.indices); dat = onp.asarray(M.data)
-    N = M.shape[0]; nf = len(free)
-    remap = -onp.ones(N, dtype=onp.int64)
-    remap[onp.asarray(free)] = onp.arange(nf)
-    r = remap[idx[:, 0]]; c = remap[idx[:, 1]]
-    keep = (r >= 0) & (c >= 0)
-    return sp.csr_matrix((dat[keep], (r[keep], c[keep])), shape=(nf, nf))
+    free = onp.asarray(free)
+    sub = _to_scipy_csr(M)[free][:, free]
+    return sub.tocsr()
+
+
+def _restrict_csr_jax(M, free):
+    """``free × free`` sub-matrix of a CSRMatrix as a JAX :class:`~feax.csr.CSRMatrix`.
+
+    Built host-side (SciPy slice) but returned with ``jax.numpy`` leaves so it
+    supports ``@`` inside a traced Arnoldi (the ``matfree`` backend). Indices are
+    sorted so the CSRMatrix mat-vec stays a deterministic segment-sum.
+    """
+    sub = _restrict_csr(M, free)
+    sub.sort_indices()
+    return CSRMatrix(jnp.asarray(sub.data), jnp.asarray(sub.indptr),
+                     jnp.asarray(sub.indices), sub.shape)
 
 
 def _make_host_solve(A):
@@ -237,8 +237,10 @@ def _make_host_solve(A):
                                   dtype=onp.float64)), "splu"
 
 
-def _make_kinv_apply(Kf):
+def _make_kinv_apply(Kf_sp):
     """JAX-callable ``K⁻¹`` apply via :func:`jax.pure_callback` (matfree backend only).
+
+    ``Kf_sp`` is a reduced SciPy CSR/CSC stiffness on the free DoFs.
 
     .. warning::
         The matfree path runs JAX (its Arnoldi ``lax.scan`` / ``jnp.linalg.eig`` and this
@@ -248,10 +250,7 @@ def _make_kinv_apply(Kf):
         Prefer the default ``solver="sparse"`` (SciPy ARPACK, :func:`_sparse_buckling`),
         which is pure host-side and leak-free; reserve ``"matfree"`` for single solves.
     """
-    import scipy.sparse as sp
-    idx = onp.asarray(Kf.indices); dat = onp.asarray(Kf.data); nf = Kf.shape[0]
-    solve, backend = _make_host_solve(
-        sp.csc_matrix((dat, (idx[:, 0], idx[:, 1])), shape=(nf, nf)))
+    solve, backend = _make_host_solve(Kf_sp)
 
     def kinv(b):
         return jax.pure_callback(
@@ -280,7 +279,7 @@ def _sparse_buckling(K, Kg, free_dofs, num_modes: int = 6, num_matvecs: int = 30
 
     Parameters
     ----------
-    K, Kg : (N, N) BCOO
+    K, Kg : (N, N) CSRMatrix
         Material tangent stiffness and geometric (initial-stress) stiffness.
     free_dofs : int array
         Indices of the unconstrained DoFs (``K`` restricted to them must be SPD).
@@ -391,7 +390,7 @@ def _matfree_buckling(K, Kg, free_dofs, num_modes: int = 6, num_matvecs: int = 3
 
     Parameters
     ----------
-    K, Kg : (N, N) BCOO
+    K, Kg : (N, N) CSRMatrix
         Material tangent stiffness and geometric (initial-stress) stiffness.
     free_dofs : int array
         Indices of the unconstrained DoFs (``K`` restricted to them must be SPD).
@@ -418,10 +417,10 @@ def _matfree_buckling(K, Kg, free_dofs, num_modes: int = 6, num_matvecs: int = 3
     N = K.shape[0]
     free = onp.asarray(free_dofs)
     nf = len(free)
-    Kf = _restrict_bcoo(K, free)                     # reduced sparse sub-matrices
-    Kgf = _restrict_bcoo(Kg, free)
+    Kf_sp = _restrict_csr(K, free)                   # reduced K (SciPy, for the factor)
+    Kgf = _restrict_csr_jax(Kg, free)                # reduced K_g (JAX CSRMatrix, for @)
     nkv = int(min(num_matvecs, nf - 1))
-    kinv, backend = _make_kinv_apply(Kf)             # factorize K once (host)
+    kinv, backend = _make_kinv_apply(Kf_sp)          # factorize K once (host)
     if verbose:
         jax.debug.print("[buckling/sparse] Arnoldi shift-invert (K⁻¹={bk}) | "
                         "N={N}, free={nf}, num_matvecs={k}",
@@ -479,24 +478,24 @@ def _matfree_buckling(K, Kg, free_dofs, num_modes: int = 6, num_matvecs: int = 3
 
 
 def _outer_cotangent(M, phi, w, free):
-    """Cotangent BCOO for a matrix input from the eigenvalue sensitivity.
+    """Cotangent :class:`~feax.csr.CSRMatrix` for a matrix input from the eigenvalue
+    sensitivity.
 
     For stored entry ``(r, c)`` of ``M`` the contribution is ``Σ_i w_i φ_i[r] φ_i[c]``
-    (rows/cols mapped to the free numbering; non-free entries get 0).
+    (rows/cols mapped to the free numbering; non-free entries get 0). The result
+    shares ``M``'s structure (``indptr`` / ``indices``) so the custom_vjp cotangent
+    matches the primal CSRMatrix pytree exactly.
     """
     N = M.shape[0]
     remap = -onp.ones(N, dtype=onp.int64)
     remap[onp.asarray(free)] = onp.arange(len(free))
     remap = jnp.asarray(remap)
-    rows = M.indices[:, 0]; cols = M.indices[:, 1]
+    rows = M._row_of_slot(); cols = M.indices         # row/col of every CSR slot
     rf = remap[rows]; cf = remap[cols]
     ok = (rf >= 0) & (cf >= 0)
     rf = jnp.where(ok, rf, 0); cf = jnp.where(ok, cf, 0)
     contrib = jnp.sum(w[:, None] * phi[:, rf] * phi[:, cf], axis=0)
-    # Preserve the input BCOO's index metadata so the custom_vjp cotangent matches the
-    # primal's pytree structure exactly (custom_vjp requires identical container defs).
-    return BCOO((jnp.where(ok, contrib, 0.0), M.indices), shape=M.shape,
-                indices_sorted=M.indices_sorted, unique_indices=M.unique_indices)
+    return CSRMatrix(jnp.where(ok, contrib, 0.0), M.indptr, M.indices, M.shape)
 
 
 def create_linear_buckling_solver(free_dofs, num_modes: int = 3, solver: str = "sparse",
@@ -532,7 +531,7 @@ def create_linear_buckling_solver(free_dofs, num_modes: int = 3, solver: str = "
 
     Returns
     -------
-    bf : Callable[[BCOO, BCOO], Tuple[jax.Array, jax.Array]]
+    bf : Callable[[CSRMatrix, CSRMatrix], Tuple[jax.Array, jax.Array]]
         ``bf(K, Kg) -> (lambdas, modes)``. ``lambdas`` is the ``(num_modes,)`` ascending
         positive buckling factors, **differentiable** w.r.t. ``K`` and ``Kg``. ``modes``
         is the ``(num_modes, N)`` full-DoF mode shapes for visualization and carries
@@ -555,26 +554,26 @@ def create_linear_buckling_solver(free_dofs, num_modes: int = 3, solver: str = "
     nf = len(free)
     m = num_modes
 
-    # Sparsity patterns are fixed for a given problem, so the host callback can reuse the
-    # concrete indices captured on the first (eager) call. This lets `bf` itself be
-    # jitted: under jit `K.indices` is a tracer, but the callback only needs `K.data`
-    # (the traced input) — the constant indices come from this cache.
-    _idx_cache = {}
+    # The CSR sparsity (indptr / indices) is fixed for a given problem, so the host
+    # callback can reuse the concrete structure captured on the first (eager) call.
+    # This lets `bf` itself be jitted: under jit ``K.indptr`` / ``K.indices`` are
+    # tracers, but the callback only needs ``K.data`` (the traced input) — the
+    # constant structure comes from this cache.
+    _idx_cache = {}                                  # name -> (indptr, indices)
     _meta = {}                                       # constant K/Kg shapes (set on 1st call)
 
     def _concrete_indices(name, M):
-        idx = M.indices
-        if isinstance(idx, jax.core.Tracer):         # tracing (e.g. under jax.jit)
+        if isinstance(M.indices, jax.core.Tracer):   # tracing (e.g. under jax.jit)
             if name not in _idx_cache:
                 raise ValueError(
                     "create_linear_buckling_solver: call bf(K, Kg) once eagerly before "
-                    "jitting so the (constant) sparsity indices can be captured for the "
+                    "jitting so the (constant) CSR structure can be captured for the "
                     "host eigensolve callback.")
             return _idx_cache[name]
-        _idx_cache[name] = onp.asarray(idx)          # concrete: capture / refresh
+        _idx_cache[name] = (onp.asarray(M.indptr), onp.asarray(M.indices))
         return _idx_cache[name]
 
-    def _solve_host(K, Kg):                          # concrete BCOO -> (λ, modes, φ_free)
+    def _solve_host(K, Kg):                          # concrete CSRMatrix -> (λ, modes, φ_free)
         N = K.shape[0]
         if solver == "dense":
             lam, modes = _dense_buckling(K, Kg, free, num_modes=m)
@@ -605,9 +604,11 @@ def create_linear_buckling_solver(free_dofs, num_modes: int = 3, solver: str = "
     # (topology optimization). Reading the constant indices/shapes from the caches keeps
     # this callable identical across calls.
     def _host_eval(kd, kgd):
+        kip, kix = _idx_cache["K"]
+        gip, gix = _idx_cache["Kg"]
         return _solve_host(
-            BCOO((onp.asarray(kd), _idx_cache["K"]), shape=_meta["K"]),
-            BCOO((onp.asarray(kgd), _idx_cache["Kg"]), shape=_meta["Kg"]))
+            CSRMatrix(onp.asarray(kd), kip, kix, _meta["K"]),
+            CSRMatrix(onp.asarray(kgd), gip, gix, _meta["Kg"]))
 
     def _callback(K, Kg):
         N = K.shape[0]

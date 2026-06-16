@@ -3,6 +3,7 @@ CLAUDE.md
 docker-compose.override.yml
 jax-distributed-run.sh
 distributed.yml
+examples/benchmark/
 
 *.csv
 *.vtu

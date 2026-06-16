@@ -193,7 +193,7 @@ def test_jacobian_info(linear_elasticity_problem, traced_params):
     assert 'matrix_view' in info
 
     # nnz is the deduplicated CSR non-zero count (== problem.csr_nse and the
-    # nse of get_jacobian()'s BCOO), matching what the direct solvers report.
+    # nse of get_jacobian()'s CSRMatrix), matching what the direct solvers report.
     # (Previously this returned the raw filtered COO entry count, 6912, which
     # double-counts entries shared between elements.)
     assert info['nnz'] == problem.csr_nse

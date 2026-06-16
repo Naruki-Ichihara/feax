@@ -11,7 +11,7 @@ traction = 1e-3
 tol = 1e-5
 
 # Define mesh
-L = 600
+L = 1700
 W = 20
 H = 20
 box_size = (L, W, H)
@@ -70,11 +70,10 @@ ts = fe.TracedStructure.from_problem(problem)
 # routes the auto-detect sample assembly through the TracedStructure path, so it works
 # regardless of the create_solver/TracedStructure order and never needs the freed
 # host slot maps.
-solver_opts = fe.KrylovSolverOptions(verbose=True)
+solver_opts = fe.DirectSolverOptions(verbose=True)
 solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True,
                           traced_params=traced_params, traced_structure=ts)
 
-#@jax.jit
 def solve_forward(tp, ts):
     return solver(tp, initial, traced_structure=ts)
 sol = solve_forward(traced_params, ts)

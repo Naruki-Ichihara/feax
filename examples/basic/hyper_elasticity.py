@@ -12,7 +12,7 @@ import feax as fe
 
 # Box geometry
 Lx, Ly, Lz = 5., 1., 1.
-mesh_size   = 0.1
+mesh_size   = 0.025
 
 # Cross-section centroid of the right face (used in torsional traction)
 y_c = Ly / 2.

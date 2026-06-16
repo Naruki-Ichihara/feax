@@ -278,6 +278,8 @@ def run(
     save_every: int = 10,
     rho_init: Optional[onp.ndarray] = None,
     rho_bounds: Tuple[float, float] = (0.001, 1.0),
+    passive_solid: Optional[onp.ndarray] = None,
+    passive_void: Optional[onp.ndarray] = None,
     jit: bool = True,
 ) -> OptResult:
     """Run topology optimization with NLopt MMA.
@@ -303,6 +305,15 @@ def run(
         Initial density field.  Default: uniform at 0.5.
     rho_bounds : (float, float)
         Lower and upper bounds for design variables.
+    passive_solid : int ndarray, optional
+        Node indices held SOLID (design var pinned to 1.0, excluded from the
+        optimisation): the MMA lower=upper bound is set to 1.0 there and the
+        initial value is forced to 1.0. The pipeline still receives the full
+        density vector. Indices refer to the initial mesh; ignored after an
+        adaptive remesh changes the node count.
+    passive_void : int ndarray, optional
+        Node indices held VOID (design var pinned to the lower bound), same
+        mechanism as ``passive_solid``.
     jit : bool
         JIT-compile objective and constraints (default ``True``).
 
@@ -339,6 +350,17 @@ def run(
             default_init = min(default_init, target)
     x = (onp.full(mesh.points.shape[0], default_init)
          if rho_init is None else onp.array(rho_init))
+
+    # Passive design regions: pin their values (excluded from the optimisation).
+    _n0 = mesh.points.shape[0]
+    _pas_solid = (onp.asarray(passive_solid, dtype=int)
+                  if passive_solid is not None else onp.empty(0, dtype=int))
+    _pas_void = (onp.asarray(passive_void, dtype=int)
+                 if passive_void is not None else onp.empty(0, dtype=int))
+    if _pas_solid.size:
+        x[_pas_solid] = 1.0
+    if _pas_void.size:
+        x[_pas_void] = rho_bounds[0]
 
     # -- File output ----------------------------------------------------------
     csv_file = csv_writer = None
@@ -381,8 +403,17 @@ def run(
     def _create_mma(n_vars):
         """Build a fresh NLopt MMA instance with objective and constraints."""
         opt = nlopt.opt(nlopt.LD_MMA, n_vars)
-        opt.set_lower_bounds(rho_bounds[0])
-        opt.set_upper_bounds(rho_bounds[1])
+        lo = onp.full(n_vars, rho_bounds[0])
+        hi = onp.full(n_vars, rho_bounds[1])
+        # Pin passive design vars by collapsing their bounds (only on the
+        # original mesh; indices would be stale after an adaptive remesh).
+        if n_vars == _n0:
+            if _pas_solid.size:
+                lo[_pas_solid] = hi[_pas_solid] = 1.0
+            if _pas_void.size:
+                lo[_pas_void] = hi[_pas_void] = rho_bounds[0]
+        opt.set_lower_bounds(lo)
+        opt.set_upper_bounds(hi)
 
         def _objective(xx, grad):
             nonlocal iter_count
