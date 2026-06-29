@@ -31,6 +31,7 @@ from .solvers.newton import (
 )
 from .solvers.options import (
     AbstractSolverOptions,
+    AMGSolverOptions,
     DirectSolverOptions,
     KrylovSolverOptions,
     NewtonOptions,
@@ -247,6 +248,13 @@ def create_solver(
         if adjoint_linear_options is None:
             adjoint_linear_options = linear_options
 
+        if isinstance(linear_options, AMGSolverOptions) or isinstance(adjoint_linear_options, AMGSolverOptions):
+            raise ValueError(
+                "AMGSolverOptions is not supported with P (prolongation matrix). The "
+                "reduced operator Pᵀ J P is matrix-free (never assembled), but AMG "
+                "requires an assembled matrix. Use KrylovSolverOptions (e.g. cg) for "
+                "periodic problems."
+            )
         if not isinstance(linear_options, KrylovSolverOptions):
             raise ValueError(
                 "solver_options must be KrylovSolverOptions when P (prolongation matrix) "
@@ -273,10 +281,16 @@ def create_solver(
 
     # Resolve "auto" solvers using detect_matrix_property
     _shared_opts = adjoint_linear_options is linear_options
+    # Only Direct/Krylov options carry a resolvable "auto" solver. AMGSolverOptions
+    # is lowered (and its outer Krylov resolved) inside create_linear_solver /
+    # create_newton_solver, so create_solver must not try to resolve it here.
+    def _is_resolvable_auto(o):
+        return (isinstance(o, (DirectSolverOptions, KrylovSolverOptions))
+                and o.solver == "auto")
     _needs_auto = (
         _linear_options_missing or
-        linear_options.solver == "auto" or
-        adjoint_linear_options.solver == "auto"
+        _is_resolvable_auto(linear_options) or
+        _is_resolvable_auto(adjoint_linear_options)
     )
 
     if _needs_auto:
@@ -287,15 +301,15 @@ def create_solver(
                 "or specify the solver explicitly (e.g. KrylovSolverOptions(solver='cg'))."
             )
 
-    if not isinstance(linear_options, (DirectSolverOptions, KrylovSolverOptions)):
+    if not isinstance(linear_options, (DirectSolverOptions, KrylovSolverOptions, AMGSolverOptions)):
         raise TypeError(
-            "Unsupported solver_options type. "
-            f"Expected DirectSolverOptions or KrylovSolverOptions, got {type(linear_options).__name__}."
+            "Unsupported solver_options type. Expected DirectSolverOptions, "
+            f"KrylovSolverOptions, or AMGSolverOptions, got {type(linear_options).__name__}."
         )
-    if not isinstance(adjoint_linear_options, (DirectSolverOptions, KrylovSolverOptions)):
+    if not isinstance(adjoint_linear_options, (DirectSolverOptions, KrylovSolverOptions, AMGSolverOptions)):
         raise TypeError(
-            "Unsupported adjoint_solver_options type. "
-            f"Expected DirectSolverOptions or KrylovSolverOptions, got {type(adjoint_linear_options).__name__}."
+            "Unsupported adjoint_solver_options type. Expected DirectSolverOptions, "
+            f"KrylovSolverOptions, or AMGSolverOptions, got {type(adjoint_linear_options).__name__}."
         )
 
     # Assemble sample Jacobian (CSR-direct) and resolve "auto" only when needed.
@@ -319,7 +333,7 @@ def create_solver(
         from .solvers.options import detect_backend
         _backend = detect_backend()
 
-        if linear_options.solver == "auto":
+        if _is_resolvable_auto(linear_options):
             _category = "direct" if isinstance(linear_options, DirectSolverOptions) else "iterative"
             if isinstance(linear_options, DirectSolverOptions):
                 linear_options = resolve_direct_solver(linear_options, _mp, matrix_view=problem.matrix_view)
@@ -329,7 +343,7 @@ def create_solver(
 
         if _shared_opts:
             adjoint_linear_options = linear_options
-        elif adjoint_linear_options.solver == "auto":
+        elif _is_resolvable_auto(adjoint_linear_options):
             _category = "direct" if isinstance(adjoint_linear_options, DirectSolverOptions) else "iterative"
             if isinstance(adjoint_linear_options, DirectSolverOptions):
                 adjoint_linear_options = resolve_direct_solver(adjoint_linear_options, _mp, matrix_view=problem.matrix_view)

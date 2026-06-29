@@ -11,7 +11,7 @@ traction = 1e-3
 tol = 1e-5
 
 # Define mesh
-L = 1700
+L = 1000
 W = 20
 H = 20
 box_size = (L, W, H)

@@ -66,6 +66,10 @@ sksparse = [
 matfree = [
     "matfree",
 ]
+
+amg = [
+    "amjax",
+]
 cuda12 = [
     "jax[cuda12]",
     "nvidia-cudss-cu12",

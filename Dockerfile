@@ -27,6 +27,11 @@ RUN pip install --no-build-isolation "scikit-build-core>=0.5" nanobind nvidia-cu
 RUN pip install --no-build-isolation --no-deps \
     "git+https://github.com/Naruki-Ichihara/spineax.git"
 
+# Algebraic-multigrid solver (feax[amg]): smoothed-aggregation AMG via PyAMG,
+# run on JAX/GPU through AMJax, as a preconditioner for a matrix-free outer
+# Krylov solve. Pure-Python (pyamg pulled in by amjax) — no native AmgX build.
+RUN pip install --no-deps amjax pyamg
+
 # Optional: Node.js 20 + pydoc-markdown + Docusaurus dependencies
 # Build with: docker build --build-arg INSTALL_DOCS=true .
 RUN if [ "$INSTALL_DOCS" = "true" ]; then \

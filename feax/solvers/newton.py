@@ -40,7 +40,7 @@ from .common import (
     prewarm_direct_solvers,
 )
 from .linear import linear_solve_adjoint
-from .options import DirectSolverOptions, NewtonOptions
+from .options import AMGSolverOptions, DirectSolverOptions, NewtonOptions
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +246,124 @@ def _create_differentiable_newton_solver(
     return solver_with_bc
 
 
+def _create_amg_rebuild_newton_solver(problem, bc, amg_options, newton_options,
+                                      traced_params, symmetric_bc, traced_structure):
+    """Newton solver that rebuilds the AMG preconditioner from the current tangent.
+
+    Runs a host Python Newton loop (PyAMG hierarchy builds cannot live inside a
+    traced ``lax.while_loop``), but the per-iteration kernels — residual/Jacobian
+    assembly and the preconditioned Krylov solve — are individually ``jax.jit``-ed,
+    so each step runs as compiled programs rather than eager op-by-op dispatch. The
+    jitted solve is bound to the current preconditioner and reused across steps;
+    it is recompiled only when the hierarchy is rebuilt (rare under adaptive lag).
+    The adjoint builds its preconditioner from the converged tangent (never stale).
+    The loop itself is host-driven (not one fused jit), and not vmap-able; use
+    ``rebuild_every=0`` for a fully traced/vmap/grad solve with a fixed precond.
+    """
+    import jax.scipy.sparse.linalg as jsla
+    from .amg import build_amg_preconditioner, make_self_preconditioned_amg_solve
+
+    res_bc_param = create_res_bc_parametric(problem)
+    J_csr_param = create_J_bc_csr_parametric(problem, symmetric=symmetric_bc)
+    krylov_name = amg_options.solver if amg_options.solver != "auto" else "gmres"
+    krylov = getattr(jsla, krylov_name)
+    _adaptive = amg_options.rebuild_every is None        # adaptive lag
+    _period = None if _adaptive else max(1, int(amg_options.rebuild_every))
+    _lag_tol = amg_options.lag_tol
+    _verbose = newton_options.verbose
+
+    # JIT the per-iteration kernels so each Newton step runs as compiled programs
+    # (not eager op-by-op dispatch). The host loop only orchestrates + builds the
+    # PyAMG hierarchy (which can't be traced); the heavy work is jitted.
+    res_jit = jax.jit(res_bc_param)
+    J_jit = jax.jit(J_csr_param)
+
+    def _make_solve(M):
+        """A jitted Krylov solve bound to a fixed preconditioner ``M``.
+
+        ``J`` (CSRMatrix) and ``b`` are traced args, so the SAME compiled solve is
+        reused across Newton steps (only the values change). Rebuilt only when the
+        hierarchy ``M`` changes, which with adaptive lag is rare."""
+        @jax.jit
+        def _s(J, b):
+            kw = dict(x0=np.zeros_like(b), M=M, tol=amg_options.tol,
+                      atol=amg_options.atol, maxiter=amg_options.maxiter)
+            if krylov_name == "gmres":
+                kw["restart"] = amg_options.restart or 50
+            du, _ = krylov(lambda v: J @ v, b, **kw)
+            return du
+        return _s
+
+    def solve_fn(traced_params, initial_sol, bc_arg, ts=None):
+        sol = initial_sol
+        res = res_jit(sol, traced_params, bc_arg, ts)
+        res_norm = float(np.linalg.norm(res))
+        init_norm = res_norm
+        M = None
+        solve_jit = None
+        nbuild = 0
+        for it in range(newton_options.max_iter):
+            if res_norm < newton_options.tol:
+                break
+            if it > 0 and res_norm / (init_norm + 1e-30) < newton_options.rel_tol:
+                break
+            J = J_jit(sol, traced_params, bc_arg, ts)
+            b = -res
+            bnorm = float(np.linalg.norm(b)) + 1e-30
+
+            # Decide whether to (re)build the hierarchy this step.
+            fresh = False
+            if M is None or (not _adaptive and it % _period == 0):
+                M = build_amg_preconditioner(problem, bc, J, amg_options)
+                solve_jit = _make_solve(M); nbuild += 1; fresh = True
+
+            du = solve_jit(J, b)
+
+            # Adaptive lag: if the lagged preconditioner could not solve the
+            # current tangent to lag_tol, rebuild from J and re-solve this step.
+            if _adaptive and not fresh:
+                lin_res = float(np.linalg.norm(J @ du - b)) / bnorm
+                if lin_res > _lag_tol:
+                    M = build_amg_preconditioner(problem, bc, J, amg_options)
+                    solve_jit = _make_solve(M); nbuild += 1
+                    du = solve_jit(J, b)
+
+            # Backtracking line search (accept any residual decrease).
+            alpha, ok = 1.0, False
+            for _ in range(newton_options.line_search_max_backtracks):
+                trial = sol + alpha * du
+                tr = res_jit(trial, traced_params, bc_arg, ts)
+                trn = float(np.linalg.norm(tr))
+                if trn < res_norm:
+                    ok = True
+                    break
+                alpha *= newton_options.line_search_rho
+            if not ok:
+                break
+            sol, res, res_norm = trial, tr, trn
+            if _verbose:
+                print(f"[AMG-rebuild Newton] iter {it}: ||res||={res_norm:.3e} "
+                      f"rel={res_norm/(init_norm+1e-30):.3e} alpha={alpha:.3g} "
+                      f"builds={nbuild}", flush=True)
+        converged = (res_norm < newton_options.tol) or \
+                    (res_norm / (init_norm + 1e-30) < newton_options.rel_tol)
+        if _verbose:
+            print(f"[AMG-rebuild Newton] done: {nbuild} hierarchy build(s) over "
+                  f"{it+1} Newton iters", flush=True)
+        return sol, res_norm, converged
+
+    adjoint_solve = make_self_preconditioned_amg_solve(problem, bc, amg_options)
+    return _create_differentiable_newton_solver(
+        problem=problem, bc=bc, J_bc_func=None, res_bc_func=None,
+        solve_fn=solve_fn,
+        adjoint_solver_options=amg_options,
+        adjoint_linear_solve_fn=adjoint_solve,
+        J_bc_parametric=J_csr_param,
+        res_bc_parametric=res_bc_param,
+        symmetric_bc=symmetric_bc,
+    )
+
+
 def create_newton_solver(
     problem,
     bc,
@@ -273,6 +391,30 @@ def create_newton_solver(
         ``J_total @ v = J_bulk @ v + jvp(extra_res_bc, sol, v)``.
         Dirichlet BC rows of the extra residual are zeroed automatically.
     """
+    # AMGSolverOptions with rebuild_every != 0 (None = adaptive lag, or a fixed
+    # period k>=1) uses a dedicated host Newton loop that rebuilds the AMG
+    # hierarchy from the current tangent (needed for strong nonlinearity / large
+    # deformation, where a fixed hierarchy goes stale). rebuild_every == 0 falls
+    # through to the lowering below (fixed preconditioner, fully traced).
+    if isinstance(linear_options, AMGSolverOptions) and linear_options.rebuild_every != 0:
+        return _create_amg_rebuild_newton_solver(
+            problem, bc, linear_options,
+            newton_options if newton_options is not None else NewtonOptions(),
+            traced_params, symmetric_bc, traced_structure,
+        )
+
+    # Otherwise AMGSolverOptions lowers to a matrix-free Krylov solve
+    # preconditioned by a once-built AMG V-cycle, so every downstream path treats
+    # it as a Krylov solve.
+    from .amg import amg_to_krylov_options
+    _amg_shared = adjoint_linear_options is linear_options
+    if isinstance(linear_options, AMGSolverOptions):
+        linear_options = amg_to_krylov_options(
+            linear_options, problem, bc, traced_params, traced_structure, symmetric_bc)
+    if isinstance(adjoint_linear_options, AMGSolverOptions):
+        adjoint_linear_options = linear_options if _amg_shared else amg_to_krylov_options(
+            adjoint_linear_options, problem, bc, traced_params, traced_structure, symmetric_bc)
+
     # --- Hybrid matrix-free path ---
     # When extra_residual_fn is provided, JAX loop primitives (while_loop,
     # fori_loop) cannot be used because the hybrid Jacobian is a Python
@@ -540,6 +682,7 @@ def create_callback_newton_solver(
     # Operator representation follows the solve method: direct factorizes the
     # assembled CSR matrix; Krylov (cg/bicgstab/gmres) needs only a matvec, so
     # it uses the matrix-free operator (a residual JVP) — no assembly.
+    # (AMGSolverOptions was already lowered to a Krylov + AMG preconditioner.)
     _fwd_direct = isinstance(linear_options, DirectSolverOptions)
     _adj_direct = isinstance(adjoint_linear_options, DirectSolverOptions)
 

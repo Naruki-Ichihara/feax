@@ -291,7 +291,8 @@ def create_linear_solve_fn(
         return create_iterative_solve_fn(solver_options)
     raise TypeError(
         "Unsupported solver option type. "
-        f"Expected DirectSolverOptions or KrylovSolverOptions, got {type(solver_options).__name__}."
+        f"Expected DirectSolverOptions or KrylovSolverOptions, got {type(solver_options).__name__}. "
+        "(AMGSolverOptions is lowered to a Krylov solve before reaching here.)"
     )
 
 

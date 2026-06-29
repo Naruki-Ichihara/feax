@@ -17,32 +17,41 @@
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![JAX](https://img.shields.io/badge/JAX-0.7%2B-green.svg)](https://github.com/google/jax) 
 
-**FEAX** (Finite Element Analysis with JAX) is a fully differentiable finite element engine. Every stage — from assembly to solve — runs on XLA and composes with `jax.jit`, `jax.grad`, and `jax.vmap`, so a PDE solve becomes just another differentiable node in your JAX workflow.
+**FEAX** (Finite Element Analysis with JAX) is a **pure, statically-composed functional finite element engine**. The whole analysis — assembly, boundary conditions, linear/nonlinear solve, post-processing — is expressed as pure functions composed at trace time into a single static XLA program: no hidden state, no Python in the hot loop. That program is fully differentiable and composes with `jax.jit`, `jax.grad`, and `jax.vmap`, so a PDE solve becomes just another differentiable node in your JAX workflow.
 
 ## Why FEAX?
 
-FEAX is a fully differentiable finite element engine built on JAX. All solvers — including the GPU-accelerated direct solver via [cuDSS](https://docs.nvidia.com/cuda/cudss/) — are compatible with JAX transformations (`jit`, `grad`, `vmap`). This means you can compute exact gradients through the entire simulation pipeline without any approximation.
-
-- **JAX Transformations**: Solvers work seamlessly with `jax.jit`, `jax.grad`, and `jax.vmap`, and arbitrary compositions such as `jit(grad(...))`.
-- **GPU Direct Solver**: Native cuDSS integration for sparse direct solves on GPU, with automatic matrix property detection (General / Symmetric / SPD).
-- **End-to-End Differentiability**: Gradients flow through assembly, boundary conditions, linear/nonlinear solvers, and post-processing — enabling topology optimization, inverse problems, and physics-informed learning.
-- **Neural Network Research**: The consistent differentiability makes FEAX a natural building block for coupling neural networks with PDE solvers.
+- **Pure & statically composed**: the entire FE pipeline is built from pure functions traced into one static XLA graph — deterministic, side-effect-free, and free of per-iteration Python dispatch.
+- **JAX transformations**: every stage works with `jax.jit`, `jax.grad`, and `jax.vmap`, and arbitrary compositions such as `jit(grad(vmap(...)))`, giving exact gradients through the whole pipeline with no approximation.
+- **Solvers**: GPU sparse direct via [cuDSS](https://docs.nvidia.com/cuda/cudss/) (automatic General / Symmetric / SPD detection), matrix-free Krylov (CG / BiCGSTAB / GMRES), and algebraic multigrid (AMG) — smoothed aggregation through [AMJax](https://github.com/vboussange/AMJax) + [PyAMG](https://github.com/pyamg/pyamg) (`pip install feax[amg]`). Optional CPU host-side direct (CHOLMOD / UMFPACK) too.
+- **End-to-end differentiability**: gradients flow through assembly, boundary conditions, linear/nonlinear solvers, and post-processing — enabling topology optimization, inverse problems, and design optimization.
+- **Built-in toolkits**: a `gene` topology-optimization toolkit (MMA, density filters, Heaviside continuation, adaptive remeshing) and a `flat` computational-homogenization toolkit for periodic unit cells.
 
 
 ## Quick Example
 
-3D cantilever beam under traction — solve and compute gradients in a few lines:
+A 3D cantilever beam under a surface traction — solved, then differentiated. We
+build it up block by block.
+
+**1. Imports and a mesh.** A structured hex mesh of a 100×10×10 box, plus the
+material constants.
 
 ```python
 import feax as fe
 import jax
 import jax.numpy as np
 
-# Mesh and material
 mesh = fe.mesh.box_mesh((100, 10, 10), mesh_size=2)
 E, nu = 70e3, 0.3
+```
 
-# Define the constitutive law
+**2. Define the physics.** A `Problem` subclass declares the weak form through
+pure callables: `get_tensor_map` returns the stress as a function of the
+displacement gradient (the volume term), and `get_surface_maps` returns the
+applied traction (the surface term). `traction_mag` is a *traced parameter*
+supplied at solve time — that is what makes the load differentiable.
+
+```python
 class LinearElasticity(fe.problem.Problem):
     def get_tensor_map(self):
         def stress(u_grad, *args):
@@ -56,70 +65,76 @@ class LinearElasticity(fe.problem.Problem):
         def surface_map(u, x, traction_mag):
             return np.array([0., 0., traction_mag])
         return [surface_map]
+```
 
+**3. Instantiate the problem.** Locator functions mark the boundary faces; the
+traction is applied on the right face (`location_fns=[right]`), `vec=3` is the
+number of solution components (3D displacement).
+
+```python
 left  = lambda point: np.isclose(point[0], 0.,   atol=1e-5)
 right = lambda point: np.isclose(point[0], 100., atol=1e-5)
 
 problem = LinearElasticity(mesh, vec=3, dim=3, location_fns=[right])
+```
 
-# Boundary conditions: fix the left face
+**4. Dirichlet boundary conditions.** Clamp the left face (all components zero).
+
+```python
 bc_config = fe.DCboundary.DirichletBCConfig([
     fe.DCboundary.DirichletBCSpec(location=left, component="all", value=0.)
 ])
 bc = bc_config.create_bc(problem)
+```
 
-# Internal variables (surface traction magnitude)
+**5. Traced parameters.** The runtime inputs you differentiate/`vmap` over —
+here a uniform surface-traction magnitude. These flow in as the `traction_mag`
+argument of the surface map above.
+
+```python
 traction = fe.TracedParams.create_uniform_surface_var(problem, 1e-3)
 traced_params = fe.TracedParams(volume_vars=(), surface_vars=[(traction,)])
+```
 
-# Create solver (auto-selects cuDSS on GPU, sparse direct on CPU)
+**6. Traced structure (recommended).** Collects the mesh-sized structural arrays
+as traced leaves, so nothing mesh-sized is baked into the compiled program as a
+constant — important for compile time and memory on large meshes.
+
+```python
+ts = fe.TracedStructure.from_problem(problem)
+```
+
+**7. Build the solver.** `create_solver` composes assembly + boundary conditions
++ linear solve into one differentiable function. With `DirectSolverOptions()` it
+auto-selects cuDSS on GPU (sparse direct on CPU); swap in
+`fe.KrylovSolverOptions()` or `fe.AMGSolverOptions()` to change the linear solver
+with no other changes.
+
+```python
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(), linear=True,
-    traced_params=traced_params)
+    traced_params=traced_params, traced_structure=ts)
 initial = fe.zero_like_initial_guess(problem, bc)
+```
 
+**8. Solve, then differentiate.** The solver is an ordinary JAX function. Call it
+to get the solution; or build a scalar objective that runs the solve and hand
+*that function* to `jax.grad` — the gradient flows through the *entire* pipeline
+(assembly → BCs → linear solve).
+
+```python
 # Solve
-sol = solver(traced_params, initial)
+sol = solver(traced_params, initial, traced_structure=ts)
 
-# Differentiate through the entire solve
-grad_fn = jax.grad(lambda iv: np.sum(solver(iv, initial) ** 2))
-grads = grad_fn(traced_params)
+# Build an objective on top of the solver, then differentiate it
+def objective(params):
+    u = solver(params, initial, traced_structure=ts)
+    return np.sum(u ** 2)
+
+grads = jax.grad(objective)(traced_params)
 ```
 
-See [examples/](examples/) for more, including topology optimization.
-
-## Features
-
-- **Direct & Krylov solvers**: Sparse direct factorization (cuDSS on GPU, cholmod/umfpack/spsolve on CPU) with automatic matrix property detection, plus matrix-free Krylov solvers (CG, BiCGSTAB, GMRES) — the tangent is a residual JVP, so no Jacobian is assembled — for memory-bound problems.
-- **Custom residual terms**: Add non-standard contributions (e.g. cohesive-zone interfaces) via `extra_residual_fn`, applied matrix-free through a hybrid Newton–Krylov iteration.
-- **Multi-variable problems**: Coupled multi-physics via a high-level weak form interface (`get_weak_form()`), with automatic interpolation and integration.
-- **Multipoint constraints**: Prolongation matrix support for periodic boundary conditions and other constraint types.
-- **Topology optimization**: Built-in `gene` toolkit with MMA optimizer, density filters, Heaviside continuation, and adaptive remeshing.
-- **Computational homogenization**: `flat` toolkit for periodic unit cell analysis with graph-based lattice structure definition.
-
-## Installation
-
-```bash
-pip install feax[cuda13]
-pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
-```
-
-### Optional: scikit-sparse (CPU host-side direct solvers)
-
-The `cholmod` / `umfpack` direct solvers require [scikit-sparse](https://github.com/scikit-sparse/scikit-sparse), which depends on SuiteSparse ≥ 7.4.0. Without it, `DirectSolverOptions()` falls back to `spsolve` on CPU (or `cudss` on GPU).
-
-```bash
-# Ubuntu 24.04+ (system SuiteSparse is recent enough)
-apt-get install -y libsuitesparse-dev
-pip install feax[sksparse]
-```
-
-For Ubuntu 22.04 / Google Colab, the system `libsuitesparse-dev` is too old (5.10.1). Use the bundled helper, which also installs gmsh, NLopt, and other system dependencies that match the Dockerfile:
-
-```bash
-bash scripts/colab_setup.sh
-pip install feax[sksparse]
-```
+See [examples/](examples/) for more, including topology optimization. Installation and solver setup are covered in the [install guide](https://naruki-ichihara.github.io/feax/getting-started/installation).
 
 ## License
 
@@ -131,6 +146,7 @@ FEAX builds upon the excellent work of:
 - [JAX](https://github.com/google/jax) for automatic differentiation and compilation
 - [JAX-FEM](https://github.com/deepmodeling/jax-fem) for inspiration and reference implementations
 - [Spineax](https://github.com/johnviljoen/spineax) for cuDSS solver implementation
+- [AMJax](https://github.com/vboussange/AMJax) and [PyAMG](https://github.com/pyamg/pyamg) for the algebraic multigrid (AMG) solver
 
 ---
 

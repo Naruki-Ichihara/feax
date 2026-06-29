@@ -101,11 +101,18 @@ def create_helmholtz_filter(mesh, radius, P=None, solver_options=None):
     bc_config = fe.DCboundary.DirichletBCConfig([])
     bc = bc_config.create_bc(problem)
 
+    # Build a TracedStructure for the filter problem so the internal solve runs
+    # on the recommended (non-deprecated) assembly path instead of emitting the
+    # no-TracedStructure FutureWarning. The reduced/periodic (P) solver does not
+    # accept a traced_structure, so only use one on the standard path.
+    ts = fe.TracedStructure.from_problem(problem) if P is None else None
+
     # Create solver (done once)
     solver = fe.solver.create_solver(
         problem, bc, solver_options,
         linear=True,  # Linear problem
-        P=P  # Optional periodic boundary conditions
+        P=P,  # Optional periodic boundary conditions
+        traced_structure=ts,
     )
 
     # Pre-compute constants
@@ -130,8 +137,11 @@ def create_helmholtz_filter(mesh, radius, P=None, solver_options=None):
             surface_vars=()
         )
 
-        # Solve
-        rho_filtered = solver(traced_params, initial_guess)
+        # Solve (route through the TracedStructure path when available)
+        if ts is not None:
+            rho_filtered = solver(traced_params, initial_guess, traced_structure=ts)
+        else:
+            rho_filtered = solver(traced_params, initial_guess)
         return rho_filtered
 
     return filter_fn

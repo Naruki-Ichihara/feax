@@ -141,6 +141,7 @@ from .solvers.common import (
     create_linear_solve_fn,
     create_x0,
 )
+from .solvers.amg import build_amg_preconditioner, rigid_body_modes
 from .solvers.eigen import (
     BucklingConvergenceError,
     create_linear_buckling_solver,
@@ -159,6 +160,7 @@ from .solvers.time_solver import (
 )
 from .solvers.options import (
     AbstractSolverOptions,
+    AMGSolverOptions,
     Backend,
     CUDSSMatrixType,
     CUDSSMatrixView,

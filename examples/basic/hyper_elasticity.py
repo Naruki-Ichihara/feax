@@ -2,6 +2,11 @@
 Hyperelastic solver example using energy density formulation.
 Demonstrates solving nonlinear hyperelasticity problems with Neo-Hookean material model.
 A torsional surface traction is applied to the right face (load-controlled twist).
+
+This variant solves the Newton tangent systems with algebraic multigrid (AMG):
+an outer GMRES preconditioned by a smoothed-aggregation hierarchy (PyAMG -> AMJax)
+with the rigid-body near-null-space auto-generated from the mesh. See
+``AMGSolverOptions`` below. Requires the optional ``feax[amg]`` extra.
 """
 
 import os
@@ -12,7 +17,7 @@ import feax as fe
 
 # Box geometry
 Lx, Ly, Lz = 5., 1., 1.
-mesh_size   = 0.025
+mesh_size   = 0.05
 
 # Cross-section centroid of the right face (used in torsional traction)
 y_c = Ly / 2.
@@ -72,7 +77,20 @@ traced_params = fe.traced_params.TracedParams(
 bc = bc_config.create_bc(feax_problem)
 
 ts = fe.traced_structure.TracedStructure.from_problem(feax_problem)
-solver_options = fe.solver.DirectSolverOptions(verbose=True)
+
+# Algebraic multigrid solver (smoothed aggregation via PyAMG -> AMJax) used as a
+# preconditioner for an outer GMRES. For this 3D elasticity (vec == dim) the
+# rigid-body near-null-space is generated automatically from the mesh node
+# coordinates -- this is what makes AMG effective on (hyper)elasticity. With
+# rebuild_every=None (default) the hierarchy is reused across Newton steps and
+# rebuilt only when the large torsional deformation makes it stale (adaptive
+# lag), so the AMG setup cost is amortized over the nonlinear iteration.
+# (Requires the optional `feax[amg]` extra: amjax + pyamg.)
+solver_options = fe.solver.AMGSolverOptions(
+    near_nullspace="rigid_body",   # rigid body modes from mesh coords (auto for vec==dim)
+    solver="gmres",                # outer Krylov (robust for the changing tangent)
+    rebuild_every=None,            # adaptive lag: rebuild only when the precond goes stale
+)
 newton_options = fe.NewtonOptions(verbose=True)
 solver = fe.solver.create_solver(
     feax_problem,

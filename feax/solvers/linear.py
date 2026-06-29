@@ -37,6 +37,7 @@ from .common import (
 )
 from .options import (
     AbstractSolverOptions,
+    AMGSolverOptions,
     DirectSolverOptions,
     KrylovSolverOptions,
     MatrixProperty,
@@ -253,16 +254,26 @@ def create_linear_solver(
             "SolverOptions has been removed. "
             "Use DirectSolverOptions or KrylovSolverOptions."
         )
-    if not isinstance(solver_options, (DirectSolverOptions, KrylovSolverOptions)):
+    if not isinstance(solver_options, (DirectSolverOptions, KrylovSolverOptions, AMGSolverOptions)):
         raise TypeError(
             "Unsupported solver_options type. "
-            f"Expected DirectSolverOptions or KrylovSolverOptions, got {type(solver_options).__name__}."
+            f"Expected DirectSolverOptions, KrylovSolverOptions, or AMGSolverOptions, got {type(solver_options).__name__}."
         )
-    if not isinstance(adjoint_solver_options, (DirectSolverOptions, KrylovSolverOptions)):
+    if not isinstance(adjoint_solver_options, (DirectSolverOptions, KrylovSolverOptions, AMGSolverOptions)):
         raise TypeError(
             "Unsupported adjoint_solver_options type. "
-            f"Expected DirectSolverOptions or KrylovSolverOptions, got {type(adjoint_solver_options).__name__}."
+            f"Expected DirectSolverOptions, KrylovSolverOptions, or AMGSolverOptions, got {type(adjoint_solver_options).__name__}."
         )
+
+    # AMGSolverOptions lowers to a matrix-free Krylov solve preconditioned by a
+    # once-built AMG V-cycle (rigid-body near-null-space for vector problems).
+    from .amg import amg_to_krylov_options
+    if isinstance(solver_options, AMGSolverOptions):
+        solver_options = amg_to_krylov_options(
+            solver_options, problem, bc, traced_params, traced_structure, symmetric_bc)
+    if isinstance(adjoint_solver_options, AMGSolverOptions):
+        adjoint_solver_options = solver_options if shared_opts else amg_to_krylov_options(
+            adjoint_solver_options, problem, bc, traced_params, traced_structure, symmetric_bc)
 
     if isinstance(solver_options, KrylovSolverOptions):
         solver_options = resolve_iterative_solver(solver_options, default_matrix_property)
@@ -290,6 +301,8 @@ def create_linear_solver(
     # Operator representation follows the solve method: direct factorizes the
     # assembled CSR matrix; Krylov (cg/bicgstab/gmres) needs only a matvec, so
     # it uses the matrix-free operator (a residual JVP) — no assembly at all.
+    # (AMGSolverOptions has already been lowered to a Krylov + AMG preconditioner
+    # above, so it follows the matrix-free path here.)
     _fwd_direct = isinstance(solver_options, DirectSolverOptions)
     _adj_direct = isinstance(adjoint_solver_options, DirectSolverOptions)
 
