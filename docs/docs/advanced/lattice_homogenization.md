@@ -188,6 +188,12 @@ For 3D, the solver:
 3. Computes volume-averaged stress: $\langle \boldsymbol{\sigma} \rangle$
 4. Assembles stiffness matrix: $\mathbf{C}_{\text{hom}}$ (6×6 in Voigt notation)
 
+The 6 strain cases are solved independently via `jax.lax.map` (not `vmap`): the cases converge at different iteration counts, and a vmapped Krylov loop would keep iterating every case until all converge, numerically corrupting the already-converged cases on the singular (rigid-translation) reduced system.
+
+:::caution Leave the DirichletBC empty — do NOT pin a node
+The correct configuration is an **empty** `DirichletBCConfig([])` with full periodicity. The reduced system is singular (rigid translations) but consistent, and the Krylov solve handles it. Pinning a node to suppress the translations is wrong: the affine initial guess $\mathbf{u}_\text{macro}$ does not satisfy the pin, which corrupts the fluctuation field around the pinned node — invisible for a homogeneous cell, but it gives a wrong $\mathbf{C}_\text{hom}$ for a heterogeneous one. In addition, a Dirichlet BC on part of a periodic equivalence class now raises a `ValueError` at solver-build time.
+:::
+
 **Key properties:**
 - Fully differentiable w.r.t. `traced_params` (topology optimization)
 - Uses affine displacement method for efficiency

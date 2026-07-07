@@ -203,9 +203,9 @@ np.ndarray
 
 ```python
 @staticmethod
-def gather_internal_vars(
-        problem: 'Problem', traced_params: Tuple[np.ndarray,
-                                                 ...]) -> List[np.ndarray]
+def gather_internal_vars(problem: 'Problem',
+                         traced_params: Tuple[np.ndarray, ...],
+                         ts=None) -> List[np.ndarray]
 ```
 
 Gather global internal variables to per-cell format.
@@ -406,9 +406,11 @@ as get_surface_maps() only supports single-variable problems.
 #### split\_and\_compute\_cell
 
 ```python
-def split_and_compute_cell(
-        problem: 'Problem', cells_sol_flat: np.ndarray, jac_flag: bool,
-        internal_vars_volume: Tuple[np.ndarray, ...]) -> Any
+def split_and_compute_cell(problem: 'Problem',
+                           cells_sol_flat: np.ndarray,
+                           jac_flag: bool,
+                           internal_vars_volume: Tuple[np.ndarray, ...],
+                           ts=None) -> Any
 ```
 
 Compute volume integrals for residual or Jacobian assembly.
@@ -440,9 +442,11 @@ issues with large meshes. This is particularly important for 3D problems.
 #### compute\_face
 
 ```python
-def compute_face(problem: 'Problem', cells_sol_flat: np.ndarray,
+def compute_face(problem: 'Problem',
+                 cells_sol_flat: np.ndarray,
                  jac_flag: bool,
-                 internal_vars_surfaces: List[Tuple[np.ndarray, ...]]) -> Any
+                 internal_vars_surfaces: List[Tuple[np.ndarray, ...]],
+                 ts=None) -> Any
 ```
 
 Compute surface integrals for residual or Jacobian assembly.
@@ -472,9 +476,10 @@ handled through separate surface kernels and internal variables.
 #### compute\_residual\_vars\_helper
 
 ```python
-def compute_residual_vars_helper(
-        problem: 'Problem', weak_form_flat: np.ndarray,
-        weak_form_face_flat: List[np.ndarray]) -> List[np.ndarray]
+def compute_residual_vars_helper(problem: 'Problem',
+                                 weak_form_flat: np.ndarray,
+                                 weak_form_face_flat: List[np.ndarray],
+                                 ts=None) -> List[np.ndarray]
 ```
 
 Assemble residual from element and face contributions.
@@ -506,41 +511,46 @@ atomics), matching the CSR-direct Jacobian assembly.
 #### get\_jacobian
 
 ```python
-def get_jacobian(problem: 'Problem', sol_list: List[np.ndarray],
-                 traced_params: TracedParams) -> sparse.BCOO
+def get_jacobian(problem: 'Problem',
+                 sol_list: List[np.ndarray],
+                 traced_params: TracedParams,
+                 ts=None) -> 'CSRMatrix'
 ```
 
-Assemble the global tangent (Jacobian) as a sparse ``BCOO`` matrix.
+Assemble the global tangent (Jacobian) as a :class:`feax.csr.CSRMatrix`.
 
 Companion to :func:`get_res` (which assembles the global residual): this
 assembles the element tangents into the global Jacobian **without applying
-Dirichlet boundary conditions**, returned as a JAX ``BCOO``. It is the entry
-point for callers that need the raw assembled operator — e.g. building the
-material/geometric stiffness pair ``(K, K_g)`` for the linear-buckling
-eigensolver (:func:`feax.solvers.eigen.create_linear_buckling_solver`).
+Dirichlet boundary conditions**, returned as the deduplicated CSR triple
+``(data, indptr, indices)`` wrapped in a :class:`~feax.csr.CSRMatrix`. It is
+the entry point for callers that need the raw assembled operator — e.g.
+building the material/geometric stiffness pair ``(K, K_g)`` for the
+linear-buckling eigensolver
+(:func:`feax.solvers.eigen.create_linear_buckling_solver`).
+
+The assembly is already CSR-native (:func:`_get_J_csr`); returning the CSR
+matrix directly avoids the redundant BCOO round-trip (``stack`` to COO-style
+indices here, re-sort back to CSR in the consumer). ``CSRMatrix`` supports
+``@`` (mat-vec), ``.todense()``, ``.T``, etc.
 
 For the solver stack, prefer the CSR-direct, BC-applied assembly
-(:func:`create_J_bc_csr_function`); for cheap statistics without
-materializing the matrix, use :func:`get_jacobian_info`.
+(:func:`get_res`9); for cheap statistics without
+materializing the matrix, use :func:``0.
 
 Parameters
 ----------
 - **problem** (*Problem*): The finite element problem containing mesh and physics definitions.
 - **sol_list** (*list of np.ndarray*): Solution arrays for each variable.
 - **traced_params** (*TracedParams*): Container with material properties and loading parameters.
+- **ts** (*TracedStructure, optional*): When given, assembles on the TracedStructure path (avoids the no-TracedStructure host slot maps / deprecation warning). Omit it on a problem whose host scratch is still alive (``TracedStructure.from_problem(problem, free_scratch=False)``).
 
 
 Returns
 -------
-sparse.BCOO
-    The assembled global Jacobian with no boundary conditions applied,
-    shape ``(num_total_dofs_all_vars, num_total_dofs_all_vars)``.
-
-Notes
------
-With a JIT-compiled cuDSS solver, materializing this BCOO outside the JIT
-boundary can contend with the backend&#x27;s GPU memory; assemble inside the
-traced region (or use the CSR-direct path) in that setting.
+feax.csr.CSRMatrix
+    The assembled global Jacobian (no BCs applied), shape
+    ``(num_total_dofs_all_vars, num_total_dofs_all_vars)``, with ``nse``
+    deduplicated nonzeros.
 
 #### get\_jacobian\_info
 
@@ -586,8 +596,10 @@ with JIT-compiled solvers using cuDSS backend.
 #### get\_res
 
 ```python
-def get_res(problem: 'Problem', sol_list: List[np.ndarray],
-            traced_params: TracedParams) -> List[np.ndarray]
+def get_res(problem: 'Problem',
+            sol_list: List[np.ndarray],
+            traced_params: TracedParams,
+            ts=None) -> List[np.ndarray]
 ```
 
 Compute residual vector with separated internal variables.

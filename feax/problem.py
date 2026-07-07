@@ -240,7 +240,10 @@ class Problem:
         _, self.unflatten_fn_dof = jax.flatten_util.ravel_pytree(dumb_array_dof)
 
         dumb_sol_list = [np.zeros((fe.num_total_nodes, fe.vec)) for fe in self.fes]
-        dumb_dofs, self.unflatten_fn_sol_list = jax.flatten_util.ravel_pytree(dumb_sol_list)
+        dumb_dofs, _unflatten_sol = jax.flatten_util.ravel_pytree(dumb_sol_list)
+        # Accept a feax.Solution (the default solver return) transparently.
+        self.unflatten_fn_sol_list = (
+            lambda flat: _unflatten_sol(getattr(flat, 'dofs', flat)))
         self.num_total_dofs_all_vars = len(dumb_dofs)
 
         # Precompute the COO-value -> CSR-slot mapping for fast, sort-free,

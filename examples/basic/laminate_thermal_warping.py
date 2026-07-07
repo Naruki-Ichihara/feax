@@ -223,7 +223,8 @@ class ThermalRampPipeline(ImplicitPipeline):
         if self.pseudo_time:
             state = jax.lax.stop_gradient(state)
         tp = self.update_vars(state, t, dt)
-        return self.solver(tp, state, traced_structure=self.ts)
+        # Keep the carried state a flat vector (the solver returns fe.Solution).
+        return self.solver(tp, state, traced_structure=self.ts).flat
 
     def initial_state(self):
         return fe.zero_like_initial_guess(self.problem, self.bc)

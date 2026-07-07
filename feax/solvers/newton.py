@@ -77,7 +77,9 @@ def _create_differentiable_newton_solver(
     bulk_J_bc_func=None,
     J_bc_parametric=None,
     res_bc_parametric=None,
-    symmetric_bc=True,
+    symmetric_elimination=True,
+    J_adjoint_parametric=None,
+    extra_rows_fn=None,
 ):
     """Create custom-VJP Newton solver wrapper around a prepared solve_fn.
 
@@ -93,11 +95,20 @@ def _create_differentiable_newton_solver(
         Parametric Jacobian ``(sol, tp, bc) -> BCOO`` for vmap over bc_vals.
     res_bc_parametric : callable, optional
         Parametric residual ``(sol, tp, bc) -> array`` for vmap over bc_vals.
-    symmetric_bc : bool, default True
+    symmetric_elimination : bool, default True
         Whether symmetric BC elimination is used in the forward solve.
         When True, a correction is applied in the backward pass to account
         for the zeroed BC coupling columns (K_fb) in the Jacobian, which
         are needed for correct gradients w.r.t. bc_vals.
+    J_adjoint_parametric : callable, optional
+        Explicit adjoint operator ``(sol, tp, bc, ts) -> CSRMatrix`` (already
+        transposed). Takes precedence over the hybrid-matvec and
+        ``J.transpose()`` adjoints — used by the assembled-extra path, whose
+        merged pattern has its own precomputed transpose maps.
+    extra_rows_fn : callable, optional
+        Extra residual with BC ROWS zeroed but BC columns kept. When given,
+        its VJP contribution is added to the symmetric-elimination adjoint BC
+        correction (the extra term's K_fb coupling).
     """
     _has_parametric = J_bc_parametric is not None and res_bc_parametric is not None
     # When symmetric BC elimination is used and we need bc_vals gradients,
@@ -105,7 +116,7 @@ def _create_differentiable_newton_solver(
     # zeros out K_fb columns, but the true residual Jacobian keeps them.
     # The correction is: λ_bc = v_bc - K_fb^T @ λ_free, computed via
     # the bulk (un-eliminated) Jacobian.
-    _needs_adjoint_bc_correction = symmetric_bc and _has_parametric
+    _needs_adjoint_bc_correction = symmetric_elimination and _has_parametric
 
     @jax.custom_vjp
     def differentiable_solve(traced_params, initial_guess, bc_arg, ts):
@@ -128,7 +139,19 @@ def _create_differentiable_newton_solver(
 
         v_vec = jax.flatten_util.ravel_pytree(v)[0]
 
-        if extra_res_bc_fn is not None and bulk_J_bc_func is not None:
+        if J_adjoint_parametric is not None:
+            # Assembled adjoint on the merged (bulk ∪ extra) pattern, already
+            # transposed via its precomputed maps.
+            J_adjoint = J_adjoint_parametric(sol, traced_params, effective_bc, ts)
+            adjoint_vec = linear_solve_adjoint(
+                J_adjoint,
+                v_vec,
+                adjoint_solver_options,
+                problem.matrix_view,
+                effective_bc,
+                linear_solve_fn=adjoint_linear_solve_fn,
+            )
+        elif extra_res_bc_fn is not None and bulk_J_bc_func is not None:
             # Hybrid adjoint: J_adjoint_matvec(v) = J_bulk^T @ v + VJP(extra_res_bc, v)
             J_bulk = bulk_J_bc_func(sol, traced_params, effective_bc, ts)
             _, vjp_extra = jax.vjp(extra_res_bc_fn, sol)
@@ -184,6 +207,10 @@ def _create_differentiable_newton_solver(
             lambda_free_padded = adjoint_vec.at[effective_bc.bc_rows].set(0.0)
             # K_fb^T @ λ_free = (K_bulk^T @ λ_free_padded)[bc_rows]
             correction = K_bulk.rmatvec(lambda_free_padded)[effective_bc.bc_rows]
+            if extra_rows_fn is not None:
+                # Extra term's K_fb coupling (rows zeroed, BC columns kept).
+                _, _vjp_x = jax.vjp(extra_rows_fn, sol)
+                correction = correction + _vjp_x(lambda_free_padded)[0][effective_bc.bc_rows]
             adjoint_vec = adjoint_vec.at[effective_bc.bc_rows].set(
                 v_vec[effective_bc.bc_rows] - correction
             )
@@ -247,7 +274,7 @@ def _create_differentiable_newton_solver(
 
 
 def _create_amg_rebuild_newton_solver(problem, bc, amg_options, newton_options,
-                                      traced_params, symmetric_bc, traced_structure):
+                                      traced_params, symmetric_elimination, traced_structure):
     """Newton solver that rebuilds the AMG preconditioner from the current tangent.
 
     Runs a host Python Newton loop (PyAMG hierarchy builds cannot live inside a
@@ -264,7 +291,7 @@ def _create_amg_rebuild_newton_solver(problem, bc, amg_options, newton_options,
     from .amg import build_amg_preconditioner, make_self_preconditioned_amg_solve
 
     res_bc_param = create_res_bc_parametric(problem)
-    J_csr_param = create_J_bc_csr_parametric(problem, symmetric=symmetric_bc)
+    J_csr_param = create_J_bc_csr_parametric(problem, symmetric=symmetric_elimination)
     krylov_name = amg_options.solver if amg_options.solver != "auto" else "gmres"
     krylov = getattr(jsla, krylov_name)
     _adaptive = amg_options.rebuild_every is None        # adaptive lag
@@ -360,7 +387,163 @@ def _create_amg_rebuild_newton_solver(problem, bc, amg_options, newton_options,
         adjoint_linear_solve_fn=adjoint_solve,
         J_bc_parametric=J_csr_param,
         res_bc_parametric=res_bc_param,
-        symmetric_bc=symmetric_bc,
+        symmetric_elimination=symmetric_elimination,
+    )
+
+
+def _create_assembled_extra_newton_solver(
+    problem, bc, linear_options, adjoint_linear_options, newton_options,
+    extra_residual_fn, symmetric_elimination, traced_structure,
+):
+    """Newton solver with an ASSEMBLED extra residual Jacobian (direct solvers).
+
+    The extra term's Jacobian sparsity is detected once via ASD
+    (:func:`feax.asd.sparse_jacobian_fn` — asdex jaxpr analysis + coloring), its
+    pattern is merged with the bulk CSR pattern, and every Newton step assembles
+    ``J_total = J_bulk + J_extra`` on the merged pattern — so direct solvers
+    (cuDSS / spsolve / ...) factorize the EXACT tangent, unlike the hybrid
+    matrix-free path which is restricted to Krylov.
+
+    The Newton loop is host-driven (like the hybrid path) with jitted
+    per-iteration kernels; the adjoint solves the assembled transposed merged
+    operator (precomputed transpose maps).
+    """
+    from ..asd import merge_csr_patterns, sparse_jacobian_fn
+    from ..utils import zero_like_initial_guess
+    import numpy as onp
+    import scipy.sparse as sp
+
+    if problem.matrix_view is not MatrixView.FULL:
+        raise ValueError(
+            "extra_residual_fn with DirectSolverOptions requires "
+            "MatrixView.FULL (the merged pattern is general nonsymmetric).")
+
+    bc_rows = bc.bc_rows
+
+    def extra_res_bc(sol):
+        """Extra residual with BC rows zeroed (and, under symmetric
+        elimination, BC columns removed from the tangent via stop_gradient —
+        the value is unchanged)."""
+        if symmetric_elimination:
+            sol = sol.at[bc_rows].set(jax.lax.stop_gradient(sol[bc_rows]))
+        return extra_residual_fn(sol).at[bc_rows].set(0.0)
+
+    def extra_res_rows(sol):
+        """Rows zeroed, BC columns kept — the extra K_fb for the bc-grad
+        correction."""
+        return extra_residual_fn(sol).at[bc_rows].set(0.0)
+
+    # ASD: detect + color the extra Jacobian once, on a sample solution.
+    sol0 = zero_like_initial_guess(problem, bc)
+    jac_extra_fn, extra_pat = sparse_jacobian_fn(extra_res_bc, sol0)
+
+    # Merged pattern = bulk connectivity ∪ extra (+ slot & transpose maps).
+    n = problem.num_total_dofs_all_vars
+    bulk_pat = sp.csr_matrix(
+        (onp.ones(onp.asarray(problem.csr_indices).size, bool),
+         onp.asarray(problem.csr_indices), onp.asarray(problem.csr_indptr)),
+        shape=(n, n))
+    m = merge_csr_patterns(bulk_pat, extra_pat)
+    _extra_nnz = int(extra_pat.nnz)
+
+    J_bc_param = create_J_bc_csr_parametric(problem, symmetric=symmetric_elimination)
+    res_bc_param = create_res_bc_parametric(problem)
+
+    def J_merged_param(sol, tp, bc_arg, ts):
+        Jb = J_bc_param(sol, tp, bc_arg, ts)
+        data = np.zeros(m["nnz"], Jb.data.dtype).at[m["slots_a"]].add(Jb.data)
+        if _extra_nnz:
+            data = data.at[m["slots_b"]].add(jac_extra_fn(sol).data)
+        return CSRMatrix(data, m["indptr"], m["indices"], m["shape"])
+
+    def J_merged_T_param(sol, tp, bc_arg, ts):
+        return transpose_with_maps(
+            J_merged_param(sol, tp, bc_arg, ts),
+            m["T_perm"], m["T_indptr"], m["T_indices"])
+
+    if newton_options is None:
+        newton_options = NewtonOptions()
+
+    direct_solve_fn = create_linear_solve_fn(linear_options, cache_namespace="forward")
+    _adj_direct = isinstance(adjoint_linear_options, DirectSolverOptions)
+    adjoint_linear_solve_fn = create_linear_solve_fn(
+        adjoint_linear_options, cache_namespace="adjoint")
+
+    res_total_jit = jax.jit(
+        lambda sol, tp, bc_arg, ts: res_bc_param(sol, tp, bc_arg, ts) + extra_res_bc(sol))
+    J_jit = jax.jit(J_merged_param)
+
+    _verbose = linear_options.verbose
+
+    def assembled_solve_fn(traced_params, initial_sol, bc_arg, ts=None):
+        """Host Newton loop; each step factorizes the exact merged tangent."""
+        sol = initial_sol
+        res_total = res_total_jit(sol, traced_params, bc_arg, ts)
+        res_norm = float(np.linalg.norm(res_total))
+        initial_res_norm = res_norm
+
+        if _verbose:
+            _ensure_verbose_logging()
+            logger.info(f"[assembled-extra Newton] initial res_norm = {initial_res_norm:.6e}")
+
+        for it in range(newton_options.max_iter):
+            if res_norm < newton_options.tol:
+                break
+            if it > 0 and res_norm / (initial_res_norm + 1e-30) < newton_options.rel_tol:
+                break
+
+            J = J_jit(sol, traced_params, bc_arg, ts)
+            du = direct_solve_fn(J, -res_total, None)
+
+            # Backtracking line search (accept any residual decrease).
+            alpha, _ls_success = 1.0, False
+            for _bt in range(newton_options.line_search_max_backtracks):
+                trial_sol = sol + alpha * du
+                trial_res = res_total_jit(trial_sol, traced_params, bc_arg, ts)
+                trial_norm = float(np.linalg.norm(trial_res))
+                if trial_norm < res_norm:
+                    _ls_success = True
+                    break
+                alpha *= newton_options.line_search_rho
+
+            if not _ls_success:
+                if _verbose:
+                    logger.info(f"[assembled-extra Newton] iter {it:3d}: "
+                                "line search failed, stopping")
+                break
+
+            sol, res_total, res_norm = trial_sol, trial_res, trial_norm
+            if _verbose:
+                logger.info(
+                    f"[assembled-extra Newton] iter {it:3d}: "
+                    f"res_norm = {res_norm:.6e}, "
+                    f"rel = {res_norm / (initial_res_norm + 1e-30):.6e}, alpha = {alpha:.4f}")
+
+        rel = res_norm / (initial_res_norm + 1e-30)
+        converged = (res_norm < newton_options.tol) or (rel < newton_options.rel_tol)
+        if not converged:
+            logger.warning(
+                f"[assembled-extra Newton] did NOT converge after {it + 1} iterations "
+                f"(res_norm = {res_norm:.6e}, rel = {rel:.6e})")
+        return sol, res_norm, converged
+
+    return _create_differentiable_newton_solver(
+        problem=problem,
+        bc=bc,
+        J_bc_func=None,
+        res_bc_func=None,
+        solve_fn=assembled_solve_fn,
+        adjoint_solver_options=adjoint_linear_options,
+        adjoint_linear_solve_fn=adjoint_linear_solve_fn,
+        # Direct adjoint: assembled transposed merged operator; Krylov adjoint:
+        # hybrid matvec (J_bulkᵀ + extra VJP).
+        J_adjoint_parametric=J_merged_T_param if _adj_direct else None,
+        extra_res_bc_fn=None if _adj_direct else extra_res_bc,
+        bulk_J_bc_func=None if _adj_direct else J_bc_param,
+        J_bc_parametric=J_bc_param,
+        res_bc_parametric=res_bc_param,
+        symmetric_elimination=symmetric_elimination,
+        extra_rows_fn=extra_res_rows,
     )
 
 
@@ -372,7 +555,7 @@ def create_newton_solver(
     newton_options: Optional[NewtonOptions] = None,
     traced_params=None,
     extra_residual_fn=None,
-    symmetric_bc: bool = True,
+    symmetric_elimination: bool = True,
     traced_structure=None,
 ):
     """Create a differentiable nonlinear Newton solver.
@@ -385,11 +568,17 @@ def create_newton_solver(
     ----------
     extra_residual_fn : callable, optional
         Additional residual: ``extra_residual_fn(sol_flat) -> residual_flat``.
-        When provided, uses hybrid matrix-free Newton-Krylov: feax assembles
-        the bulk Jacobian (sparse), and the extra contribution's JVP is
-        computed via ``jax.jvp``.  The combined matvec is:
-        ``J_total @ v = J_bulk @ v + jvp(extra_res_bc, sol, v)``.
-        Dirichlet BC rows of the extra residual are zeroed automatically.
+        Dirichlet BC rows of the extra residual are zeroed automatically. Two
+        paths, chosen by ``linear_options``:
+
+        - ``KrylovSolverOptions``: hybrid matrix-free Newton-Krylov — feax
+          assembles the bulk Jacobian (sparse) and the extra contribution's
+          JVP is computed via ``jax.jvp``:
+          ``J_total @ v = J_bulk @ v + jvp(extra_res_bc, sol, v)``.
+        - ``DirectSolverOptions``: assembled path — the extra Jacobian's
+          sparsity is detected once via ASD (asdex) and assembled on the
+          merged (bulk ∪ extra) CSR pattern, so a direct solver factorizes
+          the exact tangent.
     """
     # AMGSolverOptions with rebuild_every != 0 (None = adaptive lag, or a fixed
     # period k>=1) uses a dedicated host Newton loop that rebuilds the AMG
@@ -400,7 +589,7 @@ def create_newton_solver(
         return _create_amg_rebuild_newton_solver(
             problem, bc, linear_options,
             newton_options if newton_options is not None else NewtonOptions(),
-            traced_params, symmetric_bc, traced_structure,
+            traced_params, symmetric_elimination, traced_structure,
         )
 
     # Otherwise AMGSolverOptions lowers to a matrix-free Krylov solve
@@ -410,20 +599,42 @@ def create_newton_solver(
     _amg_shared = adjoint_linear_options is linear_options
     if isinstance(linear_options, AMGSolverOptions):
         linear_options = amg_to_krylov_options(
-            linear_options, problem, bc, traced_params, traced_structure, symmetric_bc)
+            linear_options, problem, bc, traced_params, traced_structure, symmetric_elimination)
     if isinstance(adjoint_linear_options, AMGSolverOptions):
         adjoint_linear_options = linear_options if _amg_shared else amg_to_krylov_options(
-            adjoint_linear_options, problem, bc, traced_params, traced_structure, symmetric_bc)
+            adjoint_linear_options, problem, bc, traced_params, traced_structure, symmetric_elimination)
 
     # --- Hybrid matrix-free path ---
     # When extra_residual_fn is provided, JAX loop primitives (while_loop,
     # fori_loop) cannot be used because the hybrid Jacobian is a Python
     # callable (matvec), not a JAX array.  Use a Python Newton loop instead.
     if extra_residual_fn is not None:
+        # Assembled path: detect + color the extra Jacobian (ASD), merge with
+        # the bulk CSR pattern, factorize the exact tangent with a direct solver.
+        if isinstance(linear_options, DirectSolverOptions):
+            return _create_assembled_extra_newton_solver(
+                problem, bc, linear_options, adjoint_linear_options,
+                newton_options, extra_residual_fn, symmetric_elimination,
+                traced_structure)
+
         bc_rows = bc.bc_rows
 
         def extra_res_bc(sol):
-            """Extra residual with Dirichlet BC rows zeroed."""
+            """Extra residual with Dirichlet BC rows zeroed.
+
+            Under symmetric elimination the BC COLUMNS are also removed from
+            the tangent (stop_gradient; the value is unchanged): an extra term
+            coupling to a BC DOF would otherwise make the hybrid operator
+            nonsymmetric — silently breaking the CG forward/adjoint solves.
+            The dropped K_fb coupling re-enters through the adjoint BC
+            correction (``extra_rows_fn``), exactly like the bulk term.
+            """
+            if symmetric_elimination:
+                sol = sol.at[bc_rows].set(jax.lax.stop_gradient(sol[bc_rows]))
+            return extra_residual_fn(sol).at[bc_rows].set(0.0)
+
+        def extra_res_rows(sol):
+            """Rows zeroed, BC columns kept (extra K_fb for the bc correction)."""
             return extra_residual_fn(sol).at[bc_rows].set(0.0)
 
         if newton_options is None:
@@ -432,8 +643,8 @@ def create_newton_solver(
         from .options import KrylovSolverOptions
         if not isinstance(linear_options, KrylovSolverOptions):
             raise TypeError(
-                "extra_residual_fn requires KrylovSolverOptions "
-                f"(got {type(linear_options).__name__})."
+                "extra_residual_fn requires KrylovSolverOptions or "
+                f"DirectSolverOptions (got {type(linear_options).__name__})."
             )
 
         iterative_solve_fn = create_linear_solve_fn(linear_options)
@@ -450,7 +661,7 @@ def create_newton_solver(
         # hybrid Newton loop runs as a Python loop (the matrix-free Jacobian is
         # a callable, not a JAX array); jitting the per-call kernels makes each
         # dispatch one compiled program.
-        J_bc_param = create_J_bc_csr_parametric(problem, symmetric=symmetric_bc)
+        J_bc_param = create_J_bc_csr_parametric(problem, symmetric=symmetric_elimination)
         res_bc_param = create_res_bc_parametric(problem)
         J_bc_param_jit = jax.jit(J_bc_param)
         res_bc_param_jit = jax.jit(res_bc_param)
@@ -578,7 +789,8 @@ def create_newton_solver(
             bulk_J_bc_func=J_bc_param,
             J_bc_parametric=J_bc_param,
             res_bc_parametric=res_bc_param,
-            symmetric_bc=symmetric_bc,
+            symmetric_elimination=symmetric_elimination,
+            extra_rows_fn=extra_res_rows,
         )
 
     # --- Standard path (no extra residual): unified callback solver ---
@@ -589,7 +801,7 @@ def create_newton_solver(
         adjoint_linear_options=adjoint_linear_options,
         newton_options=newton_options,
         traced_params=traced_params,
-        symmetric_bc=symmetric_bc,
+        symmetric_elimination=symmetric_elimination,
         traced_structure=traced_structure,
     )
 
@@ -655,7 +867,7 @@ def create_callback_newton_solver(
     adjoint_linear_options,
     newton_options: NewtonOptions = None,
     traced_params=None,
-    symmetric_bc: bool = True,
+    symmetric_elimination: bool = True,
     traced_structure=None,
 ):
     """Create a differentiable, jit/vmap-safe Newton solver (traced loop).
@@ -689,11 +901,11 @@ def create_callback_newton_solver(
     res_param = create_res_bc_parametric(problem)
     # Forward: fused residual+CSR Jacobian (direct) or residual + matrix-free
     # matvec (Krylov).
-    res_J_param = create_res_J_bc_csr_parametric(problem, symmetric=symmetric_bc)
-    matfree_res_J_param = create_matfree_res_J_parametric(problem, symmetric=symmetric_bc)
+    res_J_param = create_res_J_bc_csr_parametric(problem, symmetric=symmetric_elimination)
+    matfree_res_J_param = create_matfree_res_J_parametric(problem, symmetric=symmetric_elimination)
     # Adjoint operators: assembled CSR (direct) or matrix-free (Krylov), plus the
     # un-eliminated K_bulk^T for the symmetric-BC bc_vals-gradient correction.
-    J_csr_param = create_J_bc_csr_parametric(problem, symmetric=symmetric_bc)
+    J_csr_param = create_J_bc_csr_parametric(problem, symmetric=symmetric_elimination)
     matfree_Kt_param = create_matfree_Kt_parametric(problem)
 
     linear_solve_fn = create_linear_solve_fn(linear_options, cache_namespace="forward")
@@ -715,7 +927,7 @@ def create_callback_newton_solver(
             problem=problem,
             bc=bc,
             traced_params=traced_params,
-            J_bc_func=create_J_bc_csr_function(problem, bc, symmetric=symmetric_bc),
+            J_bc_func=create_J_bc_csr_function(problem, bc, symmetric=symmetric_elimination),
             forward_options=linear_options,
             adjoint_options=adjoint_linear_options,
             forward_solve_fn=linear_solve_fn,
@@ -816,7 +1028,7 @@ def create_callback_newton_solver(
         return sol
 
     # ---- adjoint (single traced linear solve; vmaps natively) ------------
-    _needs_bc_correction = symmetric_bc
+    _needs_bc_correction = symmetric_elimination
 
     def _adjoint(traced_params, sol, effective_bc, v, ts):
         v_vec = v
@@ -829,7 +1041,7 @@ def create_callback_newton_solver(
             J_adjoint = transpose_with_maps(
                 J, src.csr_T_perm, src.csr_T_indptr, src.csr_T_indices
             ) if use_transpose else J
-        elif symmetric_bc:
+        elif symmetric_elimination:
             # Symmetric BC ⇒ J is symmetric ⇒ Jᵀ = J (matrix-free matvec).
             _, J_adjoint = matfree_res_J_param(sol, traced_params, effective_bc, ts)
         else:

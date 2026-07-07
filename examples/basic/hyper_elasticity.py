@@ -27,7 +27,7 @@ z_c = Lz / 2.
 T = 20.
 
 
-class HyperElasticityFeax(fe.problem.Problem):
+class HyperElasticityFeax(fe.Problem):
     def get_energy_density(self):
         def psi(u_grad, *_):
             E = 100.
@@ -62,21 +62,21 @@ def right(point):
     return np.isclose(point[0], Lx, atol=1e-5)
 
 # Fix left face (clamped)
-bc_config = fe.DCboundary.DirichletBCConfig([
-    fe.DCboundary.DirichletBCSpec(location=left, component='all', value=0.)
+bc_config = fe.DirichletBCConfig([
+    fe.DirichletBCSpec(location=left, component='all', value=0.)
 ])
 
 feax_problem = HyperElasticityFeax(mesh, vec=3, dim=3, location_fns=[right])
 
-traction_surface = fe.traced_params.TracedParams.create_uniform_surface_var(feax_problem, T)
-traced_params = fe.traced_params.TracedParams(
+traction_surface = fe.TracedParams.create_uniform_surface_var(feax_problem, T)
+traced_params = fe.TracedParams(
     volume_vars=[],
     surface_vars=[(traction_surface,)]
 )
 
 bc = bc_config.create_bc(feax_problem)
 
-ts = fe.traced_structure.TracedStructure.from_problem(feax_problem)
+ts = fe.TracedStructure.from_problem(feax_problem)
 
 # Algebraic multigrid solver (smoothed aggregation via PyAMG -> AMJax) used as a
 # preconditioner for an outer GMRES. For this 3D elasticity (vec == dim) the
@@ -86,13 +86,13 @@ ts = fe.traced_structure.TracedStructure.from_problem(feax_problem)
 # rebuilt only when the large torsional deformation makes it stale (adaptive
 # lag), so the AMG setup cost is amortized over the nonlinear iteration.
 # (Requires the optional `feax[amg]` extra: amjax + pyamg.)
-solver_options = fe.solver.AMGSolverOptions(
+solver_options = fe.AMGSolverOptions(
     near_nullspace="rigid_body",   # rigid body modes from mesh coords (auto for vec==dim)
     solver="gmres",                # outer Krylov (robust for the changing tangent)
     rebuild_every=None,            # adaptive lag: rebuild only when the precond goes stale
 )
 newton_options = fe.NewtonOptions(verbose=True)
-solver = fe.solver.create_solver(
+solver = fe.create_solver(
     feax_problem,
     bc,
     solver_options,
@@ -101,14 +101,9 @@ solver = fe.solver.create_solver(
     traced_structure=ts
 )
 
-def solve_fn(tp):
-    sol = solver(tp, fe.utils.zero_like_initial_guess(feax_problem, bc),
-                 traced_structure=ts)
-    return sol
-
-sol = solve_fn(traced_params)
-sol_unflat = feax_problem.unflatten_fn_sol_list(sol)
-displacement = sol_unflat[0]
+sol = solver(traced_params, fe.zero_like_initial_guess(feax_problem, bc),
+             traced_structure=ts)
+displacement = sol.field(0)          # solver returns a fe.Solution
 
 # Save solution
 data_dir = os.path.join(os.path.dirname(__file__), 'data')

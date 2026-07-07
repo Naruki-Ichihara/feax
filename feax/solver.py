@@ -55,8 +55,9 @@ def create_solver(
     P: Optional[BCOO] = None,
     traced_params=None,
     extra_residual_fn: Optional[Callable] = None,
-    symmetric_bc: bool = True,
+    symmetric_elimination: bool = True,
     traced_structure=None,
+    return_solution: bool = True,
 ) -> Callable:
     """Create a differentiable solver with custom VJP for gradient computation.
 
@@ -94,7 +95,8 @@ def create_solver(
           (e.g. linear elasticity, steady diffusion).
 
         Both paths are differentiable and compose with ``jax.jit`` / ``jax.vmap``
-        (the Newton forward runs as a host loop inside a single ``pure_callback``;
+        (the Newton forward is a traced ``jax.lax.while_loop`` — one Newton step
+        per loop body, no ``pure_callback`` node — so it jits and vmaps natively;
         batched solves use a block-diagonal direct solve).
     P : BCOO matrix, optional
         Prolongation matrix for periodic boundary conditions.
@@ -103,11 +105,16 @@ def create_solver(
         pre-warming. Required when ``solver="auto"`` or cuDSS is used.
     extra_residual_fn : callable, optional
         Additional residual contribution: ``extra_residual_fn(sol_flat) -> residual_flat``.
-        Combined with feax's bulk residual via hybrid matrix-free Newton-Krylov:
-        the bulk Jacobian is assembled (sparse), while the extra contribution's
-        Jacobian-vector product is computed via ``jax.jvp`` (forward-mode AD).
-        Requires ``KrylovSolverOptions`` and the nonlinear path (``linear=False``).
-    symmetric_bc : bool, default True
+        Requires the nonlinear path (``linear=False``). Two treatments:
+
+        - With ``KrylovSolverOptions``: hybrid matrix-free Newton-Krylov — the
+          bulk Jacobian is assembled (sparse), the extra contribution's
+          Jacobian-vector product comes from ``jax.jvp``.
+        - With ``DirectSolverOptions``: the extra Jacobian's sparsity is
+          detected once via automatic sparse differentiation (asdex), colored,
+          and assembled onto the merged (bulk ∪ extra) CSR pattern — the
+          direct solver then factorizes the exact combined tangent.
+    symmetric_elimination : bool, default True
         Controls how Dirichlet BCs are applied to the Jacobian matrix.
 
         - ``True`` (symmetric elimination): Zeros both BC rows **and** columns
@@ -123,7 +130,7 @@ def create_solver(
           residual: ``res[bc_dof] = sol[bc_dof] - bc_val``. This is required
           when the K₁₀ coupling is important for Newton convergence.
 
-        Use ``symmetric_bc=False`` when:
+        Use ``symmetric_elimination=False`` when:
 
         1. **Incremental loading**: BC values change per load step and the
            previous solution is reused as initial guess. The K₁₀ coupling
@@ -136,7 +143,7 @@ def create_solver(
         3. **Large-deformation nonlinear problems** where BC DOF displacements
            are large and strongly coupled to interior DOFs.
 
-        Note that ``symmetric_bc=False`` produces a non-symmetric Jacobian,
+        Note that ``symmetric_elimination=False`` produces a non-symmetric Jacobian,
         so symmetric solvers (CG) cannot be used. Use ``spsolve``, ``umfpack``,
         ``bicgstab``, or ``gmres`` instead.
     traced_structure : TracedStructure, optional
@@ -164,6 +171,15 @@ def create_solver(
         (``TracedStructure.from_problem(problem, free_scratch=False)`` or no
         TracedStructure at all), in which case the legacy no-TracedStructure
         path is used.
+    return_solution : bool, default True
+        The solver returns a :class:`feax.Solution` (the default):
+        ``sol.field(i)`` replaces ``problem.unflatten_fn_sol_list(sol)[i]``,
+        ``sol.node_var(component=)`` bridges into the next solve's
+        ``TracedParams`` (or pass the Solution directly as a volume var), and
+        array/arithmetic protocols keep it usable wherever a flat vector is
+        expected (``jnp.dot``, ``sol - ref``, ``band.scatter_sol``, or as the
+        next call's ``initial_guess``). Pass ``False`` for the raw flat DOF
+        vector.
 
     Returns
     -------
@@ -206,13 +222,29 @@ def create_solver(
     >>> solver = create_solver(problem, bc,
     ...                        solver_options=DirectSolverOptions(solver="spsolve"),
     ...                        newton_options=NewtonOptions(tol=1e-6, max_iter=20),
-    ...                        symmetric_bc=False,
+    ...                        symmetric_elimination=False,
     ...                        traced_params=traced_params)
     >>> sol = zero_like_initial_guess(problem, bc)
     >>> for step in range(1, num_steps + 1):
     ...     bc_step = bc.replace_vals(new_vals)  # update prescribed values
     ...     sol = solver(traced_params, sol, bc=bc_step)
     """
+    def _wrap(solver_fn):
+        """Opt-in Solution wrapper: unwraps Solution inputs (so a previous
+        result can be the next initial_guess) and wraps the flat output."""
+        if not return_solution:
+            return solver_fn
+        from .solution import Solution
+        _layout = tuple((fe_.num_total_nodes, int(v_))
+                        for fe_, v_ in zip(problem.fes, problem.vec))
+
+        def wrapped(*args, **kwargs):
+            args = tuple(a.dofs if isinstance(a, Solution) else a for a in args)
+            kwargs = {k: (v.dofs if isinstance(v, Solution) else v)
+                      for k, v in kwargs.items()}
+            return Solution(solver_fn(*args, **kwargs), _layout)
+        return wrapped
+
     linear_options = solver_options
     adjoint_linear_options = adjoint_solver_options
 
@@ -227,13 +259,7 @@ def create_solver(
     if extra_residual_fn is not None:
         if linear:
             raise ValueError(
-                "extra_residual_fn requires the nonlinear Newton solver (linear=False). "
-                "The hybrid matrix-free approach needs iterative Newton updates."
-            )
-        if isinstance(linear_options, DirectSolverOptions):
-            raise ValueError(
-                "extra_residual_fn requires KrylovSolverOptions. "
-                "The hybrid Jacobian is a callable matvec, not a sparse matrix."
+                "extra_residual_fn requires the nonlinear Newton solver (linear=False)."
             )
         if P is not None:
             raise ValueError(
@@ -241,33 +267,28 @@ def create_solver(
                 "Use one or the other."
             )
 
-    # 1) Reduced path (matrix-free, requires iterative options)
+    # 1) Reduced path. KrylovSolverOptions runs matrix-free (Pᵀ(J(Pv))
+    # matvecs); DirectSolverOptions / AMGSolverOptions assemble the reduced
+    # operator PᵀJP via ASD (pattern = boolean triple product, values = colored
+    # probes of the matrix-free action) — see feax.solvers.reduced / feax.asd.
     if P is not None:
         if linear_options is None:
             linear_options = KrylovSolverOptions()
         if adjoint_linear_options is None:
             adjoint_linear_options = linear_options
 
-        if isinstance(linear_options, AMGSolverOptions) or isinstance(adjoint_linear_options, AMGSolverOptions):
+        _reduced_ok = (DirectSolverOptions, KrylovSolverOptions, AMGSolverOptions)
+        if not isinstance(linear_options, _reduced_ok):
             raise ValueError(
-                "AMGSolverOptions is not supported with P (prolongation matrix). The "
-                "reduced operator Pᵀ J P is matrix-free (never assembled), but AMG "
-                "requires an assembled matrix. Use KrylovSolverOptions (e.g. cg) for "
-                "periodic problems."
+                "solver_options must be Krylov/Direct/AMG solver options when P "
+                f"(prolongation matrix) is provided, got {type(linear_options).__name__}."
             )
-        if not isinstance(linear_options, KrylovSolverOptions):
+        if not isinstance(adjoint_linear_options, _reduced_ok):
             raise ValueError(
-                "solver_options must be KrylovSolverOptions when P (prolongation matrix) "
-                f"is provided, got {type(linear_options).__name__}. "
-                "The reduced problem is matrix-free and only supports iterative solvers "
-                "(cg, bicgstab, gmres)."
+                "adjoint_solver_options must be Krylov/Direct/AMG solver options when "
+                f"P is provided, got {type(adjoint_linear_options).__name__}."
             )
-        if not isinstance(adjoint_linear_options, KrylovSolverOptions):
-            raise ValueError(
-                "adjoint_solver_options must be KrylovSolverOptions when P is provided, "
-                f"got {type(adjoint_linear_options).__name__}."
-            )
-        return create_reduced_solver(problem, bc, P, linear_options, adjoint_linear_options)
+        return _wrap(create_reduced_solver(problem, bc, P, linear_options, adjoint_linear_options))
 
     # Non-reduced paths (Newton / linear): normalize missing options.
     # Default to DirectSolverOptions (direct solvers are preferred for
@@ -324,10 +345,10 @@ def create_solver(
         # closure/no-ts assembly when ``traced_structure`` is omitted.
         if traced_structure is not None:
             from .assembler import create_J_bc_csr_parametric
-            J_bc_csr_func = create_J_bc_csr_parametric(problem, symmetric=symmetric_bc)
+            J_bc_csr_func = create_J_bc_csr_parametric(problem, symmetric=symmetric_elimination)
             _sample_J = J_bc_csr_func(_initial_tmp, traced_params, bc, traced_structure)
         else:
-            J_bc_csr_func = create_J_bc_csr_function(problem, bc, symmetric=symmetric_bc)
+            J_bc_csr_func = create_J_bc_csr_function(problem, bc, symmetric=symmetric_elimination)
             _sample_J = J_bc_csr_func(_initial_tmp, traced_params)
         _mp = detect_matrix_property(_sample_J, matrix_view=problem.matrix_view)
         from .solvers.options import detect_backend
@@ -351,19 +372,38 @@ def create_solver(
                 adjoint_linear_options = resolve_iterative_solver(adjoint_linear_options, _mp)
             print(f"[feax] Auto adjoint solver ({_category}): backend={_backend.name}, matrix_property={_mp.name} -> {adjoint_linear_options.solver}")
 
+    # Foot-gun guard: symmetric_elimination=False produces a NON-symmetric
+    # tangent, but cuDSS defaults to matrix_type=SYMMETRIC (LDLT) — that
+    # combination silently factorizes a symmetrized matrix and Newton stalls
+    # in the line search. Warn loudly instead of failing mysteriously.
+    if not symmetric_elimination:
+        import warnings
+        for _role, _opts in (("solver_options", linear_options),
+                             ("adjoint_solver_options", adjoint_linear_options)):
+            if (isinstance(_opts, DirectSolverOptions) and _opts.solver == "cudss"
+                    and getattr(_opts.cudss_options.matrix_type, "value",
+                                _opts.cudss_options.matrix_type) != 0):
+                warnings.warn(
+                    f"symmetric_elimination=False makes the tangent non-symmetric, "
+                    f"but {_role} uses cuDSS with matrix_type="
+                    f"{_opts.cudss_options.matrix_type} (a symmetric factorization). "
+                    "Pass cudss_options=CUDSSOptions(matrix_type=CUDSSMatrixType."
+                    "GENERAL) — otherwise Newton directions are wrong and the line "
+                    "search will fail.", stacklevel=2)
+
     # 2) Linear path (single linear solve)
     if linear:
-        return create_linear_solver(
+        return _wrap(create_linear_solver(
             problem=problem,
             bc=bc,
             solver_options=linear_options,
             adjoint_solver_options=adjoint_linear_options,
             traced_params=traced_params,
             traced_structure=traced_structure,
-        )
+        ))
 
     # 3) Nonlinear Newton path
-    return create_newton_solver(
+    return _wrap(create_newton_solver(
         problem=problem,
         bc=bc,
         linear_options=linear_options,
@@ -371,6 +411,6 @@ def create_solver(
         newton_options=newton_options,
         traced_params=traced_params,
         extra_residual_fn=extra_residual_fn,
-        symmetric_bc=symmetric_bc,
+        symmetric_elimination=symmetric_elimination,
         traced_structure=traced_structure,
-    )
+    ))

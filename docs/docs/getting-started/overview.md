@@ -413,14 +413,16 @@ FEAX supports multipoint constraints via a prolongation matrix `P` that maps a r
 Periodic boundary conditions are a common application — `P` ties DOFs on opposite faces of a unit cell so that $\mathbf{u}^+ - \mathbf{u}^- = \bar{\boldsymbol{\varepsilon}} \cdot \Delta\mathbf{x}$:
 
 ```python
-from feax.flat.pbc import prolongation_matrix
+from feax.flat.pbc import PeriodicPairing, prolongation_matrix
 
-P = prolongation_matrix(mesh, problem)
+pairings = [PeriodicPairing(location_master=left, location_slave=right,
+                            mapping=mapping_x, vec=0)]
+P = prolongation_matrix(pairings, mesh, vec=1)
 solver = fe.create_solver(problem, bc, P=P,
     solver_options=fe.KrylovSolverOptions())
 ```
 
-The reduced system is solved matrix-free (matvec via `P^T K P`), so `P` requires `KrylovSolverOptions`.
+With `KrylovSolverOptions` the reduced system is solved matrix-free (matvec via `P^T K P`); with `DirectSolverOptions` or `AMGSolverOptions` the reduced operator `PᵀJP` is assembled sparsely and factorized (or used to build the AMG hierarchy).
 
 See [Periodic Boundary Conditions](../advanced/periodic_boundary_conditions.md) for details.
 
@@ -485,12 +487,13 @@ grads = grad_fn(traced_params)
 
 ### Solver Options
 
-FEAX has two solver-option classes for `fe.create_solver`. When `solver_options` is omitted, a direct solver is selected automatically (cuDSS on GPU, cholmod/umfpack/spsolve on CPU). See the [Solver Guide](./solver.md) for the full selection logic.
+FEAX has three solver-option classes for `fe.create_solver`. When `solver_options` is omitted, a direct solver is selected automatically (cuDSS on GPU, cholmod/umfpack/spsolve on CPU). See the [Solver Guide](./solver.md) for the full selection logic.
 
 | Solver Options | Method | Operator | Best for |
 |---|---|---|---|
 | `fe.DirectSolverOptions()` | Sparse direct (cuDSS on GPU, cholmod/umfpack/spsolve on CPU) | Assembled CSR | Default; robust when memory permits |
 | `fe.KrylovSolverOptions()` | Iterative (CG/BiCGSTAB/GMRES) | Matrix-free (residual JVP) | Large/memory-bound problems, periodic BCs |
+| `fe.AMGSolverOptions()` | Krylov preconditioned by smoothed-aggregation AMG | Assembled CSR (hierarchy) + matrix-free Krylov | Large scalar-elliptic problems; elasticity via `near_nullspace="rigid_body"`. Requires `feax[amg]` |
 
 ### `linear` Flag
 
@@ -511,11 +514,11 @@ solver = fe.create_solver(problem, bc, solver_options=fe.DirectSolverOptions(),
     traced_params=traced_params)
 ```
 
-Both paths compose with `jax.jit`, `jax.vmap`, and `jax.grad`. The Newton loop runs on the host inside a single `jax.pure_callback`, so adaptive convergence stays trace-compatible.
+Both paths compose with `jax.jit`, `jax.vmap`, and `jax.grad`. The Newton forward is a traced `jax.lax.while_loop` — one Newton step per loop body, with no `pure_callback` node — so adaptive convergence and line search jit and vmap natively.
 
 ### Custom Residual Contributions
 
-For an additional residual term that does not come from the standard element weak form (e.g. a cohesive-zone traction), pass `extra_residual_fn` together with `KrylovSolverOptions`. FEAX assembles the bulk Jacobian and applies the extra term's tangent matrix-free via `jax.jvp`:
+For an additional residual term that does not come from the standard element weak form (e.g. a cohesive-zone traction), pass `extra_residual_fn`. With `KrylovSolverOptions` FEAX assembles the bulk Jacobian and applies the extra term's tangent matrix-free via `jax.jvp`; with `DirectSolverOptions` the extra term's sparse Jacobian is detected and assembled onto the merged CSR pattern so the direct solver factorizes the exact combined tangent:
 
 ```python
 def cohesive_residual(u_flat):
@@ -574,14 +577,15 @@ sols = batched_solver(batched_internal_vars, initial)
 
 ### Unflattening the Solution
 
-The solver returns a flat DOF vector. Use `unflatten_fn_sol_list` to reshape it per variable:
+The solver returns a `fe.Solution` — it behaves like the flat DOF vector (arithmetic, `np.asarray`, initial guess for the next solve) and carries the DOF layout, so no `Problem` is needed to interpret it:
 
 ```python
-sol_list = problem.unflatten_fn_sol_list(sol)
-displacement = sol_list[0]  # shape (num_nodes, vec)
+displacement = sol.field(0)          # shape (num_nodes, vec)
+sol_flat = sol.dofs                  # the raw flat DOF vector
+temperature = sol.node_var()         # (num_nodes,) — feed the next solve's TracedParams
 ```
 
-For multi-variable problems, `sol_list[i]` gives the i-th variable's solution.
+For multi-variable problems, `sol.field(i)` gives the i-th variable's solution (equivalent to `problem.unflatten_fn_sol_list(sol)[i]`). Pass `return_solution=False` to `create_solver` to get the raw flat vector instead.
 
 ### VTK Output
 

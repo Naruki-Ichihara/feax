@@ -616,6 +616,7 @@ class DirectSolverOptions(AbstractSolverOptions):
     solver: str = "auto"
     cudss_options: CUDSSOptions = None
     sksparse_options: SKSPARSEOptions = None
+    reuse_factorization: bool = False
 
     def __post_init__(self):
         valid_solvers = ("auto", "cudss", "spsolve", "umfpack", "cholmod")
@@ -678,6 +679,7 @@ def resolve_direct_solver(
             solver=options.solver,
             cudss_options=options.cudss_options,
             sksparse_options=options.sksparse_options,
+            reuse_factorization=options.reuse_factorization,
             check_convergence=options.check_convergence,
             convergence_threshold=options.convergence_threshold,
             verbose=options.verbose,

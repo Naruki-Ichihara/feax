@@ -153,13 +153,19 @@ bc = fe.DirichletBCConfig([bc_fixed, bc_move, bc_z0]).create_bc(problem)
 ts = fe.TracedStructure.from_problem(problem)
 
 # ── Solver setup ─────────────────────────────────────────────────────
+# symmetric_elimination=False keeps the K₁₀ coupling (needed for the soft
+# medium) but makes the tangent NON-symmetric — cuDSS must therefore use LU
+# (matrix_type=GENERAL); the default SYMMETRIC (LDLT) silently factorizes a
+# symmetrized matrix and Newton stalls in the line search.
 solver = fe.create_solver(
     problem, bc,
-    solver_options=fe.DirectSolverOptions(solver='spsolve', verbose=True),
+    solver_options=fe.DirectSolverOptions(
+        solver='umfpack',
+        verbose=True),
     newton_options=fe.NewtonOptions(tol=1e-6, rel_tol=1e-8, max_iter=30),
     linear=False,
     traced_params=tp,
-    symmetric_bc=False,
+    symmetric_elimination=False,
     traced_structure=ts,
 )
 
@@ -211,10 +217,9 @@ for step in range(1, num_steps + 1):
     new_bc_vals = bc.bc_vals.at[move_bc_positions].set(disp)
     bc_step = bc.replace_vals(new_bc_vals)
 
-    sol = solver(tp, sol, bc=bc_step, traced_structure=ts)
+    sol = solver(tp, sol, bc=bc_step, traced_structure=ts)   # fe.Solution
 
-    sol_list = problem.unflatten_fn_sol_list(sol)
-    u = sol_list[0]
+    u = sol.field(0)
     u_np = onp.array(u)
     max_u = float(np.max(np.abs(u)))
     converged = not onp.any(onp.isnan(u_np))

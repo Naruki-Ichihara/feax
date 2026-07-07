@@ -85,6 +85,8 @@ def step(self, state, t, dt):
     return self.solver(iv, state)
 ```
 
+If the solver returns a `fe.Solution` (the default for `fe.create_solver`), `ImplicitPipeline.step` unwraps it automatically, so the carried state stays a flat DOF vector.
+
 ## `ExplicitPipeline`
 
 For problems where an explicit time integrator is preferred (wave propagation, explicit dynamics). No linear system solve per step — only matrix-vector products and element-wise operations.

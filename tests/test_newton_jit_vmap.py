@@ -1,13 +1,18 @@
 """
 Tests for Newton solver JIT and vmap compatibility.
 
-This module verifies that the Newton solver variants (while_loop, fori_loop)
-work correctly with JAX transformations:
-- JIT compilation for all solver variants
-- vmap for fori_loop variant (iter_num > 1)
-- vmap + grad composition for fori_loop variant
-- Armijo line search compatibility (while_loop vs scan)
-- newton_solve_py as reference implementation
+All solvers here are built through ``fe.create_solver`` (internally
+``create_newton_solver``, a traced ``lax.while_loop`` Newton iteration).
+This module verifies that path composes with JAX transformations:
+- JIT compilation (single and repeated calls)
+- vmap over batched BC values / traced params
+- vmap + grad and jit(vmap(grad(...))) composition via the custom VJP
+- Armijo line search compatibility under jit/vmap
+- nonlinear (linear=False) vs linear (linear=True) solver consistency
+
+Note: test names referencing "fori"/"while" variants are historical — the
+separate newton_solve/newton_solve_py/newton_solve_fori implementations were
+unified into the single traced while_loop solver.
 """
 
 import jax

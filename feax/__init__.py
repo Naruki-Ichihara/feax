@@ -128,7 +128,11 @@ from .DCboundary import (
 )
 from .traced_params import TracedParams
 from .traced_structure import TracedStructure
+from .solution import Solution
 from .mesh import Mesh
+from .spgrid import SparseDesign, StructuredGrid, voxelize_mesh
+from .narrowband import NarrowBand, SupersetBand
+from .solvers.cmg import NarrowBandCMG
 from .problem import MatrixView, Problem
 from .solver import (
     create_solver,
@@ -182,6 +186,16 @@ from .solvers.options import (
 )
 from .utils import zero_like_initial_guess, XDMFWriter
 from . import distributed
+
+
+def __getattr__(name):
+    # Lazy submodule: ``feax.asd`` pulls in asdex (+ numba) — deferred so plain
+    # ``import feax`` doesn't pay for it.
+    if name == "asd":
+        import importlib
+        return importlib.import_module(".asd", __name__)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 from .profiler import (
     JaxprInfo,
     MemorySnapshot,

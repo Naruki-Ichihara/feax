@@ -251,7 +251,10 @@ class ImplicitPipeline(TimePipeline):
             import jax
             state = jax.lax.stop_gradient(state)
         tp = self.update_vars(state, t, dt)
-        return self.solver(tp, state)
+        new_state = self.solver(tp, state)
+        # Keep the carried state a flat vector (a Solution-returning solver
+        # would otherwise change the carry pytree structure mid-run).
+        return getattr(new_state, 'dofs', new_state)
 
 
 # ---------------------------------------------------------------------------

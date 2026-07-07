@@ -11,7 +11,7 @@ Response function generators for topology optimization and analysis.
 def create_compliance_fn(problem, surface_load_params=None)
 ```
 
-Creates a universal JIT-compiled compliance function for a given problem.
+Creates a universal pure-JAX compliance function for a given problem.
 Computes compliance (strain energy) = sum over all surfaces of integral u*f dGamma
 where u is displacement and f is traction on each loaded boundary.
 
@@ -26,7 +26,8 @@ where u is displacement and f is traction on each loaded boundary.
 
 **Returns**:
 
-- `compliance_fn` - JIT-compiled function that takes solution and returns compliance value
+- `compliance_fn` - pure-JAX function (sol) -&gt; compliance; jit the
+  composed objective at the call site
 
 #### create\_dynamic\_compliance\_fn
 
@@ -34,7 +35,7 @@ where u is displacement and f is traction on each loaded boundary.
 def create_dynamic_compliance_fn(problem)
 ```
 
-Creates a universal JIT-compiled compliance function for a given problem.
+Creates a universal pure-JAX compliance function for a given problem.
 Computes compliance (strain energy) = sum over all surfaces of integral u*f dGamma
 where u is displacement and f is traction on each loaded boundary.
 
@@ -49,7 +50,7 @@ passed into each surface map when evaluating the traction field.
 
 **Returns**:
 
-- `compliance_fn` - JIT-compiled function that takes ``sol`` and
+- `compliance_fn` - pure-JAX function that takes ``sol`` and
   ``surface_vars`` and returns the compliance value.
 
 #### create\_volume\_fn
@@ -58,7 +59,7 @@ passed into each surface map when evaluating the traction field.
 def create_volume_fn(problem)
 ```
 
-Creates a JIT-compiled volume fraction calculation function for a given problem.
+Creates a pure-JAX volume fraction calculation function for a given problem.
 Returns a function that computes the volume fraction of material in the domain.
 
 Supports node-based, cell-based, and quad-based density arrays.
@@ -70,7 +71,7 @@ Supports node-based, cell-based, and quad-based density arrays.
 
 **Returns**:
 
-- `volume_fn` - JIT-compiled function that takes density array and returns volume fraction
+- `volume_fn` - pure-JAX function that takes density array and returns volume fraction
 - `Accepts` - (num_nodes,) node-based, (num_cells,) cell-based,
   or (num_cells, num_quads) quad-based density arrays
 

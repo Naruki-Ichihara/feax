@@ -19,7 +19,7 @@ import feax as fe
 E, nu = 70e3, 0.3
 batch_size = 10000
 
-class LinearElasticity(fe.problem.Problem):
+class LinearElasticity(fe.Problem):
     def get_tensor_map(self):
         def stress(u_grad):
             mu = E / (2.0 * (1.0 + nu))
@@ -82,7 +82,8 @@ bc_vals_batch = jax.vmap(make_bc_vals)(displacements)
 def solve_batch(vals_batch):
     return jax.vmap(lambda v: solver(tp, bc=bc.replace_vals(v), traced_structure=ts))(vals_batch)
 
-sols = solve_batch(bc_vals_batch)  # (n_batch, total_dofs)
+sols = solve_batch(bc_vals_batch)   # fe.Solution with batched dofs (n_batch, total_dofs)
+u_batch = sols.field(0)              # (n_batch, num_nodes, vec)
 
 # ── Verify against sequential solves ───────────────────────────────────────
 print("Batched Dirichlet BC — linear elasticity (2D)")

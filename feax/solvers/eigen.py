@@ -1,7 +1,7 @@
 """Linear-buckling eigensolvers for feax, in JAX.
 
 Solves the linear-buckling pencil ``(K + λ K_g) φ = 0`` for the lowest positive
-buckling factors ``λ`` and their mode shapes, with three forward backends:
+buckling factors ``λ`` and their mode shapes, with four forward backends:
 
 * ``solver="sparse"`` (:func:`_sparse_buckling`, **default**) — matrix-free shift-invert
   ``T = -K⁻¹ K_g`` solved by SciPy ARPACK (:func:`scipy.sparse.linalg.eigs`) with one
@@ -15,6 +15,12 @@ buckling factors ``λ`` and their mode shapes, with three forward backends:
   matfree's JAX Arnoldi. Equivalent results, but applies ``K⁻¹`` through a nested
   ``jax.pure_callback`` that accumulates in the XLA runtime across calls (memory leak in
   long loops); prefer ``"sparse"`` unless you specifically need the JAX path.
+* ``solver="cudss"`` (:func:`_create_cudss_bf`, opt-in, GPU) — the same shift-invert
+  with ``K`` factorized ONCE per call on the GPU by cuDSS (spineax
+  factor-once/solve-many) and the Arnoldi loop as traced JAX (``K_g`` SpMV + cuDSS
+  SOLVE per ``lax.scan`` step); only the tiny Hessenberg eig runs in a host callback.
+  No per-call closures; factors live in spineax's fixed-capacity LRU (no accumulation
+  over optimization loops). Requires spineax + CUDA.
 
 The differentiable driver :func:`create_linear_buckling_solver` wraps any backend with
 an analytical eigenvalue sensitivity, so ``λ`` is ``jax.grad``-able w.r.t. the assembled
@@ -361,6 +367,211 @@ def _sparse_buckling(K, Kg, free_dofs, num_modes: int = 6, num_matvecs: int = 30
     return lam[order], modes
 
 
+def _create_cudss_bf(free_dofs, num_modes: int = 3, num_matvecs: int = 30,
+                     seed: int = 0, conv_tol: float = 1e-2, verbose: bool = False,
+                     device_id: int = 0, matrix_type: str = "spd"):
+    """Build the ``solver="cudss"`` buckling function: GPU shift-invert Arnoldi.
+
+    Same recast as :func:`_sparse_buckling` — ``T = -K⁻¹ K_g``, largest-magnitude
+    ``μ`` give the smallest positive ``λ = 1/μ`` — but the forward is TRACED JAX:
+    ``K`` (restricted to the free DoFs) is factorized ONCE per call by cuDSS
+    (``spineax.cudss.factor_solve``), and each Arnoldi iteration inside a
+    ``lax.scan`` is one device SpMV (``K_g @ v``) plus one cuDSS SOLVE reusing
+    those factors, with full (two-pass) reorthogonalization. Only the small
+    ``(m, m)`` Hessenberg eigendecomposition and the convergence check run in
+    host callbacks (pure NumPy — no device work inside a callback, which
+    deadlocks the GPU stream; that is why this backend does NOT go through the
+    driver's host-eigensolve callback like the others).
+
+    Leak/lifetime notes (this module's recurring theme):
+
+    * The factorization lives in spineax's process-global fixed-capacity LRU
+      cache — repeated calls in an optimization loop factorize the current ``K``
+      and let the LRU evict stale factors. Nothing accumulates per call.
+    * The two host callbacks are single function objects created once here and
+      reused every call (no per-call callables registered with the runtime).
+
+    Differentiability comes from the same analytic eigenvalue sensitivity /
+    ``custom_vjp`` as the other backends (see
+    :func:`create_linear_buckling_solver`); the forward internals need not be
+    differentiable. Like the other backends, call ``bf(K, Kg)`` once eagerly
+    before jitting so the (constant) CSR structure can be captured.
+
+    Extra kwargs: ``device_id`` (CUDA device) and ``matrix_type``
+    (``"spd"`` Cholesky, default, or ``"symmetric"`` LDLᵀ — more robust when a
+    SIMP void floor leaves ``K`` near-indefinite).
+    """
+    try:
+        from spineax.cudss.factor_solve import factorize, solve_with
+    except ImportError as e:                          # pragma: no cover
+        raise ImportError(
+            "solver='cudss' requires spineax (spineax.cudss.factor_solve). "
+            "Install spineax, or use solver='sparse'/'dense'.") from e
+    mtype_ids = {"spd": 3, "symmetric": 1}
+    if matrix_type not in mtype_ids:
+        raise ValueError(f"matrix_type must be 'spd' or 'symmetric', got {matrix_type!r}")
+
+    free = onp.asarray(free_dofs)
+    nf = len(free)
+    mo = int(num_modes)
+    m = int(min(nf, max(num_matvecs, 2 * mo + 10)))
+    if m < 2:
+        raise BucklingConvergenceError(
+            f"too few free DoFs ({nf}) for the cudss eigensolve; use solver='dense'.")
+
+    # Constant structure, captured from the first eager call: value-gather maps
+    # full CSR slots -> reduced (free x free) CSR slots, so the per-call
+    # restriction is a traced gather (no SciPy inside the traced forward).
+    _s = {}
+
+    def _capture(K, Kg):
+        if _s:
+            return
+        if isinstance(K.indices, jax.core.Tracer) or isinstance(Kg.indices, jax.core.Tracer):
+            raise ValueError(
+                "create_linear_buckling_solver(solver='cudss'): call bf(K, Kg) once "
+                "eagerly before jitting so the (constant) CSR structure can be captured.")
+        import scipy.sparse as sp
+
+        def restrict_map(M):
+            nnz = int(onp.asarray(M.indices).shape[0])
+            A = sp.csr_matrix((onp.arange(1, nnz + 1, dtype=onp.float64),
+                               onp.asarray(M.indices), onp.asarray(M.indptr)),
+                              shape=M.shape)
+            R = A[free][:, free].tocsr()
+            R.sort_indices()
+            slots = jnp.asarray(R.data.astype(onp.int64) - 1)
+            return slots, R
+
+        slotK, RK = restrict_map(K)
+        slotG, RG = restrict_map(Kg)
+        # transpose permutation on the reduced K pattern (structurally symmetric
+        # for FEM operators) -> traced symmetrization kf := (kf + kf[Tperm]) / 2
+        P = sp.csr_matrix((onp.arange(1, RK.nnz + 1, dtype=onp.float64),
+                           RK.indices, RK.indptr), shape=(nf, nf)).T.tocsr()
+        P.sort_indices()
+        _s.update(slotK=slotK, slotG=slotG,
+                  TpermK=jnp.asarray(P.data.astype(onp.int64) - 1),
+                  ipK=jnp.asarray(RK.indptr, jnp.int32),
+                  ixK=jnp.asarray(RK.indices, jnp.int32),
+                  ipG=jnp.asarray(RG.indptr), ixG=jnp.asarray(RG.indices),
+                  N=int(K.shape[0]))
+
+    v0_host = onp.random.RandomState(seed).randn(nf)
+
+    # --- host callbacks: created ONCE, pure NumPy (no device work inside) -----
+    def _host_ritz(H):
+        H = onp.asarray(H)
+        vals, Y = onp.linalg.eig(H[:m, :m])
+        mu = vals.real
+        real_pair = onp.abs(vals.imag) <= 1e-8 * (onp.abs(vals.real) + 1e-30)
+        lam = onp.where(mu != 0.0, 1.0 / mu, onp.inf)
+        valid = real_pair & onp.isfinite(lam) & (lam > 1e-12)
+        order = onp.argsort(onp.where(valid, lam, onp.inf))
+        order = order[valid[order]][:mo]
+        if conv_tol is not None and len(order) == 0:
+            raise BucklingConvergenceError(
+                f"cudss buckling found no positive eigenvalue (num_matvecs={m}); "
+                "the eigensolve did not converge.")
+        lam_out = onp.full(mo, onp.inf)
+        mu_out = onp.zeros(mo)
+        coeff = onp.zeros((mo, m + 1))
+        for i, c in enumerate(order):
+            lam_out[i] = lam[c]
+            mu_out[i] = mu[c]
+            y = Y[:, c].real
+            coeff[i, :m] = y / (onp.linalg.norm(y) + 1e-30)
+        return lam_out, mu_out, coeff
+
+    def _host_check(lam, res0):
+        lam = onp.asarray(lam)
+        res0 = float(res0)
+        if conv_tol is not None and (not onp.isfinite(res0) or res0 > conv_tol):
+            raise BucklingConvergenceError(
+                f"cudss buckling not converged: fundamental-mode residual {res0:.2e} "
+                f"> tol {conv_tol:.1e} (num_matvecs={m}). Increase num_matvecs, or "
+                "check that K is SPD on the free DoFs.")
+        if verbose:
+            print(f"[buckling/cudss] modes: lambda={lam.tolist()}  resid0={res0:.2e}")
+        return lam
+
+    def _forward(K, Kg):
+        _capture(K, Kg)
+        N = _s["N"]
+        kf = K.data[_s["slotK"]]
+        kf = 0.5 * (kf + kf[_s["TpermK"]])           # clean round-off asymmetry
+        Kg_red = CSRMatrix(Kg.data[_s["slotG"]], _s["ipG"], _s["ixG"], (nf, nf))
+        Kf_red = CSRMatrix(kf, _s["ipK"], _s["ixK"], (nf, nf))
+        token = factorize(kf, _s["ipK"], _s["ixK"], device_id=device_id,
+                          mtype_id=mtype_ids[matrix_type], mview_id=0)
+
+        def T_apply(v):                              # T v = -K⁻¹ (K_g v), on device
+            return -solve_with(token, Kg_red @ v, device_id=device_id)
+
+        v0 = jnp.asarray(v0_host)
+        V0 = jnp.zeros((m + 1, nf)).at[0].set(v0 / jnp.linalg.norm(v0))
+
+        def step(carry, j):
+            V, H = carry
+            w = T_apply(V[j])
+            h1 = V @ w                               # rows > j are zero -> no-ops
+            w = w - V.T @ h1
+            h2 = V @ w                               # second Gram-Schmidt pass
+            w = w - V.T @ h2
+            beta = jnp.linalg.norm(w)
+            H = H.at[:, j].set((h1 + h2).at[j + 1].set(beta))
+            V = V.at[j + 1].set(jnp.where(beta > 1e-30, 1.0 / beta, 0.0) * w)
+            return (V, H), None
+
+        (V, H), _ = jax.lax.scan(step, (V0, jnp.zeros((m + 1, m))), jnp.arange(m))
+
+        lam, mu, coeff = jax.pure_callback(
+            _host_ritz,
+            (jax.ShapeDtypeStruct((mo,), jnp.float64),
+             jax.ShapeDtypeStruct((mo,), jnp.float64),
+             jax.ShapeDtypeStruct((mo, m + 1), jnp.float64)),
+            H)
+
+        phi = coeff @ V                              # (mo, nf) Ritz vectors
+        # φᵀ K φ = 1 normalization (zero rows from padding stay zero)
+        e = jnp.stack([phi[i] @ (Kf_red @ phi[i]) for i in range(mo)])
+        s = jnp.where(e > 0.0, 1.0 / jnp.sqrt(jnp.abs(e) + 1e-300), 0.0)
+        phi = phi * s[:, None]
+
+        # fundamental-mode eigen-residual ‖Tφ − μφ‖ / ‖φ‖ (traced, one extra solve)
+        x0 = phi[0] / (jnp.linalg.norm(phi[0]) + 1e-30)
+        res0 = jnp.linalg.norm(T_apply(x0) - mu[0] * x0)
+        lam = jax.pure_callback(
+            _host_check, jax.ShapeDtypeStruct((mo,), jnp.float64), lam, res0)
+
+        modes = jnp.zeros((mo, N)).at[:, free].set(phi)
+        return lam, modes, phi
+
+    @jax.custom_vjp
+    def bf(K, Kg):
+        """(lambdas, modes): lambdas differentiable w.r.t. K, Kg (analytic
+        sensitivity); modes carry no gradient."""
+        lam, modes, _ = _forward(K, Kg)
+        return lam, jax.lax.stop_gradient(modes)
+
+    def _fwd(K, Kg):
+        lam, modes, phi = _forward(K, Kg)
+        return (lam, jax.lax.stop_gradient(modes)), (K, Kg, lam, phi)
+
+    def _bwd(res, cts):
+        K, Kg, lam, phi = res
+        lam_bar, _modes_bar = cts
+        # guard the inf-padded (missing) modes out of the sensitivity
+        w = jnp.where(jnp.isfinite(lam), lam_bar * lam, 0.0)
+        w2 = jnp.where(jnp.isfinite(lam), lam_bar * lam * lam, 0.0)
+        K_cot = _outer_cotangent(K, phi, w, free)
+        Kg_cot = _outer_cotangent(Kg, phi, w2, free)
+        return (K_cot, Kg_cot)
+
+    bf.defvjp(_fwd, _bwd)
+    return bf
+
+
 def _matfree_buckling(K, Kg, free_dofs, num_modes: int = 6, num_matvecs: int = 30,
                      seed: int = 0, conv_tol: float = 1e-2, verbose: bool = False
                      ) -> Tuple[onp.ndarray, onp.ndarray]:
@@ -522,12 +733,15 @@ def create_linear_buckling_solver(free_dofs, num_modes: int = 3, solver: str = "
         Unconstrained DoFs (captured; the returned function differentiates only K, Kg).
     num_modes : int
         Number of buckling factors returned.
-    solver : {"sparse", "dense", "matfree"}
+    solver : {"sparse", "dense", "matfree", "cudss"}
         Forward eigensolver. ``"sparse"`` (default) forwards ``solver_kw`` to
         :func:`_sparse_buckling` (SciPy ARPACK matrix-free shift-invert — low memory,
         leak-free; e.g. ``num_matvecs=40``); ``"dense"`` uses :func:`_dense_buckling`
         (exact, ``O(nf²)`` memory); ``"matfree"`` uses :func:`_matfree_buckling` (JAX
-        matfree Arnoldi — equivalent, opt-in; leaks memory in long loops).
+        matfree Arnoldi — equivalent, opt-in; leaks memory in long loops);
+        ``"cudss"`` uses :func:`_create_cudss_bf` (GPU shift-invert: cuDSS
+        factor-once/solve-many + traced device Arnoldi — requires spineax +
+        CUDA; kwargs e.g. ``num_matvecs=40``, ``matrix_type="symmetric"``).
 
     Returns
     -------
@@ -546,10 +760,17 @@ def create_linear_buckling_solver(free_dofs, num_modes: int = 3, solver: str = "
     first **eager** call, so call ``bf(K, Kg)`` once outside ``jit`` before jitting it
     (a clear error is raised otherwise).
     """
-    if solver not in ("sparse", "dense", "matfree"):
+    if solver not in ("sparse", "dense", "matfree", "cudss"):
         raise ValueError(
             f"unknown buckling solver {solver!r}; expected 'sparse' (default, SciPy "
-            "ARPACK matrix-free), 'dense', or 'matfree' (opt-in JAX/matfree backend).")
+            "ARPACK matrix-free), 'dense', 'matfree' (opt-in JAX/matfree backend), "
+            "or 'cudss' (GPU shift-invert via spineax cuDSS).")
+    if solver == "cudss":
+        # Traced-JAX forward (cuDSS factor + device Arnoldi) with its own
+        # custom_vjp wiring — GPU work must NOT run inside this driver's host
+        # eigensolve callback (device calls from a GPU host callback deadlock
+        # the stream).
+        return _create_cudss_bf(free_dofs, num_modes, **solver_kw)
     free = onp.asarray(free_dofs)
     nf = len(free)
     m = num_modes

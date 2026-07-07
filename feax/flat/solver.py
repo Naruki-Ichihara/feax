@@ -213,7 +213,12 @@ def create_homogenization_solver(
     problem :
         FEAX Problem instance (linear elasticity).
     bc :
-        FEAX DirichletBC (typically empty for periodic unit cells).
+        FEAX DirichletBC. Leave EMPTY for periodic unit cells: the reduced
+        system is singular (rigid translations) but consistent, and the Krylov
+        solve handles it. Do NOT pin a node to suppress the translations — the
+        affine initial guess ``u_macro`` does not satisfy such a pin, which
+        corrupts the fluctuation field around the pinned node (invisible for a
+        homogeneous cell, wrong C_hom for a heterogeneous one).
     P :
         Prolongation matrix from ``feax.flat.pbc.prolongation_matrix``.
         Shape ``(num_dofs, num_reduced_dofs)``.
@@ -250,7 +255,9 @@ def create_homogenization_solver(
         solver_options = KrylovSolverOptions()
     _verbose = solver_options.verbose
 
-    fluctuation_solver = create_solver(problem, bc, solver_options, P=P)
+    # Internal: the raw flat vector feeds average_stress / vmapped strain cases.
+    fluctuation_solver = create_solver(problem, bc, solver_options, P=P,
+                                       return_solution=False)
 
     def _single_case(unit_strain, traced_params):
         u_macro = macro_displacement(mesh, unit_strain)
@@ -259,9 +266,14 @@ def create_homogenization_solver(
         return sigma_voigt, u_total, u_macro
 
     def solve(traced_params) -> HomogenizationResult:
-        columns, u_totals, u_macros = jax.vmap(
-            _single_case, in_axes=(0, None)
-        )(unit_strains_arr, traced_params)
+        # lax.map, NOT vmap: the strain cases converge at different iteration
+        # counts, and a vmapped Krylov while_loop keeps iterating every case
+        # until ALL converge. On a singular reduced system (fully periodic,
+        # no Dirichlet pin — rigid translations) those extra iterations
+        # numerically corrupt the already-converged cases. lax.map gives each
+        # case its own while_loop (still jittable and differentiable).
+        columns, u_totals, u_macros = jax.lax.map(
+            lambda s: _single_case(s, traced_params), unit_strains_arr)
         # columns: (n_cases, voigt_dim), need transpose for C_hom
         C_hom = columns.T
         return HomogenizationResult(

@@ -82,6 +82,8 @@ FEAX provides optional dependency groups via `pyproject.toml`:
 | `.[cuda13]` | cuDSS + cuBLAS + cuDNN for CUDA 13 | GPU acceleration (CUDA 13, without JAX) |
 | `.[jax]` | `jax[cuda13]` | JAX for CUDA 13 (use with `cuda13`) |
 | `.[sksparse]` | `scikit-sparse` | CPU host-side direct solvers (`cholmod`, `umfpack`) |
+| `.[amg]` | `amjax` (+ `pyamg`) | Algebraic multigrid solver (`AMGSolverOptions`) |
+| `.[matfree]` | `matfree` | Matrix-free eigensolver utilities (linear buckling) |
 | `.[dev]` | pytest, black, ruff, mypy | Development and testing |
 
 ### scikit-sparse (Optional)
@@ -265,7 +267,7 @@ print(f"JAX 64-bit enabled: {jax.config.jax_enable_x64}")
 Expected output:
 ```
 JAX version: 0.4.x
-FEAX version: 0.5.2
+FEAX version: 0.6.1
 JAX devices: [CpuDevice(id=0)] or [GpuDevice(id=0)]
 JAX 64-bit enabled: True
 ```

@@ -14,6 +14,30 @@ import jax.numpy as np
 from feax.problem import Problem
 
 
+def _is_solution(v) -> bool:
+    from feax.solution import Solution
+    return isinstance(v, Solution)
+
+
+def _coerce_volume_var(v):
+    """Unwrap a :class:`feax.Solution` used as a coefficient.
+
+    Single-field Solutions become node-based volume vars — ``(num_nodes,)``
+    when the solved field is scalar (vec=1), ``(num_nodes, vec)`` otherwise
+    (the assembler interpolates both via shape functions). Multi-field
+    Solutions are ambiguous: pick one with ``sol.field(i)`` /
+    ``sol.node_var(var_index=i)``.
+    """
+    if not _is_solution(v):
+        return v
+    if v.num_fields != 1:
+        raise ValueError(
+            f"Solution with {v.num_fields} fields is ambiguous as a "
+            "coefficient; pass sol.field(i) or sol.node_var(var_index=i).")
+    u = v.field(0)                                    # (..., num_nodes, vec)
+    return u[..., 0] if v.layout[0][1] == 1 else u
+
+
 @dataclass(frozen=True)
 @jax.tree_util.register_pytree_node_class
 class TracedParams:
@@ -33,10 +57,14 @@ class TracedParams:
     volume_vars : Tuple[np.ndarray, ...], optional
         Tuple of arrays for volume integral parameters. Each array can have shape:
         - (num_nodes,) for node-based variables (most memory efficient)
+        - (num_nodes, k) for node-based vector variables
         - (num_cells,) for cell-based/element-wise variables
         - (num_cells, num_quads) for quad-point based variables (legacy)
         The assembler automatically interpolates to quadrature points.
-        Common examples: material properties (E, nu), density, source terms
+        Common examples: material properties (E, nu), density, source terms.
+        A :class:`feax.Solution` may be passed directly — it is converted to
+        its node-based field (staggered chaining: the previous solve's result
+        becomes this solve's coefficient).
     surface_vars : Optional[List[Tuple[np.ndarray, ...]]], optional
         List of tuples for surface integral parameters. One entry per surface/location_fn.
         Each tuple contains arrays with shape (num_surface_faces, num_face_quads).
@@ -59,13 +87,22 @@ class TracedParams:
 
     def __post_init__(self) -> None:
         """Initialize default values for optional fields.
-        
+
         This method is called automatically after dataclass initialization
         to handle default values for optional fields.
         """
         # Initialize surface_vars as empty list if None
         if self.surface_vars is None:
             object.__setattr__(self, 'surface_vars', [])
+        # A feax.Solution passed directly as a coefficient becomes its
+        # node-based field: (num_nodes,) for a scalar solve, (num_nodes, vec)
+        # for a vector solve (both layouts are native node vars to the
+        # assembler). This is the staggered-multiphysics shortcut:
+        #     tp_mech = TracedParams(volume_vars=(E_cells, sol_thermal))
+        if any(_is_solution(v) for v in self.volume_vars):
+            object.__setattr__(self, 'volume_vars',
+                               tuple(_coerce_volume_var(v)
+                                     for v in self.volume_vars))
 
     @staticmethod
     def create_node_var(problem: 'Problem', value: float, var_index: int = 0) -> np.ndarray:
@@ -336,6 +373,54 @@ class TracedParams:
         """
         surface_quad_points = problem.physical_surface_quad_points[surface_index]
         return jax.vmap(jax.vmap(var_fn))(surface_quad_points)
+
+    @staticmethod
+    def node_var_from_solution(problem: 'Problem', sol: np.ndarray,
+                               component: Optional[int] = None,
+                               var_index: int = 0) -> np.ndarray:
+        """Turn a solved field into a node-based volume var for the NEXT solve.
+
+        This is the chaining bridge for staggered multiphysics: the flat
+        solution of one solver becomes ``volume_vars`` input of another Problem
+        on the same mesh (e.g. thermal ``T`` driving mechanical thermal strain).
+
+        Parameters
+        ----------
+        problem : Problem
+            The problem the solution belongs to (defines the DOF layout).
+        sol : ndarray
+            Flat solution vector as returned by a feax solver.
+        component : int, optional
+            Which component to extract when ``vec > 1`` (e.g. 0/1/2 for a
+            displacement). Required for vector fields; ignored for scalars.
+        var_index : int, optional
+            Which variable of a multi-variable problem. Default 0.
+
+        Returns
+        -------
+        ndarray, (num_nodes,)
+            Node-based variable — directly usable in ``TracedParams``
+            (``volume_vars``) of a problem sharing the mesh. Differentiable.
+
+        Examples
+        --------
+        >>> T = solver_thermal(tp_thermal)                       # flat solution
+        >>> T_nodes = TracedParams.node_var_from_solution(thermal_problem, T)
+        >>> tp_mech = tp_mech.replace_volume_var(0, T_nodes)     # chain
+        >>> u = solver_mech(tp_mech)
+
+        See also :meth:`feax.Solution.node_var` — the same bridge as a method
+        when the solver was built with ``return_solution=True``.
+        """
+        sol = getattr(sol, "dofs", sol)               # accept a feax.Solution
+        sol_list = problem.unflatten_fn_sol_list(sol)
+        u = sol_list[var_index]                       # (num_nodes, vec)
+        if u.shape[1] == 1:
+            return u[:, 0]
+        if component is None:
+            raise ValueError(
+                f"solution has vec={u.shape[1]} components; pass component=")
+        return u[:, component]
 
     def replace_volume_var(self, index: int, new_var: np.ndarray) -> 'TracedParams':
         """Create a new TracedParams with one volume variable replaced.

@@ -15,7 +15,7 @@ Key ingredients:
 1. **Single mesh** with two material regions: stiff body and soft medium
 2. **Neo-Hookean** compressible hyperelasticity for both regions, with the medium scaled down by $\gamma_0 \approx 10^{-7}$
 3. **Biharmonic regularization** (HuHu-LuLu) on the medium to prevent mesh distortion
-4. **Incremental loading** with non-symmetric BC elimination (`symmetric_bc=False`)
+4. **Incremental loading** with non-symmetric BC elimination (`symmetric_elimination=False`)
 
 ### References
 
@@ -207,7 +207,7 @@ bc_move = fe.DirichletBCSpec(
 bc = fe.DirichletBCConfig([bc_fixed, bc_move]).create_bc(problem)
 ```
 
-### Why `symmetric_bc=False`
+### Why `symmetric_elimination=False`
 
 This problem requires non-symmetric BC elimination for two reasons:
 
@@ -224,7 +224,7 @@ solver = fe.create_solver(
     newton_options=fe.NewtonOptions(tol=1e-6, rel_tol=1e-8, max_iter=100),
     linear=False,        # adaptive Newton (the default)
     traced_params=iv,
-    symmetric_bc=False,
+    symmetric_elimination=False,
 )
 ```
 
@@ -267,7 +267,7 @@ Key points:
 
 - `bc.replace_vals()` creates a new `DirichletBC` with updated values but the same DOF locations — no solver rebuild.
 - The previous solution `sol` is passed as the initial guess, giving Newton a good starting point for each load increment.
-- With `symmetric_bc=False`, BC values are **not** pre-applied to the initial guess. The Newton solver drives BC DOFs to their prescribed values through the modified residual.
+- With `symmetric_elimination=False`, BC values are **not** pre-applied to the initial guess. The Newton solver drives BC DOFs to their prescribed values through the modified residual.
 
 ## Running the Example
 

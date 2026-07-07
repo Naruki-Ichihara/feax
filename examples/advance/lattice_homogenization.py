@@ -19,7 +19,7 @@ nu = 0.3
 mesh_size = 0.15#0.05
 unit_cell_length = 3
 
-class LinearElasticity(fe.problem.Problem):
+class LinearElasticity(fe.Problem):
     def get_tensor_map(self):
         def stress(u_grad, E, nu_val):
             mu = E / (2.0 * (1.0 + nu_val))
@@ -63,14 +63,14 @@ P = flat.pbc.prolongation_matrix(pairings, mesh, vec=3)
 print(f"Prolongation matrix: {P.shape}")
 
 # Boundary conditions (empty for fully periodic)
-bc_config = fe.DCboundary.DirichletBCConfig([])
+bc_config = fe.DirichletBCConfig([])
 bc = bc_config.create_bc(problem)
 
 # Internal variables with density-based Young's modulus
 print("Setting up material properties...")
 E_field = E_base * rho  # rho is nodal, from create_lattice_density_field_nodal
-nu_field = fe.traced_params.TracedParams.create_cell_var(problem, nu)
-traced_params = fe.traced_params.TracedParams(volume_vars=(E_field, nu_field), surface_vars=())
+nu_field = fe.TracedParams.create_cell_var(problem, nu)
+traced_params = fe.TracedParams(volume_vars=(E_field, nu_field), surface_vars=())
 
 # Homogenization solver
 print("Creating homogenization solver...")

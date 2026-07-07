@@ -7,3 +7,4 @@ This section contains introductory tutorials for using FEAX.
 - [Vectorization Transform](./vmap_transform.md)
 - [Batched Dirichlet BC](./batched_bc.md)
 - [Nonlinear Hyperelasticity](./hyperelasticity.md)
+- [Thermo-Mechanical Coupling on a Lattice](./thermo_mech_coupling.md)

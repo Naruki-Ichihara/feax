@@ -76,7 +76,7 @@ grads = grad_fn(traced_params)
 
 ## Overview
 
-New to FEAX? The [Overview](./overview.md) page summarizes the core workflow — Mesh → Problem → Boundary Conditions → Solver → Solution — and the key concepts you need to get started.
+New to FEAX? The [Overview](./overview.md) page summarizes the core workflow — Mesh → Problem → Boundary Conditions → Solver → Solution — and the key concepts you need to get started. The [Data Storage Formats](./data_storage.md) page explains the few array layouts everything is built on (`Mesh`, implicit `StructuredGrid`, `SparseDesign`, flat DOF vectors / `Solution`, `CSRMatrix`).
 
 ## Installation
 

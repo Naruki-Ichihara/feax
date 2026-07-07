@@ -15,7 +15,7 @@ Three pipeline levels:
   Use for staggered multi-physics (thermal + phase-field + mechanics).
 * **ImplicitPipeline** — one implicit solve per step (backward Euler
   pattern).  Implement ``update_vars()``; ``step()`` calls
-  ``self.solver(iv, state)`` automatically.
+  ``self.solver(tp, state)`` automatically.
 * **ExplicitPipeline** — explicit ODE integration with lumped mass.
   Implement ``compute_rhs()``; ``step()`` applies Forward Euler / RK2 / RK4.
 
@@ -159,7 +159,7 @@ Covers the common backward-Euler pattern where each time step
 solves one (non)linear system:
 
 1. ``update_vars(state, t, dt)`` → ``TracedParams``
-2. ``self.solver(iv, state)`` → new state
+2. ``self.solver(tp, state)`` → new state
 
 Set ``self.solver`` in :meth:`build` and implement
 :meth:`update_vars`.

@@ -20,7 +20,10 @@ Complete API documentation for FEAX (Finite Element Analysis with JAX).
 ### Assembly & Solving
 - **[feax.assembler](./reference/feax/assembler.md)** - System matrix and residual assembly
 - **[feax.solver](./reference/feax/solver.md)** - High-level solver creation (`create_solver`)
-- **[feax.solvers](./reference/feax/solvers/index.md)** - Solver infrastructure (options, linear, Newton, matrix-free, reduced)
+- **[feax.solvers](./reference/feax/solvers/index.md)** - Solver infrastructure (options, linear, Newton, AMG, reduced)
+- **[feax.solvers.time_solver](./reference/feax/solvers/time_solver.md)** - Time stepping (`TimePipeline`, `ImplicitPipeline`, `ExplicitPipeline`, `TimeConfig`, `run`)
+- **[feax.solvers.eigen](./reference/feax/solvers/eigen.md)** - Linear buckling (`create_linear_buckling_solver`; backends `"sparse"` (ARPACK, default), `"dense"`, `"matfree"`, and `"cudss"` GPU shift-invert)
+- **[feax.solution](./reference/feax/solution.md)** - `Solution` return type (`.dofs`, `.field(i)`, `.node_var(component=)`)
 
 ### Boundary Conditions
 - **[feax.DCboundary](./reference/feax/DCboundary.md)** - Dirichlet boundary conditions
@@ -36,15 +39,18 @@ Complete API documentation for FEAX (Finite Element Analysis with JAX).
 Constitutive models for finite element simulations:
 
 - **[feax.mechanics.cohesive](./reference/feax/mechanics/cohesive.md)** - Cohesive zone models for fracture mechanics
+- **[feax.mechanics.shell](./reference/feax/mechanics/shell.md)** - Mindlin plates and classical lamination theory
+- **[feax.mechanics.tmc](./reference/feax/mechanics/tmc.md)** - Third-medium contact
 
 ## Topology Optimization (gene)
 
 Density-based topology optimization with adaptive remeshing:
 
-- **[feax.gene.optimizer](./reference/feax/gene/optimizer.md)** - Optimization driver (`run`, `Continuation`, `AdaptiveConfig`)
+- **[feax.gene.optimizer](./reference/feax/gene/optimizer.md)** - MMA pipeline driver (`Pipeline`, `@constraint`, `run`, `Continuation`, `AdaptiveConfig`)
 - **[feax.gene.adaptive](./reference/feax/gene/adaptive.md)** - Adaptive remeshing and field transfer
 - **[feax.gene.filters](./reference/feax/gene/filters.md)** - Density filters and Heaviside projection
 - **[feax.gene.responses](./reference/feax/gene/responses.md)** - Compliance and volume functions
+- **[feax.gene.narrowband](./reference/feax/gene/narrowband.md)** - Narrow-band OC drivers (`oc_update`, `run_narrowband_oc`, `run_narrowband_multires`)
 - **[feax.gene.mdmm](./reference/feax/gene/mdmm.md)** - Constrained optimization (MDMM)
 
 ## Flat Toolkit

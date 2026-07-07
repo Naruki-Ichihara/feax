@@ -6,7 +6,7 @@ title: feax.solvers.eigen
 Linear-buckling eigensolvers for feax, in JAX.
 
 Solves the linear-buckling pencil ``(K + λ K_g) φ = 0`` for the lowest positive
-buckling factors ``λ`` and their mode shapes, with three forward backends:
+buckling factors ``λ`` and their mode shapes, with four forward backends:
 
 * ``solver=&quot;sparse&quot;`` (:func:`_sparse_buckling`, **default**) — matrix-free shift-invert
   ``T = -K⁻¹ K_g`` solved by SciPy ARPACK (:func:`scipy.sparse.linalg.eigs`) with one
@@ -20,8 +20,14 @@ buckling factors ``λ`` and their mode shapes, with three forward backends:
   matfree&#x27;s JAX Arnoldi. Equivalent results, but applies ``K⁻¹`` through a nested
   ``jax.pure_callback`` that accumulates in the XLA runtime across calls (memory leak in
   long loops); prefer ``&quot;sparse&quot;`` unless you specifically need the JAX path.
+* ``solver=&quot;cudss&quot;`` (:func:``6, opt-in, GPU) — the same shift-invert
+  with ``K`` factorized ONCE per call on the GPU by cuDSS (spineax
+  factor-once/solve-many) and the Arnoldi loop as traced JAX (``K_g`` SpMV + cuDSS
+  SOLVE per ``lax.scan`` step); only the tiny Hessenberg eig runs in a host callback.
+  No per-call closures; factors live in spineax&#x27;s fixed-capacity LRU (no accumulation
+  over optimization loops). Requires spineax + CUDA.
 
-The differentiable driver :func:``4 wraps any backend with
+The differentiable driver :func:``3 wraps any backend with
 an analytical eigenvalue sensitivity, so ``λ`` is ``jax.grad``-able w.r.t. the assembled
 ``K`` / ``K_g`` (and ``bf`` itself stays jittable — the eigensolve is an opaque host
 callback regardless of backend).
@@ -92,12 +98,12 @@ Parameters
 ----------
 - **free_dofs** (*int array*): Unconstrained DoFs (captured; the returned function differentiates only K, Kg).
 - **num_modes** (*int*): Number of buckling factors returned.
-- **solver** (*{`&quot;sparse&quot;, &quot;dense&quot;, &quot;matfree&quot;`}*): Forward eigensolver. ``&quot;sparse&quot;`` (default) forwards ``solver_kw`` to :func:``0 (SciPy ARPACK matrix-free shift-invert — low memory, leak-free; e.g. ``num_matvecs=40``); ``&quot;dense&quot;`` uses :func:`_dense_buckling` (exact, ``O(nf²)`` memory); ``&quot;matfree&quot;`` uses :func:`_matfree_buckling` (JAX matfree Arnoldi — equivalent, opt-in; leaks memory in long loops).
+- **solver** (*{`&quot;sparse&quot;, &quot;dense&quot;, &quot;matfree&quot;, &quot;cudss&quot;`}*): Forward eigensolver. ``&quot;sparse&quot;`` (default) forwards ``solver_kw`` to :func:``0 (SciPy ARPACK matrix-free shift-invert — low memory, leak-free; e.g. ``num_matvecs=40``); ``&quot;dense&quot;`` uses :func:`_dense_buckling` (exact, ``O(nf²)`` memory); ``&quot;matfree&quot;`` uses :func:`_matfree_buckling` (JAX matfree Arnoldi — equivalent, opt-in; leaks memory in long loops); ``&quot;cudss&quot;`` uses :func:``3 (GPU shift-invert: cuDSS factor-once/solve-many + traced device Arnoldi — requires spineax + CUDA; kwargs e.g. ``num_matvecs=40``, ``matrix_type=&quot;symmetric&quot;``).
 
 
 Returns
 -------
-- **bf** (*Callable[[BCOO, BCOO], Tuple[jax.Array, jax.Array]]*): ``bf(K, Kg) -&gt; (lambdas, modes)``. ``lambdas`` is the ``(num_modes,)`` ascending positive buckling factors, **differentiable** w.r.t. ``K`` and ``Kg``. ``modes`` is the ``(num_modes, N)`` full-DoF mode shapes for visualization and carries **no gradient** (``stop_gradient``; eigenvector derivatives are unstable at the degenerate buckling pairs).
+- **bf** (*Callable[[CSRMatrix, CSRMatrix], Tuple[jax.Array, jax.Array]]*): ``bf(K, Kg) -&gt; (lambdas, modes)``. ``lambdas`` is the ``(num_modes,)`` ascending positive buckling factors, **differentiable** w.r.t. ``K`` and ``Kg``. ``modes`` is the ``(num_modes, N)`` full-DoF mode shapes for visualization and carries **no gradient** (``stop_gradient``; eigenvector derivatives are unstable at the degenerate buckling pairs).
 
 
 Notes

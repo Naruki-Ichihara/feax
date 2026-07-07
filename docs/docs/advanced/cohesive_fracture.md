@@ -11,7 +11,7 @@ The bulk elasticity is handled by FEAX's standard residual assembly, while the c
 3. At each Newton step the combined tangent applies the bulk Jacobian (sparse) plus the cohesive tangent **matrix-free** via `jax.jvp`.
 4. A Krylov solver (CG) solves the Newton system using matrix–vector products.
 
-This is the **hybrid matrix-free Newton–Krylov** path in FEAX, activated by passing `extra_residual_fn` together with `KrylovSolverOptions`.
+This is the **hybrid matrix-free Newton–Krylov** path in FEAX, activated by passing `extra_residual_fn` together with `KrylovSolverOptions`. (Alternatively, `extra_residual_fn` with `DirectSolverOptions` detects the extra term's sparsity via automatic sparse differentiation and factorizes the exact combined tangent — see the [Solver Guide](../getting-started/solver.md).)
 
 ## Energy-Based Formulation
 
@@ -257,14 +257,14 @@ for step in range(1, n_steps + 1):
     bc = make_bc(disp)
     u_flat = u_flat.at[bc.bc_rows].set(bc.bc_vals)
     history['delta_max'] = delta_max
-    u_flat = solver(EMPTY_IV, u_flat, bc=bc)
+    u_flat = solver(EMPTY_IV, u_flat, bc=bc).dofs
 
     # Update irreversibility state
     delta_current = interface.get_opening(u_flat)
     delta_max = np.maximum(delta_max, delta_current)
 ```
 
-Note: `solver(EMPTY_IV, u_flat, bc=bc)` — the bulk has no internal variables, `u_flat` is the initial guess, and `bc=` supplies the current load step's prescribed values.
+Note: `solver(EMPTY_IV, u_flat, bc=bc)` — the bulk has no internal variables, `u_flat` is the initial guess, and `bc=` supplies the current load step's prescribed values. The solver returns a `fe.Solution`; taking `.dofs` keeps `u_flat` a flat JAX array so the in-place BC update (`u_flat.at[...].set(...)`) works on the next step (`Solution` has no `.at`).
 
 ## Post-Processing
 
@@ -322,7 +322,6 @@ fe.utils.save_sol(
 
 ## Further Reading
 
-- `examples/advance/cohesive_fracture_2d.py` — 2D version with QUAD4 elements
-- `examples/advance/cohesive_fracture_3d.py` — Complete 3D working example
+- `examples/advance/cohesive_fracture.py` — Complete 3D working example
 - [Solver Guide](../getting-started/solver.md) — `extra_residual_fn` and the hybrid Newton–Krylov path
 - [API: feax.mechanics.cohesive](../api/reference/feax/mechanics/cohesive.md) — Cohesive zone models

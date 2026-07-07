@@ -41,7 +41,12 @@
       "Bash(pkill -9 -f \"python.*examples\")",
       "Read(//tmp/**)",
       "Bash(PYTHONPATH=/workspace timeout 600 python /tmp/val_cbnewton.py)",
-      "Bash(pdfinfo /workspace/1-s2.0-S0045782526003919-main.pdf)"
+      "Bash(pdfinfo /workspace/1-s2.0-S0045782526003919-main.pdf)",
+      "Bash(python -m pytest tests/test_narrowband.py tests/test_time_solver.py -q)",
+      "Bash(python -m pytest tests/test_cudss.py::test_cudss_reuse_factorization_forward_and_adjoint -q)",
+      "Bash(python -c \"import spineax.cudss.factor_solve as fs; print\\(fs.__file__\\)\")",
+      "Bash(grep -n \"cache\\\\|_FACTORS\\\\|evict\\\\|release\\\\|pop\\\\|del \" /usr/local/lib/python3.12/dist-packages/spineax/cudss/factor_solve.py | head -20; echo ===; grep -n \"create_linear_buckling_solver\\\\|buckling_solver\\\\|bf\\(\" /workspace/examples/distribute/private/copv_double_wall_buckling_topopt.py | head -8)",
+      "Read(//usr/local/lib/python3.12/dist-packages/spineax/cudss/**)"
     ],
     "deny": [],
     "ask": [],

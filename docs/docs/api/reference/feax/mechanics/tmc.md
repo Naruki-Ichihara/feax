@@ -27,7 +27,7 @@ Usage
 
     is_medium = classify_medium_cells(mesh, lambda cx, cy: ...)
 
-    problem, iv = ThirdMediumContact.create(
+    problem, tp = ThirdMediumContact.create(
         mesh, is_medium=is_medium,
         mu=0.357, lmbda=1.667,
         gamma0=5e-7, kr=5e-7,
@@ -151,16 +151,16 @@ Parameters
 Returns
 -------
 - **problem** (*ThirdMediumContact*): Configured feax Problem (with ``hess=True``).
-- **iv** (*feax.TracedParams*): Internal variables ready for ``create_solver`` / ``newton_solve``.
+- **tp** (*feax.TracedParams*): Internal variables ready for ``create_solver`` / ``newton_solve``.
 
 
 Examples
 --------
 ```python
->>> problem, iv = ThirdMediumContact.create(
+>>> problem, tp = ThirdMediumContact.create(
 ...     mesh, is_medium, mu=G, lmbda=K,
 ...     gamma0=5e-7, kr=5e-7, ele_type=&#x27;QUAD9&#x27;,
 ... )
->>> solver = fe.create_solver(problem, bc, traced_params=iv, ...)
+>>> solver = fe.create_solver(problem, bc, traced_params=tp, ...)
 ```
 

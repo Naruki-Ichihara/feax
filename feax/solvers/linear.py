@@ -167,7 +167,7 @@ def create_linear_solver(
     solver_options: Optional[AbstractSolverOptions] = None,
     adjoint_solver_options: Optional[AbstractSolverOptions] = None,
     traced_params=None,
-    symmetric_bc: bool = True,
+    symmetric_elimination: bool = True,
     traced_structure=None,
 ) -> Callable[[Any, np.ndarray], np.ndarray]:
     """Create a differentiable solver for linear FE problems.
@@ -192,7 +192,7 @@ def create_linear_solver(
         Sample internal variables used to pre-warm cuDSS with concrete CSR
         structure before any JAX tracing. Recommended when using cuDSS and
         composing ``jax.jit`` with ``jax.grad``.
-    symmetric_bc : bool, default True
+    symmetric_elimination : bool, default True
         Use symmetric Dirichlet elimination (zero BC rows *and* columns). Linear
         FE operators are symmetric after symmetric elimination, so the Krylov
         adjoint reuses the forward matvec (``Jᵀ = J``).
@@ -270,10 +270,10 @@ def create_linear_solver(
     from .amg import amg_to_krylov_options
     if isinstance(solver_options, AMGSolverOptions):
         solver_options = amg_to_krylov_options(
-            solver_options, problem, bc, traced_params, traced_structure, symmetric_bc)
+            solver_options, problem, bc, traced_params, traced_structure, symmetric_elimination)
     if isinstance(adjoint_solver_options, AMGSolverOptions):
         adjoint_solver_options = solver_options if shared_opts else amg_to_krylov_options(
-            adjoint_solver_options, problem, bc, traced_params, traced_structure, symmetric_bc)
+            adjoint_solver_options, problem, bc, traced_params, traced_structure, symmetric_elimination)
 
     if isinstance(solver_options, KrylovSolverOptions):
         solver_options = resolve_iterative_solver(solver_options, default_matrix_property)
@@ -307,10 +307,10 @@ def create_linear_solver(
     _adj_direct = isinstance(adjoint_solver_options, DirectSolverOptions)
 
     # CSR-direct operators (only built when a direct solver is on either path).
-    J_bc_csr_func = create_J_bc_csr_function(problem, bc, symmetric=symmetric_bc) if (_fwd_direct or _adj_direct) else None
-    J_bc_csr_parametric = create_J_bc_csr_parametric(problem, symmetric=symmetric_bc) if (_fwd_direct or _adj_direct) else None
+    J_bc_csr_func = create_J_bc_csr_function(problem, bc, symmetric=symmetric_elimination) if (_fwd_direct or _adj_direct) else None
+    J_bc_csr_parametric = create_J_bc_csr_parametric(problem, symmetric=symmetric_elimination) if (_fwd_direct or _adj_direct) else None
     # Matrix-free operator (fused BC-applied residual + JVP matvec) for Krylov.
-    matfree_res_J_param = create_matfree_res_J_parametric(problem, symmetric=symmetric_bc)
+    matfree_res_J_param = create_matfree_res_J_parametric(problem, symmetric=symmetric_elimination)
     res_bc_parametric = create_res_bc_parametric(problem)
     linear_solve_fn = create_linear_solve_fn(
         solver_options,
@@ -342,8 +342,42 @@ def create_linear_solver(
         J_bc_func_parametric=J_bc_csr_parametric,
     )
 
+    # Factorization reuse (cuDSS only): factor J once in the forward and reuse
+    # those factors for the adjoint solve. This is valid only when the OPERATOR
+    # is symmetric (J = Jᵀ), because then λ = J⁻ᵀ v = J⁻¹ v uses the same
+    # factorization. The right signal is the cuDSS matrix_type being SYMMETRIC(1)
+    # or SPD(3) — NOT ``symmetric_elimination`` (which only chooses how Dirichlet rows are
+    # eliminated and does not make a non-symmetric operator symmetric). A GENERAL
+    # matrix (a non-symmetric operator, or symmetric_elimination=False, which breaks
+    # symmetry and is auto-detected as GENERAL) falls back to the normal
+    # two-factorization adjoint. The factorization token threads through the
+    # custom_vjp residuals (see spineax.cudss.factor_solve).
+    _reuse_factor = False
+    if (_fwd_direct and _adj_direct
+            and getattr(solver_options, "solver", None) == "cudss"
+            and getattr(solver_options, "reuse_factorization", False)):
+        _cudss = solver_options.cudss_options
+        _mtype_id = int(getattr(_cudss.matrix_type, "value", _cudss.matrix_type))
+        _mview_id = int(getattr(_cudss.matrix_view, "value", _cudss.matrix_view))
+        _dev_id = int(getattr(_cudss, "device_id", 0) or 0)
+        _reuse_factor = _mtype_id in (1, 3)   # SYMMETRIC or SPD => J = Jᵀ
+
+    if _reuse_factor:
+        from spineax.cudss.factor_solve import factorize as _factorize, solve_with as _solve_with
+
+        def _factor_and_solve(initial_guess, traced_params, effective_bc, ts):
+            res = res_bc_parametric(initial_guess, traced_params, effective_bc, ts)
+            op = J_bc_csr_parametric(initial_guess, traced_params, effective_bc, ts)
+            token = _factorize(op.data, op.indptr, op.indices,
+                               device_id=_dev_id, mtype_id=_mtype_id, mview_id=_mview_id)
+            delta_sol = _solve_with(token, -res, device_id=_dev_id)
+            return initial_guess + delta_sol, token
+
     @jax.custom_vjp
     def differentiable_solve(traced_params, initial_guess, effective_bc, ts):
+        if _reuse_factor:
+            sol, _ = _factor_and_solve(initial_guess, traced_params, effective_bc, ts)
+            return sol
         # Operator follows the solve method: direct assembles a CSR matrix;
         # Krylov uses the matrix-free (residual JVP) matvec — no assembly.
         if _fwd_direct:
@@ -372,10 +406,28 @@ def create_linear_solver(
         return initial_guess + delta_sol
 
     def f_fwd(traced_params, initial_guess, effective_bc, ts):
+        if _reuse_factor:
+            sol, token = _factor_and_solve(initial_guess, traced_params, effective_bc, ts)
+            return sol, (traced_params, sol, effective_bc, ts, token)
         sol = differentiable_solve(traced_params, initial_guess, effective_bc, ts)
         return sol, (traced_params, sol, effective_bc, ts)
 
     def f_bwd(res, v):
+        if _reuse_factor:
+            # Reuse the forward factorization: λ = J⁻ᵀ v = J⁻¹ v (symmetric).
+            traced_params, sol, effective_bc, ts, token = res
+            adjoint_vec = _solve_with(token, v, device_id=_dev_id)
+
+            def res_fn(tp, bc_arg):
+                return problem.unflatten_fn_sol_list(
+                    res_bc_parametric(sol, tp, bc_arg, ts))
+            adjoint_list = problem.unflatten_fn_sol_list(adjoint_vec)
+            _, f_vjp = jax.vjp(res_fn, traced_params, effective_bc)
+            vjp_iv, vjp_bc = f_vjp(adjoint_list)
+            vjp_iv = jax.tree_util.tree_map(_safe_negate, vjp_iv)
+            vjp_bc = jax.tree_util.tree_map(_safe_negate, vjp_bc)
+            return (vjp_iv, None, vjp_bc, None)
+
         traced_params, sol, effective_bc, ts = res
 
         # Adjoint solve: J^T @ adjoint = v
@@ -389,7 +441,7 @@ def create_linear_solver(
             J_adjoint = transpose_with_maps(
                 J, src.csr_T_perm, src.csr_T_indptr, src.csr_T_indices
             ) if use_transpose else J
-        elif symmetric_bc:
+        elif symmetric_elimination:
             # Symmetric BC ⇒ J is symmetric ⇒ Jᵀ = J (matrix-free matvec).
             _, J_adjoint = matfree_res_J_param(sol, traced_params, effective_bc, ts)
         else:

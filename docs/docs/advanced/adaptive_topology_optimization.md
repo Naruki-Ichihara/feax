@@ -387,4 +387,4 @@ result = run(
 
 ## Further Reading
 
-- `examples/advance/topology_optimization_adaptive.py` - Complete working example
+- `examples/advance/anisotropic_topology_optimization_3d.py` - Working example using the `Pipeline` / `run()` driver with adaptive remeshing

@@ -138,7 +138,8 @@ where w_ij is a distance-based weight function.
 
 **Returns**:
 
-- `filter_fn` - A JIT-compiled function (rho) -&gt; rho_filtered
+- `filter_fn` - A pure-JAX function (rho) -&gt; rho_filtered; compose it
+  under the caller&#x27;s ``jax.jit`` (feax.gene.optimizer does this)
 - `Input` - (num_nodes,) node-based density field
 - `Output` - (num_nodes,) filtered node-based density field
 
@@ -209,7 +210,6 @@ filter function once.
 #### heaviside\_projection
 
 ```python
-@jax.jit
 def heaviside_projection(rho, beta=10.0, threshold=0.5)
 ```
 
@@ -217,7 +217,8 @@ Apply Heaviside projection to density field for sharp void/solid boundaries.
 
 H(ρ) = (tanh(β*(ρ-threshold)) + 1) / 2
 
-This function is pure and JIT-compiled for efficient batched processing.
+This function is pure JAX; jit it (or the loss containing it) at the
+call site for efficient batched processing.
 
 **Arguments**:
 
@@ -275,4 +276,28 @@ Uses percentile-based approach to ensure exact volume fraction after Heaviside p
 >>> # Apply Heaviside projection
 >>> rho_projected = heaviside_projection(rho_normalized, beta=10.0, threshold=threshold)
 ```
+
+#### create\_sensitivity\_filter
+
+```python
+def create_sensitivity_filter(grid, rmin: float)
+```
+
+Narrow-band-native sensitivity filter (88-line ``ft=1``) for a StructuredGrid.
+
+Unlike the Helmholtz / density filters above (node-based, mesh-based, and not
+designed for a cell-based moving band), this one is CELL-based and O(band): for
+each active cell it averages the sensitivity over its in-radius ACTIVE
+neighbours using cone weights, addressing neighbours by grid arithmetic +
+``searchsorted`` into the active set — no full-grid array, so it follows the
+moving band. Intended for the analytic-sensitivity + OC workflow (it modifies
+the sensitivity heuristically; it is not a differentiable design transform —
+use Helmholtz/density for ``jax.grad`` design filtering).
+
+Returns ``filt(active_cells, rho_active, dc_active) -&gt; dc_filtered`` (all arrays
+over the active band cells), computing
+
+    dc_filt_e = Σ_n w_en ρ_n dc_n / ( Hs_e · max(1e-3, ρ_e) )
+
+with Hs_e summed over all IN-GRID neighbours (active or void).
 

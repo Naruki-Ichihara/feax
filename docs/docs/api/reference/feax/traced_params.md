@@ -30,7 +30,7 @@ The data structure mirrors the physics kernel organization:
 
 Parameters
 ----------
-- **volume_vars** (*Tuple[np.ndarray, ...], optional*): Tuple of arrays for volume integral parameters. Each array can have shape: - (num_nodes,) for node-based variables (most memory efficient) - (num_cells,) for cell-based/element-wise variables - (num_cells, num_quads) for quad-point based variables (legacy) The assembler automatically interpolates to quadrature points. Common examples: material properties (E, nu), density, source terms
+- **volume_vars** (*Tuple[np.ndarray, ...], optional*): Tuple of arrays for volume integral parameters. Each array can have shape: - (num_nodes,) for node-based variables (most memory efficient) - (num_nodes, k) for node-based vector variables - (num_cells,) for cell-based/element-wise variables - (num_cells, num_quads) for quad-point based variables (legacy) The assembler automatically interpolates to quadrature points. Common examples: material properties (E, nu), density, source terms. A :class:`feax.Solution` may be passed directly — it is converted to its node-based field (staggered chaining: the previous solve&#x27;s result becomes this solve&#x27;s coefficient).
 - **surface_vars** (*Optional[List[Tuple[np.ndarray, ...]]], optional*): List of tuples for surface integral parameters. One entry per surface/location_fn. Each tuple contains arrays with shape (num_surface_faces, num_face_quads). Common examples: surface tractions, pressures, heat fluxes
 
 
@@ -347,6 +347,47 @@ Create spatially varying surface loads:
 >>> def traction_field(x): return 500 * np.sin(np.pi * x[0])  # Sinusoidal traction
 >>> traction = TracedParams.create_spatially_varying_surface_var(problem, traction_field)
 ```
+
+#### node\_var\_from\_solution
+
+```python
+@staticmethod
+def node_var_from_solution(problem: 'Problem',
+                           sol: np.ndarray,
+                           component: Optional[int] = None,
+                           var_index: int = 0) -> np.ndarray
+```
+
+Turn a solved field into a node-based volume var for the NEXT solve.
+
+This is the chaining bridge for staggered multiphysics: the flat
+solution of one solver becomes ``volume_vars`` input of another Problem
+on the same mesh (e.g. thermal ``T`` driving mechanical thermal strain).
+
+Parameters
+----------
+- **problem** (*Problem*): The problem the solution belongs to (defines the DOF layout).
+- **sol** (*ndarray*): Flat solution vector as returned by a feax solver.
+- **component** (*int, optional*): Which component to extract when ``vec &gt; 1`` (e.g. 0/1/2 for a displacement). Required for vector fields; ignored for scalars.
+- **var_index** (*int, optional*): Which variable of a multi-variable problem. Default 0.
+
+
+Returns
+-------
+ndarray, (num_nodes,)
+    Node-based variable — directly usable in ``TracedParams``
+    (``volume_vars``) of a problem sharing the mesh. Differentiable.
+
+Examples
+--------
+```python
+>>> T = solver_thermal(tp_thermal)                       # flat solution
+>>> T_nodes = TracedParams.node_var_from_solution(thermal_problem, T)
+>>> tp_mech = tp_mech.replace_volume_var(0, T_nodes)     # chain
+>>> u = solver_mech(tp_mech)
+```
+See also :meth:``0 — the same bridge as a method
+when the solver was built with ``return_solution=True``.
 
 #### replace\_volume\_var
 

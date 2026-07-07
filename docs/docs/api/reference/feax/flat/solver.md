@@ -100,7 +100,7 @@ where ε^(k) is the k-th unit strain in Voigt order.
 Parameters
 ----------
 - **problem** (*FEAX Problem instance (linear elasticity).*)
-- **bc** (*FEAX DirichletBC (typically empty for periodic unit cells).*)
+- **bc** (*FEAX DirichletBC. Leave EMPTY for periodic unit cells: the reduced*): system is singular (rigid translations) but consistent, and the Krylov solve handles it. Do NOT pin a node to suppress the translations — the affine initial guess ``u_macro`` does not satisfy such a pin, which corrupts the fluctuation field around the pinned node (invisible for a homogeneous cell, wrong C_hom for a heterogeneous one).
 - **P** (*Prolongation matrix from ``feax.flat.pbc.prolongation_matrix``.*): Shape ``(num_dofs, num_reduced_dofs)``.
 - **mesh** (*FEAX mesh of the unit cell.*)
 - **solver_options** (*KrylovSolverOptions, optional*): Iterative solver configuration.

@@ -234,7 +234,7 @@ print(f"Interface: {len(top_nodes)} cohesive node pairs, "
 # ============================================================
 # feax problem (3D elasticity, HEX8)
 # ============================================================
-class Elasticity3D(fe.problem.Problem):
+class Elasticity3D(fe.Problem):
     """3D linear elasticity."""
 
     def get_energy_density(self):
@@ -311,20 +311,20 @@ def make_bc(disp):
     """Create BC for given displacement magnitude (half applied to each face)."""
     specs = [
         # Top face: all DOFs fixed, y = +disp/2
-        fe.DCboundary.DirichletBCSpec(top_face, 'x', 0.0),
-        fe.DCboundary.DirichletBCSpec(top_face, 'y', disp / 2),
-        fe.DCboundary.DirichletBCSpec(top_face, 'z', 0.0),
+        fe.DirichletBCSpec(top_face, 'x', 0.0),
+        fe.DirichletBCSpec(top_face, 'y', disp / 2),
+        fe.DirichletBCSpec(top_face, 'z', 0.0),
         # Bottom face: all DOFs fixed, y = -disp/2
-        fe.DCboundary.DirichletBCSpec(bottom_face, 'x', 0.0),
-        fe.DCboundary.DirichletBCSpec(bottom_face, 'y', -disp / 2),
-        fe.DCboundary.DirichletBCSpec(bottom_face, 'z', 0.0),
+        fe.DirichletBCSpec(bottom_face, 'x', 0.0),
+        fe.DirichletBCSpec(bottom_face, 'y', -disp / 2),
+        fe.DirichletBCSpec(bottom_face, 'z', 0.0),
         # Left face: x fixed
-        fe.DCboundary.DirichletBCSpec(left_face, 'x', 0.0),
+        fe.DirichletBCSpec(left_face, 'x', 0.0),
         # Front/back faces: z fixed (plane strain constraint)
-        fe.DCboundary.DirichletBCSpec(front_face, 'z', 0.0),
-        fe.DCboundary.DirichletBCSpec(back_face, 'z', 0.0),
+        fe.DirichletBCSpec(front_face, 'z', 0.0),
+        fe.DirichletBCSpec(back_face, 'z', 0.0),
     ]
-    return fe.DCboundary.DirichletBCConfig(specs).create_bc(problem)
+    return fe.DirichletBCConfig(specs).create_bc(problem)
 
 
 # Solver (created once, reused for all steps). The cohesive history δ_max is a
@@ -357,7 +357,7 @@ os.makedirs(os.path.join(data_dir, 'vtk_3d'), exist_ok=True)
 
 
 def save_step(u_flat, delta_max_field, step):
-    u = problem.unflatten_fn_sol_list(u_flat)[0]
+    u = u_flat.field(0)          # u_flat is a fe.Solution
     d_max_full = np.zeros(num_nodes)
     d_max_full = d_max_full.at[coh_bottom].set(delta_max_field)
     d_max_full = d_max_full.at[coh_top].set(delta_max_field)
@@ -403,7 +403,9 @@ for step in range(1, n_steps + 1):
     bc = make_bc(disp)
     u_flat = u_flat.at[bc.bc_rows].set(bc.bc_vals)
     history['delta_max'] = delta_max
-    u_flat = solver(EMPTY_IV, u_flat, bc=bc, traced_structure=ts)
+    # .dofs: keep the carried guess a flat array (the solver returns a
+    # Solution, which has no .at for the BC re-seed at the next step)
+    u_flat = solver(EMPTY_IV, u_flat, bc=bc, traced_structure=ts).dofs
 
     # Update state variables
     delta_current = interface.get_opening(u_flat)

@@ -48,12 +48,19 @@ Example:
 
 from . import adaptive
 from . import mesh_extraction
+from . import narrowband
 from . import optimizer
 from . import sdf
+from .narrowband import (
+    oc_update,
+    run_narrowband_oc,
+    run_narrowband_multires,
+)
 from .mesh_extraction import extract_surface, extract_volume_mesh
 from .filters import (
     create_density_filter,
     create_helmholtz_filter,
+    create_sensitivity_filter,
     density_filter,
     helmholtz_filter,
     heaviside_projection,
@@ -73,6 +80,7 @@ __all__ = [
     'helmholtz_filter',
     'create_density_filter',
     'density_filter',
+    'create_sensitivity_filter',
 
     # Projection and threshold
     'heaviside_projection',
@@ -92,8 +100,12 @@ __all__ = [
     # Adaptive remeshing
     'adaptive',
 
-    # Optimization driver
+    # Optimization drivers (MMA pipeline / narrow-band OC)
     'optimizer',
+    'narrowband',
+    'oc_update',
+    'run_narrowband_oc',
+    'run_narrowband_multires',
 ]
 
 __version__ = "1.0.0"

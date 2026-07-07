@@ -63,15 +63,28 @@ Create a linear solve function based on solver options.
 #### prewarm\_direct\_solvers
 
 ```python
-def prewarm_direct_solvers(problem, bc, traced_params, J_bc_func,
-                           forward_options, adjoint_options, forward_solve_fn,
-                           adjoint_solve_fn)
+def prewarm_direct_solvers(problem,
+                           bc,
+                           traced_params,
+                           J_bc_func,
+                           forward_options,
+                           adjoint_options,
+                           forward_solve_fn,
+                           adjoint_solve_fn,
+                           traced_structure=None,
+                           J_bc_func_parametric=None)
 ```
 
 Pre-warm direct solve closures with concrete CSR structure.
 
 This must run outside JAX tracing so the first-call direct initialization
 does not capture tracers in closure state.
+
+When ``traced_structure`` is given, the sample Jacobian is assembled on the
+TracedStructure path (``J_bc_func_parametric``) so it never touches the
+no-TracedStructure host slot maps — which may already have been released by
+``TracedStructure.from_problem(free_scratch=True)``. Falls back to the
+closure ``J_bc_func`` (no-TracedStructure path) otherwise.
 
 #### check\_convergence
 

@@ -177,6 +177,8 @@ def run(pipeline: Pipeline,
         save_every: int = 10,
         rho_init: Optional[onp.ndarray] = None,
         rho_bounds: Tuple[float, float] = (0.001, 1.0),
+        passive_solid: Optional[onp.ndarray] = None,
+        passive_void: Optional[onp.ndarray] = None,
         jit: bool = True) -> OptResult
 ```
 
@@ -193,6 +195,8 @@ Parameters
 - **save_every** (*int*): Write a VTU snapshot every N iterations.
 - **rho_init** (*ndarray, optional*): Initial density field.  Default: uniform at 0.5.
 - **rho_bounds** (*(float, float)*): Lower and upper bounds for design variables.
+- **passive_solid** (*int ndarray, optional*): Node indices held SOLID (design var pinned to 1.0, excluded from the optimisation): the MMA lower=upper bound is set to 1.0 there and the initial value is forced to 1.0. The pipeline still receives the full density vector. Indices refer to the initial mesh; ignored after an adaptive remesh changes the node count.
+- **passive_void** (*int ndarray, optional*): Node indices held VOID (design var pinned to the lower bound), same mechanism as ``passive_solid``.
 - **jit** (*bool*): JIT-compile objective and constraints (default ``True``).
 
 

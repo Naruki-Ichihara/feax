@@ -107,15 +107,21 @@ solver_options = fe.KrylovSolverOptions(solver="cg", tol=1e-8)
 solver = fe.create_solver(problem, bc, solver_options, linear=True, P=P)
 ```
 
-Pass prolongation matrix `P` to `create_solver()`.
+Pass prolongation matrix `P` to `create_solver()`. With `KrylovSolverOptions` the reduced system $\mathbf{P}^T \mathbf{J} \mathbf{P}$ is solved matrix-free; alternatively, `DirectSolverOptions` or `AMGSolverOptions` assemble the reduced operator sparsely and factorize it (or build an AMG hierarchy from it).
+
+:::caution Dirichlet BCs must respect the periodic pairing
+A Dirichlet BC that constrains only *part* of a periodic equivalence class (e.g. pinning one node of a tied pair) is contradictory, and `create_solver` raises a `ValueError` at build time. Constrain interior (non-paired) nodes, or the entire class — here the top/bottom Dirichlet rows pin both partners of each left–right corner pair, which is valid. For RVE homogenization, do **not** pin any node: leave the `DirichletBC` empty (see [Lattice Homogenization](./lattice_homogenization.md)).
+:::
 
 ### Step 7: Solve
 
 ```python
 initial_guess = np.zeros(problem.num_total_dofs_all_vars)
 sol_full = solver(traced_params, initial_guess)
-fe.utils.save_sol(mesh, "periodic_poisson.vtu", point_infos=[("u", sol_full.reshape(-1, 1))])
+fe.utils.save_sol(mesh, "periodic_poisson.vtu", point_infos=[("u", sol_full.field(0))])
 ```
+
+The solver returns a `fe.Solution`; `sol_full.field(0)` gives the `(num_nodes, 1)` nodal field.
 
 ## 3D Periodic Boundary Conditions
 
@@ -216,7 +222,7 @@ initial_guess = np.zeros(problem.num_total_dofs_all_vars)
 sol_full = solver(traced_params, initial_guess)
 
 # Save
-fe.utils.save_sol(mesh, "periodic_poisson.vtu", point_infos=[("u", sol_full.reshape(-1, 1))])
+fe.utils.save_sol(mesh, "periodic_poisson.vtu", point_infos=[("u", sol_full.field(0))])
 ```
 
 ## Vector Problems

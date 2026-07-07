@@ -43,6 +43,7 @@ dependencies = [
     "scikit-image",
     "trimesh",
     "pyvista",
+    "asdex",
 ]
 
 [project.optional-dependencies]

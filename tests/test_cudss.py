@@ -271,3 +271,56 @@ def test_cudss_vs_cg_consistency(
     diff = np.linalg.norm(sol_cudss - sol_cg) / np.linalg.norm(sol_cudss)
     assert diff < solution_tol, f"cuDSS and CG solutions differ by {diff:.2e}"
 
+
+
+@pytest.mark.cuda
+@requires_cudss
+def test_cudss_reuse_factorization_forward_and_adjoint(
+    linear_elasticity_problem_upper,
+    traced_params,
+    material_params
+):
+    """reuse_factorization=True (factor once, reuse for the adjoint) must give
+    the same solution and gradient as the default two-factorization path."""
+    import jax
+
+    problem = linear_elasticity_problem_upper  # symmetric view -> reuse eligible
+    tol = material_params['tol']
+
+    left = lambda p: np.isclose(p[0], 0., tol)
+    bc = fe.DirichletBCConfig([
+        fe.DirichletBCSpec(location=left, component="all", value=0.)
+    ]).create_bc(problem)
+    initial = fe.zero_like_initial_guess(problem, bc)
+
+    solver_reuse = fe.create_solver(
+        problem, bc,
+        solver_options=fe.DirectSolverOptions(reuse_factorization=True),
+        linear=True, traced_params=traced_params)
+    solver_plain = fe.create_solver(
+        problem, bc, solver_options=fe.DirectSolverOptions(),
+        linear=True, traced_params=traced_params)
+
+    sol_reuse = solver_reuse(traced_params, initial)
+    sol_plain = solver_plain(traced_params, initial)
+    ref = float(np.max(np.abs(sol_plain)))
+    assert float(np.max(np.abs(sol_reuse - sol_plain))) < 1e-10 * ref
+
+    # gradient w.r.t. the surface traction var through both adjoint paths
+    def make_loss(solver):
+        return lambda tp: np.sum(solver(tp, initial) ** 2)
+
+    g_reuse = jax.grad(make_loss(solver_reuse))(traced_params)
+    g_plain = jax.grad(make_loss(solver_plain))(traced_params)
+    gr = g_reuse.surface_vars[0][0]
+    gp = g_plain.surface_vars[0][0]
+    scale = float(np.max(np.abs(gp))) + 1e-30
+    assert float(np.max(np.abs(gr - gp))) / scale < 1e-8
+
+    # and against the matrix-free Krylov adjoint as an independent reference
+    solver_cg = fe.create_solver(
+        problem, bc,
+        solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-12, atol=1e-14),
+        linear=True)
+    g_cg = jax.grad(make_loss(solver_cg))(traced_params).surface_vars[0][0]
+    assert float(np.max(np.abs(gr - g_cg))) / scale < 1e-6

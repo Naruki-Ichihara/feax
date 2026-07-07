@@ -77,7 +77,8 @@ def create_linear_solver(
         solver_options: Optional[AbstractSolverOptions] = None,
         adjoint_solver_options: Optional[AbstractSolverOptions] = None,
         traced_params=None,
-        symmetric_bc: bool = True) -> Callable[[Any, np.ndarray], np.ndarray]
+        symmetric_elimination: bool = True,
+        traced_structure=None) -> Callable[[Any, np.ndarray], np.ndarray]
 ```
 
 Create a differentiable solver for linear FE problems.
@@ -94,7 +95,7 @@ Parameters
 - **solver_options** (*DirectSolverOptions or KrylovSolverOptions, optional*): Options for the forward linear solve (defaults to KrylovSolverOptions()).
 - **adjoint_solver_options** (*DirectSolverOptions or KrylovSolverOptions, optional*): Options for the adjoint solve used in the backward pass. Defaults to the same options as the forward solve.
 - **traced_params** (*TracedParams, optional*): Sample internal variables used to pre-warm cuDSS with concrete CSR structure before any JAX tracing. Recommended when using cuDSS and composing ``jax.jit`` with ``jax.grad``.
-- **symmetric_bc** (*bool, default True*): Use symmetric Dirichlet elimination (zero BC rows *and* columns). Linear FE operators are symmetric after symmetric elimination, so the Krylov adjoint reuses the forward matvec (``Jᵀ = J``).
+- **symmetric_elimination** (*bool, default True*): Use symmetric Dirichlet elimination (zero BC rows *and* columns). Linear FE operators are symmetric after symmetric elimination, so the Krylov adjoint reuses the forward matvec (``Jᵀ = J``).
 
 
 Returns

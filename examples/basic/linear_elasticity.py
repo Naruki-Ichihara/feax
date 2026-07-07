@@ -1,91 +1,102 @@
+"""Linear elasticity: cantilever beam with a tip traction.
+
+Canonical feax flow with the current API:
+
+  StructuredGrid -> to_mesh()      structured HEX8 mesh (no gmsh needed)
+  Problem.get_tensor_map           stress map; material comes in as TracedParams
+  DirichletBCSpec / BCConfig       boundary conditions
+  TracedParams                     E (volume var) + traction (surface var)
+  TracedStructure FIRST            traced structural arrays + frees host scratch
+  create_solver(linear=True)       one differentiable linear solve
+
+feax disables XLA GPU memory preallocation by default (set FEAX_PREALLOCATE=1
+to re-enable) and runs in float64 (FEAX_X64=0 for float32).
+"""
 import os
-# feax disables XLA GPU memory preallocation by default (set
-# FEAX_PREALLOCATE=1 to re-enable). No manual os.environ line needed.
+
 import jax.numpy as np
-import jax
 import feax as fe
 
-elastic_moduli = 70e3
-poisson_ratio = 0.3
-traction = 1e-3
+E0 = 70e3            # Young's modulus
+nu = 0.3             # Poisson's ratio
+traction = 1e-3      # tip traction in +z
 tol = 1e-5
 
-# Define mesh
-L = 1000
-W = 20
-H = 20
-box_size = (L, W, H)
-mesh = fe.mesh.box_mesh(box_size, mesh_size=1)
+# ── Mesh ─────────────────────────────────────────────────────────────────────
+# Implicit structured grid (spacing 1.0) materialized to an explicit HEX8 mesh.
+L, W, H = 1200, 20, 20
+mesh = fe.StructuredGrid((L, W, H)).to_mesh()
 
-# Locations
 left = lambda point: np.isclose(point[0], 0., tol)
 right = lambda point: np.isclose(point[0], L, tol)
 
-# Define problem
-E = elastic_moduli
-nu = poisson_ratio
-class LinearElasticity(fe.problem.Problem):
-    def get_energy_density(self):
-        def psi(u_grad, *args):
+
+# ── Problem ──────────────────────────────────────────────────────────────────
+# Material parameters arrive through TracedParams (volume_vars, in order after
+# u_grad), so the solve is differentiable w.r.t. them out of the box.
+class LinearElasticity(fe.Problem):
+    def get_tensor_map(self):
+        def stress(u_grad, E):
             mu = E / (2. * (1. + nu))
-            lmbda = E * nu / ((1 + nu) * (1 - 2 * nu))
+            lmbda = E * nu / ((1. + nu) * (1. - 2. * nu))
             epsilon = 0.5 * (u_grad + u_grad.T)
-            return 0.5 * lmbda * np.trace(epsilon)**2 + mu * np.sum(epsilon * epsilon)
-        return psi
+            return lmbda * np.trace(epsilon) * np.eye(self.dim) + 2. * mu * epsilon
+        return stress
+
     def get_surface_maps(self):
+        # One map per location_fn; extra args come from surface_vars.
         def surface_map(u, x, traction_mag):
             return np.array([0., 0., traction_mag])
         return [surface_map]
 
-problem = LinearElasticity(mesh, vec=3, dim=3, location_fns=[right])
 
-# Boundary
-left_fix = fe.DCboundary.DirichletBCSpec(
-    location=left,
-    component="all",
-    value=0.
-)
-bc_config = fe.DCboundary.DirichletBCConfig([left_fix])
-bc = bc_config.create_bc(problem)
+problem = LinearElasticity(mesh, vec=3, dim=3, ele_type='HEX8',
+                           location_fns=[right])
 
-# Internal variables
+# ── Boundary conditions ──────────────────────────────────────────────────────
+bc = fe.DirichletBCConfig([
+    fe.DirichletBCSpec(location=left, component='all', value=0.),
+]).create_bc(problem)
+
+# ── Internal variables ───────────────────────────────────────────────────────
+E_nodes = fe.TracedParams.create_node_var(problem, E0)
 traction_array = fe.TracedParams.create_uniform_surface_var(problem, traction)
-traced_params = fe.TracedParams(
-    volume_vars=(),
-    surface_vars=[(traction_array,)]
+traced_params = fe.TracedParams(volume_vars=(E_nodes,),
+                                surface_vars=[(traction_array,)])
+
+# ── TracedStructure (build FIRST) ────────────────────────────────────────────
+# Collects the mesh-sized structural arrays as traced leaves (jit does not bake
+# them into the executable) and releases the large host-side slot maps — this
+# matters on unified-memory devices (e.g. GB10). Pass it to create_solver AND
+# to every solver call.
+ts = fe.TracedStructure.from_problem(problem)
+
+# ── Solver ───────────────────────────────────────────────────────────────────
+# AMG (near-null-space = rigid body modes) is the memory-lean choice for large
+# elasticity; swap in fe.DirectSolverOptions() for small/medium problems.
+solver = fe.create_solver(
+    problem, bc,
+    solver_options=fe.AMGSolverOptions(near_nullspace='rigid_body', verbose=True),
+    linear=True,
+    traced_params=traced_params,
+    traced_structure=ts,
 )
 
 initial = fe.zero_like_initial_guess(problem, bc)
+sol = solver(traced_params, initial, traced_structure=ts)
+displacement = problem.unflatten_fn_sol_list(sol)[0]
 
-# Recommended flow: build TracedStructure FIRST. It collects the mesh-sized
-# structural arrays as traced leaves (so jit does not bake them into the
-# executable as constants) and, by default (free_scratch=True), releases the
-# large host-side index/slot scratch arrays on the problem — important on
-# unified-memory devices (e.g. GB10) where host numpy shares physical RAM with
-# the GPU allocator. Pass free_scratch=False if you also need get_jacobian
-# (BCOO) on the same problem afterward.
-ts = fe.TracedStructure.from_problem(problem)
+print(f"tip deflection: {float(displacement[:, 2].min()):.4f}")
 
-# Solver (auto selects based on backend and matrix property). Passing traced_structure
-# routes the auto-detect sample assembly through the TracedStructure path, so it works
-# regardless of the create_solver/TracedStructure order and never needs the freed
-# host slot maps.
-solver_opts = fe.DirectSolverOptions(verbose=True)
-solver = fe.create_solver(problem, bc, solver_options=solver_opts, linear=True,
-                          traced_params=traced_params, traced_structure=ts)
+# The solver is differentiable end-to-end, e.g. compliance sensitivity w.r.t.
+# the nodal stiffness field:
+#   dc = jax.grad(lambda tp: np.sum(solver(tp, initial, traced_structure=ts)**2)
+#                 )(traced_params).volume_vars[0]
 
-def solve_forward(tp, ts):
-    return solver(tp, initial, traced_structure=ts)
-sol = solve_forward(traced_params, ts)
-sol_unflat = problem.unflatten_fn_sol_list(sol)
-displacement = sol_unflat[0]
-
-# Save solution
+# ── Save ─────────────────────────────────────────────────────────────────────
 data_dir = os.path.join(os.path.dirname(__file__), 'data')
 os.makedirs(os.path.join(data_dir, 'vtk'), exist_ok=True)
-vtk_path = os.path.join(data_dir, 'vtk/u.vtu')
-
 fe.utils.save_sol(
     mesh=mesh,
-    sol_file=vtk_path,
-    point_infos=[("displacement", displacement)])
+    sol_file=os.path.join(data_dir, 'vtk/u.vtu'),
+    point_infos=[('displacement', displacement)])

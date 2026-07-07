@@ -13,6 +13,7 @@ from .common import (
     create_x0,
 )
 from .amg import build_amg_preconditioner, rigid_body_modes
+from .cmg import NarrowBandCMG
 from .linear import create_linear_solver, linear_solve
 from .newton import (
     create_newton_solver,
@@ -73,6 +74,7 @@ __all__ = [
     "check_convergence",
     "build_amg_preconditioner",
     "rigid_body_modes",
+    "NarrowBandCMG",
     "create_direct_solve_fn",
     "create_iterative_solve_fn",
     "create_jacobi_preconditioner",

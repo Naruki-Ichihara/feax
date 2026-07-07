@@ -9,12 +9,13 @@ Provides:
 
 * :func:`create_newton_solver` — the entry point used by ``feax.solver``. With
   ``extra_residual_fn`` it runs the hybrid matrix-free Newton-Krylov path;
-  otherwise it delegates to the unified callback solver below.
+  otherwise it delegates to the unified traced solver below.
 * :func:`create_callback_newton_solver` — the standard nonlinear solver. The
-  iteration runs as a host loop inside a single ``jax.pure_callback`` (so it
-  composes with an outer ``jax.jit`` / ``jax.vmap`` / ``jax.grad``), with a
-  CSR-direct fused residual+Jacobian forward and a single traced adjoint solve.
-* :func:``4 — the (vmap-friendly) line search.
+  iteration is a traced ``jax.lax.while_loop`` (one Newton step per loop body;
+  the graph does not grow with ``max_iter``), so it composes natively with
+  ``jax.jit`` / ``jax.vmap`` / ``jax.grad``, with a CSR-direct fused
+  residual+Jacobian forward and a single traced adjoint solve.
+* :func:``6 — the (vmap-friendly) line search.
 
 ## NewtonLineSearchError Objects
 
@@ -41,7 +42,8 @@ def create_newton_solver(problem,
                          newton_options: Optional[NewtonOptions] = None,
                          traced_params=None,
                          extra_residual_fn=None,
-                         symmetric_bc: bool = True)
+                         symmetric_elimination: bool = True,
+                         traced_structure=None)
 ```
 
 Create a differentiable nonlinear Newton solver.
@@ -52,7 +54,7 @@ The Newton iteration always runs adaptively (to ``newton_options.tol`` /
 
 Parameters
 ----------
-- **extra_residual_fn** (*callable, optional*): Additional residual: ``extra_residual_fn(sol_flat) -&gt; residual_flat``. When provided, uses hybrid matrix-free Newton-Krylov: feax assembles the bulk Jacobian (sparse), and the extra contribution&#x27;s JVP is computed via ``jax.jvp``.  The combined matvec is: ``J_total @ v = J_bulk @ v + jvp(extra_res_bc, sol, v)``. Dirichlet BC rows of the extra residual are zeroed automatically.
+- **extra_residual_fn** (*callable, optional*): Additional residual: ``extra_residual_fn(sol_flat) -&gt; residual_flat``. Dirichlet BC rows of the extra residual are zeroed automatically. Two paths, chosen by ``linear_options``:
 
 
 #### create\_armijo\_line\_search\_scan
@@ -75,20 +77,25 @@ def create_callback_newton_solver(problem,
                                   adjoint_linear_options,
                                   newton_options: NewtonOptions = None,
                                   traced_params=None,
-                                  symmetric_bc: bool = True)
+                                  symmetric_elimination: bool = True,
+                                  traced_structure=None)
 ```
 
-Create a differentiable, jit/vmap-safe Newton solver via a host callback.
+Create a differentiable, jit/vmap-safe Newton solver (traced loop).
 
-The Newton iteration (inherently data-dependent) runs as a host Python loop
-that dispatches the compiled per-iteration kernels (fused CSR
-residual+Jacobian assembly + linear solve). The whole loop is wrapped in a
-single :func:`jax.pure_callback`, so tracing it under an outer ``jax.jit``
-inserts one callback node — no giant fused compile, no ``float(norm)``
-tracing error. A ``custom_vmap`` rule routes batched calls to a vectorized
-host loop (block-diagonal direct solves). The backward pass is a single
-adjoint linear solve plus the residual VJP — ordinary traced JAX, so it is
-natively jit/vmap/grad compatible.
+The Newton iteration (inherently data-dependent) is a
+:func:`jax.lax.while_loop` whose body is one Newton step (fused CSR
+residual+Jacobian assembly + linear solve + Armijo line search). The body
+is traced once, so the compiled graph holds a single step regardless of
+``max_iter``, and the solver composes natively with ``jax.jit`` /
+``jax.vmap`` / ``jax.grad``. The backward pass is a single adjoint linear
+solve plus the residual VJP (custom_vjp — nothing differentiates through
+the loop).
 
-Returns ``solver(traced_params, initial_guess, bc=None) -&gt; solution``.
+``raise_on_line_search_failure`` is honored for eager calls only; under
+jit/vmap a failed line search stops the iteration (no exception can be
+raised from traced values).
+
+Returns ``solver(traced_params, initial_guess, bc=None, traced_structure=None)
+-&gt; solution``.
 

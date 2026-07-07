@@ -115,6 +115,8 @@ sol          = solve_forward(traced_params)
 displacement = problem.unflatten_fn_sol_list(sol)[0]
 ```
 
+The solver returns a `fe.Solution` — it behaves like the flat DOF vector (arithmetic, `np.asarray`, `unflatten_fn_sol_list` all accept it), and `sol.field(0)` gives the same `(num_nodes, vec)` displacement array directly.
+
 ## Visualization
 
 Save the solution in VTK format for ParaView:

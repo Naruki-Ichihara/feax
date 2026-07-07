@@ -87,6 +87,39 @@ The initialization process:
 5. Sets up boundary condition data structures
 6. Calls custom_init() for problem-specific setup
 
+#### free\_assembly\_scratch
+
+```python
+def free_assembly_scratch(drop_no_ts_maps: bool = False) -> None
+```
+
+Release large host-side index arrays no longer needed after build.
+
+The CSR assembly structure (``csr_indptr`` / ``csr_indices`` /
+``csr_row_of_slot`` and the slot sorts) is built once in
+``__post_init__``. After that, several num_cells·ndof²-sized *host*
+numpy arrays are kept only for object construction, the BCOO path
+(:func:`feax.assembler.get_jacobian`, now assembled from the
+deduplicated CSR instead), and the reference scatter paths. They are the
+largest static arrays in feax — and on unified-memory devices (e.g.
+GB10) host numpy shares physical RAM with the device allocator, so
+pinning them directly raises the peak that drives OOM.
+
+This drops those arrays (sets them to ``None``). The CSR-direct solver
+path (``create_J_bc_csr_function`` / ``*_parametric`` / Newton) and
+``get_jacobian`` / ``get_jacobian_info`` keep working unchanged.
+
+Parameters
+----------
+- **drop_no_ts_maps** (*bool, default False*): Also drop ``csr_volume_slots`` / ``res_volume_dofs`` and the cached slot sorts. These feed the **no-TracedStructure** assembly path (``assembler._vol_slot_sort`` / ``_res_vol_slot_sort``). Only set this once a :class:``7 has been built from this problem (it carries the slot sort as device leaves) **and** you will not call ``get_jacobian`` or a ``traced_structure=None`` assembly afterward.
+
+
+Notes
+-----
+Disables the reference-only helpers ``assembler._assemble_jacobian_values``
+/ ``_csr_data_from_values`` (they read ``I`` / ``csr_perm``); the solver
+and CSR-direct paths do not use them.
+
 #### custom\_init
 
 ```python

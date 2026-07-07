@@ -99,7 +99,8 @@ Examples
 def apply_boundary_to_J_csr(bc: DirichletBC,
                             problem: 'Problem',
                             csr_data: np.ndarray,
-                            symmetric: bool = True) -> np.ndarray
+                            symmetric: bool = True,
+                            ts=None) -> np.ndarray
 ```
 
 Apply Dirichlet BCs directly to a CSR ``data`` array (no BCOO).

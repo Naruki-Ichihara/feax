@@ -336,6 +336,7 @@ Parameters
 - **line_search_c1** (*float, default 1e-4*): Armijo sufficient decrease constant.
 - **line_search_rho** (*float, default 0.5*): Backtracking shrink factor (alpha *= rho).
 - **raise_on_line_search_failure** (*bool, default True*): Raise :class:`NewtonLineSearchError` when the Armijo backtracking exhausts ``line_search_max_backtracks`` without finding a descent step (effectively ``alpha → 0``).  A failed line search indicates the proposed Newton direction is not a descent direction — almost always a sign of a bug elsewhere (e.g. an inconsistent Jacobian or a wrong linear-solve result), so failing loudly is the safer default.  Enforced by the unified callback Newton solver (the iteration runs as a host loop, so the error surfaces normally).
+- **verbose** (*bool, default False*): Print the residual norm at each Newton iteration. Emitted with ``jax.debug.print`` so it works inside the traced ``lax.while_loop`` (and under ``jax.jit`` / ``jax.vmap``). This is independent of the *linear* solver&#x27;s ``verbose`` (``DirectSolverOptions`` / ``KrylovSolverOptions``), which controls linear-solve diagnostics.
 
 
 ## SolverOptions Objects
@@ -509,4 +510,51 @@ Returns
 KrylovSolverOptions
     Options with solver resolved to a concrete algorithm.
     If solver != &quot;auto&quot;, returns the input unchanged.
+
+## AMGSolverOptions Objects
+
+```python
+@dataclass(frozen=True)
+class AMGSolverOptions(AbstractSolverOptions)
+```
+
+Matrix-free outer Krylov preconditioned by smoothed-aggregation AMG.
+
+A third linear-solver family alongside :class:`DirectSolverOptions` and
+:class:`KrylovSolverOptions`. At solver-build time a *sample* Jacobian is
+assembled once and a smoothed-aggregation AMG hierarchy is built on the host
+(PyAMG) — with a **rigid-body near-null-space auto-generated from the mesh**
+for vector problems (elasticity/structural), which is what makes AMG
+effective there. The hierarchy is converted to a JAX-native
+``amjax.MultilevelSolver`` and one V-cycle is used as the preconditioner
+``M`` for a matrix-free outer Krylov solve (cg/gmres/bicgstab). The hierarchy
+is fixed; the outer Krylov applies the current operator matrix-free, so it
+stays robust as the operator changes between solves (Newton / sweeps).
+
+Requires the optional ``feax[amg]`` dependency (``amjax`` + ``pyamg``). The
+import is deferred to solver construction.
+
+Parameters
+----------
+- **solver** (*str, default &quot;auto&quot;*): Outer Krylov method: &quot;auto&quot; (cg for SPD, else gmres), &quot;cg&quot;, &quot;gmres&quot;, or &quot;bicgstab&quot;.
+- **maxiter** (*int, default 500*): Maximum outer Krylov iterations.
+- **restart** (*int, optional*): GMRES restart length.
+- **near_nullspace** (*array, str, or None, default None*): The AMG near-null-space ``B`` — the low-energy modes the coarse grid must represent. Accepts three kinds of input:
+- **num_nullspace** (*int, optional*): Number of candidate vectors for ``near_nullspace=&quot;adaptive_sa&quot;``. Defaults to the rigid-body count (6 in 3D / 3 in 2D for vector problems, else 1).
+- **cycle** (*str, default &quot;V&quot;*): Multigrid cycle type for the preconditioner (&quot;V&quot;, &quot;W&quot;, &quot;F&quot;).
+- **smoother_omega** (*float, default 0.67*): Damped-Jacobi relaxation factor (undamped Jacobi diverges on elasticity).
+- **smoother_sweeps** (*int, default 2*): Jacobi sweeps per pre/post smoothing.
+- **coarse_solver** (*str, default &quot;pinv&quot;*): AMJax coarse-grid solver (&quot;pinv&quot;, &quot;lu&quot;, &quot;qr&quot;, &quot;jacobi&quot;).
+- **strength** (*float, optional*): SA strength-of-connection threshold (PyAMG default when None).
+- **rebuild_every** (*int or None, default None*): Newton-only: how often to rebuild the AMG hierarchy from the *current* tangent during a nonlinear solve (the near-null-space is always reused).
+- **lag_tol** (*float, default 1e-3*): Adaptive-lag trigger (``rebuild_every=None``): rebuild the hierarchy when the per-step linear solve&#x27;s relative residual exceeds this, i.e. the current (lagged) preconditioner can no longer solve the tangent to this accuracy within ``maxiter``.
+
+
+#### uses\_x0
+
+```python
+def uses_x0() -> bool
+```
+
+The outer Krylov consumes an initial iterate.
 

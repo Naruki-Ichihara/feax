@@ -40,7 +40,7 @@ Nx, Ny = 96, 96  # Mesh resolution
 
 
 # ── Problem definition ────────────────────────────────────────────────
-class CahnHilliard(fe.problem.Problem):
+class CahnHilliard(fe.Problem):
     """Cahn-Hilliard problem with mixed (c, μ) formulation.
 
     Weak form (at each quadrature point):

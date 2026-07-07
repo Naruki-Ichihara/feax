@@ -140,14 +140,14 @@ def test_bc_grad_newton_python_loop(elastic_setup):
 
 @pytest.mark.cpu
 def test_bc_grad_newton_nonsymmetric(elastic_setup):
-    """Newton with symmetric_bc=False: grad w.r.t. bc_vals matches FD."""
+    """Newton with symmetric_elimination=False: grad w.r.t. bc_vals matches FD."""
     problem, bc, tp, bc1, initial = elastic_setup
     solver = fe.create_solver(
         problem, bc,
         solver_options=fe.KrylovSolverOptions(solver='gmres'),
         linear=False, traced_params=tp,
         newton_options=NewtonOptions(),
-        symmetric_bc=False,
+        symmetric_elimination=False,
     )
 
     def loss(bc_vals_arg):

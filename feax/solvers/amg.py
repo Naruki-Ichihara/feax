@@ -227,7 +227,7 @@ def amg_to_krylov_options(
     bc,
     traced_params,
     traced_structure=None,
-    symmetric_bc: bool = True,
+    symmetric_elimination: bool = True,
 ):
     """Lower an :class:`AMGSolverOptions` to a matrix-free Krylov solve + AMG ``M``.
 
@@ -252,7 +252,7 @@ def amg_to_krylov_options(
         )
 
     initial = zero_like_initial_guess(problem, bc)
-    J_csr = create_J_bc_csr_parametric(problem, symmetric=symmetric_bc)
+    J_csr = create_J_bc_csr_parametric(problem, symmetric=symmetric_elimination)
     sample = J_csr(initial, traced_params, bc, traced_structure)
 
     M = build_amg_preconditioner(problem, bc, sample, amg_options)
