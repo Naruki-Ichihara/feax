@@ -49,8 +49,13 @@ def parse_args(argv=None):
                    default=[8.0, 2.0, 2.0],
                    help="Fixed physical cantilever dimensions (scale-invariant).")
     p.add_argument("--solver", choices=["krylov", "direct", "amg"], default="krylov")
-    p.add_argument("--modes", nargs="+", choices=["eager", "jit", "vmap"],
-                   default=["eager", "jit", "vmap"])
+    p.add_argument("--modes", nargs="+",
+                   choices=["eager", "jit", "vmap", "vmap-a", "vmap-b"],
+                   default=["eager", "jit", "vmap-a", "vmap-b"],
+                   help="vmap-a: batch the material E (matrix A varies -> B "
+                        "factorizations). vmap-b: batch the load/traction (RHS b "
+                        "varies, A fixed -> factor once, multi-RHS solve). "
+                        "'vmap' is an alias for vmap-a.")
     p.add_argument("--batch", type=int, default=8, help="vmap batch size.")
     p.add_argument("--repeats", type=int, default=5, help="Timed repeats per point.")
     p.add_argument("--warmup", type=int, default=2, help="Untimed warmup runs.")
@@ -171,6 +176,9 @@ def main(argv=None):
     os.environ["FEAX_X64"] = "1" if args.x64 else "0"
     if args.preallocate:
         os.environ["FEAX_PREALLOCATE"] = "1"
+    # vmap-a batches the MATRIX -> B live factorizations at once; size the spineax
+    # factor cache above B so it does not evict tokens ("unknown/evicted token").
+    os.environ.setdefault("SPINEAX_FACTOR_CACHE", str(max(16, args.batch + 4)))
 
     import jax
     import jax.numpy as jnp
@@ -197,7 +205,9 @@ def main(argv=None):
 
     def solver_options():
         if args.solver == "direct":
-            return fe.DirectSolverOptions()
+            # reuse_factorization=True lets vmap-b (load-batched, matrix fixed)
+            # factor once and multi-RHS solve (factor-once / solve-many).
+            return fe.DirectSolverOptions(reuse_factorization=True)
         if args.solver == "amg":
             return fe.AMGSolverOptions(near_nullspace="rigid_body", verbose=False)
         return fe.KrylovSolverOptions(solver="cg", tol=args.tol,
@@ -295,29 +305,50 @@ def main(argv=None):
             except Exception as e:
                 record("jit", dof, res, 1, float("nan"), [], note=type(e).__name__)
 
-        if "vmap" in args.modes:
+        # vmap-a: batch the material E (matrix A varies per element -> B distinct
+        #         cuDSS factorizations). vmap-b: batch the load/traction (RHS b
+        #         varies, A FIXED -> ONE factorization + a single multi-RHS solve,
+        #         factor-once / solve-many). 'vmap' is an alias for vmap-a.
+        vmap_kinds = []
+        if "vmap-a" in args.modes or "vmap" in args.modes:
+            vmap_kinds.append("a")
+        if "vmap-b" in args.modes:
+            vmap_kinds.append("b")
+        for kind in vmap_kinds:
+            label = f"vmap-{kind}"
             if args.solver == "amg":
-                record("vmap", dof, res, args.batch, float("nan"), [],
+                record(label, dof, res, args.batch, float("nan"), [],
                        note="skipped: AMG host setup is not vmappable")
-                print("  vmap  skipped (AMG host setup is not vmappable)")
-            else:
-                try:
-                    B = args.batch
-                    scales = jnp.linspace(0.8, 1.2, B)
-                    E_batch = E[None, :] * scales[:, None]     # (B, num_nodes)
+                print(f"  {label} skipped (AMG host setup is not vmappable)")
+                continue
+            try:
+                B = args.batch
+                scales = jnp.linspace(0.8, 1.2, B)
+                if kind == "a":
+                    E_batch = E[None, :] * scales[:, None]         # (B, num_nodes)
 
                     def solve_one(E_field):
                         tpi = fe.TracedParams(volume_vars=(E_field,), surface_vars=surf)
                         return solver(tpi, initial, traced_structure=ts)
+                    batched_arg = E_batch
+                else:                                              # kind == "b"
+                    traction = surf[0][0]                          # the load leaf
+                    tr_batch = traction[None] * scales.reshape((B,) + (1,) * traction.ndim)
 
-                    vfn = jax.jit(jax.vmap(solve_one))
-                    t0 = perf_counter(); block(vfn(E_batch))
-                    compile_s = perf_counter() - t0
-                    record("vmap", dof, res, B, compile_s,
-                           timed(lambda: vfn(E_batch), block, args.warmup, args.repeats))
-                except Exception as e:
-                    record("vmap", dof, res, args.batch, float("nan"), [],
-                           note=type(e).__name__)
+                    def solve_one(tr_field):
+                        tpi = fe.TracedParams(volume_vars=(E,),
+                                              surface_vars=[(tr_field,)])
+                        return solver(tpi, initial, traced_structure=ts)
+                    batched_arg = tr_batch
+
+                vfn = jax.jit(jax.vmap(solve_one))
+                t0 = perf_counter(); block(vfn(batched_arg))
+                compile_s = perf_counter() - t0
+                record(label, dof, res, B, compile_s,
+                       timed(lambda: vfn(batched_arg), block, args.warmup, args.repeats))
+            except Exception as e:
+                record(label, dof, res, args.batch, float("nan"), [],
+                       note=type(e).__name__)
 
         jax.clear_caches()
         print()

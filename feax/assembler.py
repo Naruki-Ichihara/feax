@@ -1318,6 +1318,47 @@ def _assemble_volume_csr_data(problem: 'Problem',
     return carry
 
 
+def detect_zero_surface_jacobian(problem: 'Problem',
+                                 traced_params: TracedParams,
+                                 ts=None) -> bool:
+    """Probe whether every surface load is u-independent (a 'dead' load), i.e.
+    its contribution to the tangent stiffness is identically zero.
+
+    Returns ``True`` only when the assembled surface Jacobian is exactly zero at
+    two distinct nonzero displacement patterns — the usual case for Neumann
+    tractions / pressures that do not follow the deformation. Configuration
+    (``u``-)dependent 'follower' loads, or any probing error, return ``False``
+    (keep the surface term — correct, just not the fast path).
+
+    When ``True``, :func:`_get_J_csr` drops the surface Jacobian term. Besides
+    saving a zero assembly, this removes the operator's trace dependence on
+    ``surface_vars``, so a ``jax.vmap`` over the LOAD leaves the stiffness
+    unbatched and its cuDSS factorization is hoisted out of the batch
+    (factor-once / solve-many). The result is cached on ``problem`` as
+    ``_surface_jac_zero`` and read (Python-side, untraced) by :func:`_get_J_csr`.
+    """
+    src = ts if ts is not None else problem
+    if not getattr(src, 'boundary_inds_list', None):
+        return False
+    try:
+        n = problem.num_total_dofs_all_vars
+        # Two asymmetric nonzero patterns: a genuinely u-dependent map is
+        # vanishingly unlikely to have an exactly-zero tangent at both.
+        for sol_flat in (np.linspace(0.13, 1.0, n), np.linspace(-0.9, 0.41, n)):
+            sol_list = problem.unflatten_fn_sol_list(sol_flat)
+            cells_sol_list = [sol[cells] for cells, sol in zip(src.cells_list, sol_list)]
+            cells_sol_flat = jax.vmap(
+                lambda *x: jax.flatten_util.ravel_pytree(x)[0])(*cells_sol_list)
+            _, jacs = compute_face(problem, cells_sol_flat, True,
+                                   traced_params.surface_vars, ts)
+            for j in jacs:
+                if float(np.max(np.abs(j))) != 0.0:
+                    return False
+        return True
+    except Exception:
+        return False
+
+
 def _get_J_csr(problem: 'Problem',
                sol_list: List[np.ndarray],
                traced_params: TracedParams,
@@ -1345,7 +1386,15 @@ def _get_J_csr(problem: 'Problem',
 
     # Surface: per-boundary face Jacobians (small) added via their CSR slots.
     # The slot-sorted permutation (precomputed) keeps the reduction deterministic.
-    _, cells_jac_face_flat = compute_face(problem, cells_sol_flat, True, traced_params.surface_vars, ts)
+    # Dead (u-independent) surface loads contribute nothing to the tangent, so
+    # when detected (see :func:`detect_zero_surface_jacobian`) we skip this term
+    # entirely. That also keeps ``csr_data`` from tracing ``surface_vars``, so a
+    # ``jax.vmap`` over the load leaves the operator unbatched and its cuDSS
+    # factorization is hoisted out of the batch (factor-once / solve-many).
+    if getattr(problem, '_surface_jac_zero', False):
+        cells_jac_face_flat = None
+    else:
+        _, cells_jac_face_flat = compute_face(problem, cells_sol_flat, True, traced_params.surface_vars, ts)
     if cells_jac_face_flat:
         face_vals = np.concatenate([fj.reshape(-1) for fj in cells_jac_face_flat])
         csr_data = csr_data + jax.ops.segment_sum(

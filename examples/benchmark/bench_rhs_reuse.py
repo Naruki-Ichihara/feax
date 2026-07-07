@@ -62,6 +62,10 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     os.environ["FEAX_X64"] = "1" if args.x64 else "0"
+    # vmap_mat batches the MATRIX -> B distinct factorizations held at once; the
+    # spineax factor cache (default 8) would evict tokens before they are solved.
+    # Size it above B. (vmap_rhs needs only 1 — this is purely for the baseline.)
+    os.environ.setdefault("SPINEAX_FACTOR_CACHE", str(max(16, args.batch + 4)))
 
     import jax
     import jax.numpy as jnp

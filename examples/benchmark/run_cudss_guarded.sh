@@ -9,50 +9,62 @@
 # process the instant free host memory drops below --reserve GiB. That sacrifices
 # the run but keeps the host alive.
 #
-# cuDSS vmap is memory-safe: under jax.vmap a batched matrix is factorized one
-# element at a time via jax.lax.map (spineax custom_vmap), so peak memory stays
-# at ~one factorization — NOT batch-multiplied. vmap is capped at 500k DOF,
-# batch 10 (per the original spec); eager/jit sweep to 1,000,000 DOF.
+# Two vmap flavors over a batch of B linear-elasticity solves of the SAME box:
+#   vmap-a : batch the MATERIAL E  -> stiffness A varies -> B cuDSS factorizations
+#            (memory-safe: spineax custom_vmap factorizes one at a time via
+#            jax.lax.map, peak ~one factorization, NOT batch-multiplied).
+#   vmap-b : batch the LOAD/traction (RHS b) -> A FIXED -> ONE factorization + a
+#            single multi-RHS solve (factor-once / solve-many). Needs
+#            DirectSolverOptions(reuse_factorization=True) + the dead-load
+#            surface-Jacobian skip (both wired into feax); expect ~9x over vmap-a.
+# Both vmap flavors are capped at 500k DOF, batch 10; eager/jit sweep to 1,000,000.
 #
 # Usage:
-#   bash run_cudss_guarded.sh eager        # eager mode, DOF sweep to 1,000,000
-#   bash run_cudss_guarded.sh jit          # jit mode  (the dangerous one)
-#   bash run_cudss_guarded.sh vmap         # vmap, <=500k DOF, batch 10
+#   bash run_cudss_guarded.sh eager        # eager, DOF sweep to 1,000,000
+#   bash run_cudss_guarded.sh jit          # jit  (the host-crash-prone one)
+#   bash run_cudss_guarded.sh vmap-a       # material-batched vmap, <=500k, b=10
+#   bash run_cudss_guarded.sh vmap-b       # load-batched vmap (reuse), <=500k, b=10
 #   RESERVE_GIB=15 bash run_cudss_guarded.sh eager
 #
 # Results append to results_direct_1M.csv next to this script.
 #
 set -uo pipefail
 
-MODE="${1:?usage: run_cudss_guarded.sh <eager|jit|vmap>}"
+MODE="${1:?usage: run_cudss_guarded.sh <eager|jit|vmap-a|vmap-b>}"
 
-# vmap's jit compile constant-folds a huge gather (pred[~39M]) whose host-side
+# A jit(vmap) compile constant-folds a huge gather (pred[~39M]) whose host-side
 # evaluation spikes RAM fast enough to trip the watchdog. Disabling the XLA
 # constant_folding pass leaves that gather as a runtime op (no compile-time host
 # evaluation), and we watch tighter because the spike is sub-0.25s.
-if [ "$MODE" = "vmap" ]; then
-    export XLA_FLAGS="${XLA_FLAGS:---xla_disable_hlo_passes=constant_folding}"
-    RESERVE_GIB="${RESERVE_GIB:-20}"
-    POLL_S="${POLL_S:-0.1}"
-    echo "[guard] vmap: XLA_FLAGS=$XLA_FLAGS"
-else
-    RESERVE_GIB="${RESERVE_GIB:-15}"      # kill solver if MemAvailable < this
-    POLL_S="${POLL_S:-0.25}"
-fi
+case "$MODE" in
+    vmap-*)
+        export XLA_FLAGS="${XLA_FLAGS:---xla_disable_hlo_passes=constant_folding}"
+        RESERVE_GIB="${RESERVE_GIB:-20}"
+        POLL_S="${POLL_S:-0.1}"
+        echo "[guard] $MODE: XLA_FLAGS=$XLA_FLAGS"
+        ;;
+    *)
+        RESERVE_GIB="${RESERVE_GIB:-15}"  # kill solver if MemAvailable < this
+        POLL_S="${POLL_S:-0.25}"
+        ;;
+esac
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$HERE/bench_linear_elasticity.py"
 OUT="$HERE/results_direct_1M.csv"
 RESERVE_KB=$(( RESERVE_GIB * 1024 * 1024 ))
 
-# vmap: cap DOF at 500k, batch 10.  eager/jit: full sweep to 1M, batch irrelevant.
-if [ "$MODE" = "vmap" ]; then
-    DOFS=(50000 100000 200000 350000 500000)
-    BATCH=10
-else
-    DOFS=(50000 100000 200000 350000 500000 750000 1000000)
-    BATCH=8
-fi
+# vmap-*: cap DOF at 500k, batch 10.  eager/jit: full sweep to 1M.
+case "$MODE" in
+    vmap-*)
+        DOFS=(50000 100000 200000 350000 500000)
+        BATCH=10
+        ;;
+    *)
+        DOFS=(50000 100000 200000 350000 500000 750000 1000000)
+        BATCH=8
+        ;;
+esac
 
 echo "[guard] mode=$MODE  reserve=${RESERVE_GIB}GiB  dofs=${DOFS[*]}  batch=$BATCH  out=$OUT"
 

@@ -14,6 +14,7 @@ Key Features:
 """
 
 import logging
+import os
 from typing import Any, Callable, Optional
 
 import jax
@@ -24,6 +25,7 @@ from ..assembler import (
     create_J_bc_csr_parametric,
     create_matfree_res_J_parametric,
     create_res_bc_parametric,
+    detect_zero_surface_jacobian,
 )
 from ..csr import transpose_with_maps
 from ..DCboundary import DirichletBC
@@ -309,6 +311,15 @@ def create_linear_solver(
     # CSR-direct operators (only built when a direct solver is on either path).
     J_bc_csr_func = create_J_bc_csr_function(problem, bc, symmetric=symmetric_elimination) if (_fwd_direct or _adj_direct) else None
     J_bc_csr_parametric = create_J_bc_csr_parametric(problem, symmetric=symmetric_elimination) if (_fwd_direct or _adj_direct) else None
+    # Detect dead (u-independent) surface loads once: if the surface Jacobian is
+    # identically zero we drop it from the CSR assembly, which keeps the operator
+    # independent of ``surface_vars``. Then a ``jax.vmap`` over the load hoists the
+    # single cuDSS factorization out of the batch (factor-once / solve-many) with
+    # no change to the create_solver interface. Opt out via FEAX_SKIP_ZERO_SURFACE_JAC=0.
+    if (_fwd_direct or _adj_direct) and traced_params is not None \
+            and os.environ.get("FEAX_SKIP_ZERO_SURFACE_JAC", "1") != "0":
+        problem._surface_jac_zero = detect_zero_surface_jacobian(
+            problem, traced_params, traced_structure)
     # Matrix-free operator (fused BC-applied residual + JVP matvec) for Krylov.
     matfree_res_J_param = create_matfree_res_J_parametric(problem, symmetric=symmetric_elimination)
     res_bc_parametric = create_res_bc_parametric(problem)
