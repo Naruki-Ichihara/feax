@@ -31,6 +31,50 @@ if "XLA_PYTHON_CLIENT_PREALLOCATE" not in _os.environ:
     _os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = (
         "true" if _resolve_preallocate_env() else "false")
 
+# ── XLA constant folding ────────────────────────────────────────────────────
+# XLA's constant-folding pass evaluates ops whose inputs are all constants at
+# COMPILE time. feax assembly bakes in very large constant index arrays (BC
+# masks, CSR slot maps — tens of millions of int32/bool), and folding a big
+# ``gather`` over them materializes the result on the HOST during compilation.
+# On unified-memory devices (GB10) that host spike can crash the whole machine,
+# and everywhere it blows up compile time ("Constant folding an instruction is
+# taking > Ns"). The runtime win is negligible for these index gathers, so feax
+# **disables the constant_folding pass by default** (leaves those gathers as
+# cheap runtime ops; numerical results are unchanged).
+#
+# Set before ``import jax`` so it is present when XLA initializes its backend.
+# Any pre-existing ``XLA_FLAGS`` is preserved: ``constant_folding`` is merged into
+# an existing ``--xla_disable_hlo_passes=...`` list, or a new flag is appended.
+#
+# Override with ``FEAX_CONSTANT_FOLDING`` (keeps XLA's default folding ON):
+#
+#     FEAX_CONSTANT_FOLDING=0  (default, or unset)  →  constant folding disabled
+#     FEAX_CONSTANT_FOLDING=1                        →  constant folding kept ON
+
+
+def _keep_constant_folding_env() -> bool:
+    raw = _os.environ.get("FEAX_CONSTANT_FOLDING")
+    if raw is None:
+        return False                      # default: disable constant folding
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+if not _keep_constant_folding_env():
+    import re as _re
+    _flags = _os.environ.get("XLA_FLAGS", "")
+    if "constant_folding" not in _flags:
+        _m = _re.search(r"--xla_disable_hlo_passes=(\S+)", _flags)
+        if _m:                            # merge into the existing disable list
+            _passes = _m.group(1).split(",") + ["constant_folding"]
+            _flags = (_flags[:_m.start()]
+                      + "--xla_disable_hlo_passes=" + ",".join(_passes)
+                      + _flags[_m.end():])
+        else:                             # append a fresh flag
+            _flags = ((_flags + " " if _flags else "")
+                      + "--xla_disable_hlo_passes=constant_folding")
+        _os.environ["XLA_FLAGS"] = _flags
+    del _re
+
 import jax
 
 # ── Floating-point precision ────────────────────────────────────────────────
