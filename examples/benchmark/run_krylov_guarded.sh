@@ -10,7 +10,7 @@
 # cuDSS path is minimal. The same MemAvailable watchdog is kept purely as a guard
 # against a compile-time constant-folding spike.
 #
-# NOTE: vmap-b (load-batched) has NO factor-reuse benefit here — CG has no
+# NOTE: vmap-rhs (load-batched) has NO factor-reuse benefit here — CG has no
 # factorization, so each RHS runs its own CG iterations. The mode is kept for
 # parity with run_cudss_guarded.sh. Convergence is controlled by CG tol/maxiter;
 # override by forwarding flags, e.g.  run_krylov_guarded.sh jit --tol 1e-6.
@@ -18,16 +18,16 @@
 # Usage:
 #   bash run_krylov_guarded.sh eager                 # eager, sweep to 1,000,000
 #   bash run_krylov_guarded.sh jit                   # jit,   sweep to 1,000,000
-#   bash run_krylov_guarded.sh vmap-a                # material-batched, <=500k, b=10
-#   bash run_krylov_guarded.sh vmap-b                # load-batched,     <=500k, b=10
+#   bash run_krylov_guarded.sh vmap-lhs                # material-batched, <=500k, b=10
+#   bash run_krylov_guarded.sh vmap-rhs                # load-batched,     <=500k, b=10
 #   bash run_krylov_guarded.sh jit --tol 1e-6 --maxiter 5000   # match a CG tol
 #
-# Results append to results_krylov_1M.csv (overlay with results_direct_1M.csv:
-#   python plot_bench.py results_direct_1M.csv results_krylov_1M.csv).
+# Results append to the shared bench.csv next to this script (all solvers/modes
+# accumulate there; visualize with plot_bench.py or the docs dashboard).
 #
 set -uo pipefail
 
-MODE="${1:?usage: run_krylov_guarded.sh <eager|jit|vmap-a|vmap-b> [extra bench flags]}"
+MODE="${1:?usage: run_krylov_guarded.sh <eager|jit|vmap-lhs|vmap-rhs> [extra bench flags]}"
 shift                                       # remaining args forwarded to the bench
 
 case "$MODE" in
@@ -45,7 +45,7 @@ esac
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$HERE/bench_linear_elasticity.py"
-OUT="$HERE/results_krylov_1M.csv"
+OUT="$HERE/bench.csv"
 RESERVE_KB=$(( RESERVE_GIB * 1024 * 1024 ))
 
 # vmap-*: cap DOF at 500k, batch 10.  eager/jit: full sweep to 1M.
@@ -55,7 +55,7 @@ case "$MODE" in
         BATCH=10
         ;;
     *)
-        DOFS=(1000000 1500000 2000000)
+        DOFS=(50000 100000 200000 350000 500000 750000 1000000)
         BATCH=8
         ;;
 esac

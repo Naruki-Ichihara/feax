@@ -56,20 +56,29 @@ def cell_volume(problem):
     return float(JxW.reshape(JxW.shape[0], -1).sum())
 
 
-def homogenize(problem, mesh, pairings, E_cell):
-    """C_hom on the given (sub)problem + its own prolongation. Returns (C, volume, t)."""
+def homogenize(problem, mesh, pairings, E_cell, solver_options=None):
+    """C_hom on the given (sub)problem + its own prolongation. Returns (C, volume, t).
+
+    ``solver_options`` selects the linear solver. Default is matrix-free Krylov
+    (CG). Pass ``fe.DirectSolverOptions()`` to use the direct factor-once /
+    solve-many path: PᵀKP is identical across all 6 strain cases, so a single
+    (zero-mean-regularized) cuDSS factorization is reused for every case — this
+    is especially effective on a narrow band, where the reduced operator is small.
+    """
     bc = fe.DirichletBCConfig([]).create_bc(problem)
     P = flat.pbc.prolongation_matrix(pairings, mesh, vec=3)
     nu_cell = fe.TracedParams.create_cell_var(problem, nu)
     tp = fe.TracedParams(volume_vars=(np.asarray(E_cell), nu_cell), surface_vars=())
-    opts = fe.KrylovSolverOptions(solver="cg", tol=1e-9, atol=1e-12, maxiter=5000)
-    solve = flat.solver.create_homogenization_solver(problem, bc, P, mesh, opts, dim=3)
+    if solver_options is None:
+        solver_options = fe.KrylovSolverOptions(solver="cg", tol=1e-9, atol=1e-12,
+                                                maxiter=5000)
+    solve = jax.jit(flat.solver.create_homogenization_solver(
+        problem, bc, P, mesh, solver_options, dim=3))
+    jax.block_until_ready(solve(tp).C_hom)              # compile (excluded from timing)
     t0 = time.perf_counter()
     res = solve(tp)
-    C = onp.asarray(res.C_hom)
-    C.flatten()  # force
     jax.block_until_ready(res.C_hom)
-    return C, cell_volume(problem), time.perf_counter() - t0
+    return onp.asarray(res.C_hom), cell_volume(problem), time.perf_counter() - t0
 
 
 # --- unit cell + BCC density field -------------------------------------------
@@ -103,6 +112,13 @@ E_band = band.gather_cells(E_full)
 try:
     C_band_raw, vol_band, t_band = homogenize(band_pb, band.mesh, pairings, E_band)
     C_band = C_band_raw * (vol_band / vol_full)        # rescale solid-vol -> cell-vol
+    # Same band, direct factor-once / solve-many: one cuDSS factorization of the
+    # (small) band operator reused across all 6 strain cases — machine-precise
+    # and typically faster than CG on a lattice band. Falls back to Krylov if
+    # cuDSS is unavailable.
+    C_band_d_raw, _, t_band_d = homogenize(
+        band_pb, band.mesh, pairings, E_band, solver_options=fe.DirectSolverOptions())
+    C_band_d = C_band_d_raw * (vol_band / vol_full)
     ok = True
 except AssertionError as e:
     print(f"\n[band PBC] pairing mismatch: {e}")
@@ -125,3 +141,8 @@ if ok:
     print(f"band cells {band.num_active_cells}/{nc} ({band.num_active_cells/nc*100:.0f}%), "
           f"DOF {3*band.mesh.points.shape[0]}/{3*mesh.points.shape[0]}")
     print(f"solve time  full={t_full:.2f}s  band={t_band:.2f}s  speedup={t_full/t_band:.1f}x")
+    relCd = onp.linalg.norm(C_band_d - C_band) / onp.linalg.norm(C_band)
+    print("\n=== band solver: matrix-free CG vs direct factor-once/solve-many ===")
+    print(f"band + Krylov(CG)          = {t_band*1e3:7.1f} ms")
+    print(f"band + Direct(factor-once) = {t_band_d*1e3:7.1f} ms   "
+          f"(speedup {t_band/t_band_d:.2f}x, C_hom rel vs CG = {relCd:.1e})")

@@ -1,0 +1,457 @@
+<title>FEAX GPU Solver Benchmark</title>
+<style>
+  :root{
+    --surface:#fcfcfb; --plane:#f9f9f7; --card:#ffffff;
+    --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --axis:#c3c2b7; --line:#ecebe6;
+    --direct:#2a78d6; --amg:#1baf7a; --krylov:#eda100;
+    --dev-a:#4a3aa7; --dev-b:#e34948; --dev-c:#eb6834; --dev-d:#008300;
+    --accent:#2a78d6; --accent-weak:#e9f1fc;
+    --shadow:0 1px 2px rgba(20,20,18,.04),0 8px 24px -12px rgba(20,20,18,.12);
+    --mono:ui-monospace,"SF Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --surface:#1a1a19; --plane:#0d0d0d; --card:#161615;
+      --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+      --grid:#2c2c2a; --axis:#383835; --line:#242422;
+      --direct:#3987e5; --amg:#199e70; --krylov:#c98500;
+      --dev-a:#9085e9; --dev-b:#e66767; --dev-c:#d95926; --dev-d:#008300;
+      --accent:#3987e5; --accent-weak:#16283f;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px -14px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="light"]{
+    --surface:#fcfcfb; --plane:#f9f9f7; --card:#ffffff;
+    --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --axis:#c3c2b7; --line:#ecebe6;
+    --direct:#2a78d6; --amg:#1baf7a; --krylov:#eda100;
+    --dev-a:#4a3aa7; --dev-b:#e34948; --dev-c:#eb6834; --dev-d:#008300;
+    --accent:#2a78d6; --accent-weak:#e9f1fc;
+    --shadow:0 1px 2px rgba(20,20,18,.04),0 8px 24px -12px rgba(20,20,18,.12);
+  }
+  :root[data-theme="dark"]{
+    --surface:#1a1a19; --plane:#0d0d0d; --card:#161615;
+    --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --line:#242422;
+    --direct:#3987e5; --amg:#199e70; --krylov:#c98500;
+    --dev-a:#9085e9; --dev-b:#e66767; --dev-c:#d95926; --dev-d:#008300;
+    --accent:#3987e5; --accent-weak:#16283f;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px -14px rgba(0,0,0,.6);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--plane);color:var(--ink);font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;line-height:1.5}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 24px 56px}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--accent);font-weight:600;margin:0 0 10px}
+  h1{font-size:clamp(24px,3.4vw,34px);line-height:1.08;margin:0 0 8px;letter-spacing:-.02em;
+    text-wrap:balance;font-weight:680}
+  .sub{margin:0;color:var(--ink2);max-width:62ch;font-size:15px}
+  .sub b{color:var(--ink);font-weight:600}
+
+  .controls{display:flex;flex-wrap:wrap;gap:16px 22px;align-items:flex-end;margin:26px 0 18px;
+    padding:16px 18px;background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
+  .ctl{display:flex;flex-direction:column;gap:7px}
+  .ctl>label{font-family:var(--mono);font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;
+    color:var(--muted);font-weight:600}
+  .seg,.chips{display:flex;gap:4px;flex-wrap:wrap}
+  .seg{background:var(--plane);border:1px solid var(--line);border-radius:9px;padding:3px}
+  .seg button,.chip{font-family:var(--sans);font-size:13px;border:0;cursor:pointer;color:var(--ink2);
+    background:transparent;padding:6px 11px;border-radius:7px;transition:background .12s,color .12s;white-space:nowrap}
+  .seg button[aria-pressed="true"]{background:var(--card);color:var(--ink);box-shadow:var(--shadow);font-weight:600}
+  .chip{border:1px solid var(--line);border-radius:20px;display:inline-flex;align-items:center;gap:7px;background:var(--card)}
+  .chip .sw{width:11px;height:11px;border-radius:3px;flex:none;opacity:.28;transition:opacity .12s}
+  .chip[aria-pressed="true"]{color:var(--ink);border-color:var(--axis);font-weight:600}
+  .chip[aria-pressed="true"] .sw{opacity:1}
+  .chip:focus-visible,.seg button:focus-visible,.iconbtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .spring{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .iconbtn{font-family:var(--mono);font-size:12px;border:1px solid var(--line);background:var(--card);color:var(--ink2);
+    border-radius:9px;padding:8px 12px;cursor:pointer;transition:color .12s,border-color .12s}
+  .iconbtn[aria-pressed="true"]{color:var(--ink);border-color:var(--axis)}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:20px 20px 14px}
+  .chart-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+  .chart-title{font-size:16px;font-weight:640;margin:0}
+  .chart-unit{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+  .plot-wrap{position:relative;width:100%}
+  svg{display:block;width:100%;height:auto;overflow:visible}
+  .gl{stroke:var(--grid);stroke-width:1}
+  .axl{stroke:var(--axis);stroke-width:1}
+  .tick{font-family:var(--mono);font-size:11px;fill:var(--muted)}
+  .axtitle{font-family:var(--mono);font-size:11px;fill:var(--ink2);letter-spacing:.04em}
+  .series-line{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+  .marker{stroke:var(--card);stroke-width:1.5}
+  .crosshair{stroke:var(--axis);stroke-width:1;stroke-dasharray:3 3;opacity:0}
+  .hit{cursor:crosshair}
+
+  .legend{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+  .lg-group{display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--ink2)}
+  .lg-sw{width:20px;height:3px;border-radius:2px;flex:none}
+  .lg-mode{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+  .lg-mk{width:22px;height:12px;flex:none}
+  .lg-sep{width:1px;align-self:stretch;background:var(--line);margin:2px 2px}
+
+  .tooltip{position:absolute;pointer-events:none;opacity:0;transform:translate(-50%,-115%);
+    background:var(--card);border:1px solid var(--axis);border-radius:10px;box-shadow:var(--shadow);
+    padding:9px 11px;font-size:12px;min-width:150px;z-index:5;transition:opacity .08s}
+  .tt-h{font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:6px;letter-spacing:.03em}
+  .tt-row{display:flex;align-items:center;gap:8px;justify-content:space-between;padding:2px 0}
+  .tt-name{display:flex;align-items:center;gap:7px;color:var(--ink2)}
+  .tt-dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .tt-val{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600}
+  .empty{padding:60px 20px;text-align:center;color:var(--muted);font-family:var(--mono);font-size:13px}
+
+  .tablewrap{margin-top:20px;overflow-x:auto}
+  table{border-collapse:collapse;width:100%;font-size:12.5px;font-family:var(--mono);font-variant-numeric:tabular-nums}
+  th,td{text-align:right;padding:7px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--muted);font-weight:600;text-transform:uppercase;font-size:10.5px;letter-spacing:.08em;position:sticky;top:0;background:var(--card)}
+  td.l,th.l{text-align:left}
+  tbody tr:hover{background:var(--plane)}
+  .sdot{width:9px;height:9px;border-radius:3px;display:inline-block;vertical-align:-1px;margin-right:7px}
+
+  footer{margin-top:26px;color:var(--muted);font-size:12px;line-height:1.6}
+  footer code{font-family:var(--mono);background:var(--plane);padding:1px 5px;border-radius:5px;font-size:11px}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+  @media (max-width:640px){.wrap{padding:22px 14px 40px}.spring{margin-left:0;width:100%}}
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">FEAX · GPU Solver Benchmark</p>
+    <h1>Linear-elasticity solver scaling across NVIDIA GPUs</h1>
+    <p class="sub">A fixed cantilever refined from 48k to 1M DOF (HEX8, float64), solved three ways —
+      <b>cuDSS direct</b>, <b>AMG-preconditioned CG</b>, and <b>matrix-free Krylov CG</b> — in
+      eager, JIT, and batched (vmap) modes. Pick a device and metric to compare.</p>
+  </header>
+
+  <div class="controls">
+    <div class="ctl">
+      <label>Compare</label>
+      <div class="seg" id="cmpseg" role="group" aria-label="Compare by"></div>
+    </div>
+    <div class="ctl">
+      <label id="devlabel">Device</label>
+      <div id="devhost" role="group" aria-label="Device"></div>
+    </div>
+    <div class="ctl">
+      <label id="sollabel">Solver</label>
+      <div id="solhost" role="group" aria-label="Solver"></div>
+    </div>
+    <div class="ctl">
+      <label>Mode</label>
+      <div class="chips" id="modechips" role="group" aria-label="Mode"></div>
+    </div>
+    <div class="ctl">
+      <label>Metric</label>
+      <div class="seg" id="metseg" role="group" aria-label="Metric"></div>
+    </div>
+    <div class="spring">
+      <button class="iconbtn" id="tabletgl" aria-pressed="false">▤ Table</button>
+      <button class="iconbtn" id="themetgl" aria-label="Toggle theme">◐ Theme</button>
+    </div>
+  </div>
+
+  <figure class="card" style="margin:0">
+    <div class="chart-head">
+      <h2 class="chart-title" id="ctitle">Time per solve</h2>
+      <span class="chart-unit" id="cunit"></span>
+    </div>
+    <div class="plot-wrap" id="plotwrap">
+      <svg id="chart" role="img" aria-label="Benchmark chart"></svg>
+      <div class="tooltip" id="tooltip"></div>
+    </div>
+    <div class="legend" id="legend"></div>
+  </figure>
+
+  <div class="tablewrap card" id="tablewrap" hidden style="padding:0"></div>
+
+  <footer>
+    Each point is the mean of 5 timed repeats (2 warm-up), float64. <b>Time per solve</b> is
+    batch-amortized (vmap batch=10 divided by 10); <b>throughput</b> counts the whole batch;
+    <b>compile</b> is the one-time JIT/XLA trace+compile (eager has none). vmap variants:
+    <code>vmap·lhs</code> batches the material — the left-hand-side matrix A varies, so
+    B factorizations; <code>vmap·rhs</code> batches the load — the right-hand side b varies
+    with A fixed (factor-once / solve-many). Data: <code>bench.csv</code>.
+  </footer>
+</div>
+
+<script>
+const DATA = [{"dev":"H100","solver":"direct","mode":"eager","dof":47616,"batch":1,"compile":null,"mean":1.749752924,"std":0.131343018,"thru":27212.98495,"amort":1.749752924},{"dev":"H100","solver":"direct","mode":"eager","dof":104517,"batch":1,"compile":null,"mean":2.160732437,"std":0.084997337,"thru":48371.0978,"amort":2.160732437},{"dev":"H100","solver":"direct","mode":"eager","dof":202800,"batch":1,"compile":null,"mean":3.102045968,"std":0.117268449,"thru":65376.20722,"amort":3.102045968},{"dev":"H100","solver":"direct","mode":"eager","dof":348843,"batch":1,"compile":null,"mean":4.587317724,"std":0.084218352,"thru":76045.09236,"amort":4.587317724},{"dev":"H100","solver":"direct","mode":"eager","dof":499800,"batch":1,"compile":null,"mean":6.194693669,"std":0.067740878,"thru":80681.95567,"amort":6.194693669},{"dev":"H100","solver":"direct","mode":"eager","dof":748800,"batch":1,"compile":null,"mean":8.87539756,"std":1.041568512,"thru":84368.05168,"amort":8.87539756},{"dev":"H100","solver":"direct","mode":"eager","dof":998976,"batch":1,"compile":null,"mean":11.68468027,"std":1.291170337,"thru":85494.50879,"amort":11.68468027},{"dev":"H100","solver":"direct","mode":"jit","dof":47616,"batch":1,"compile":9.420166361,"mean":0.377767205,"std":0.013023879,"thru":126045.8806,"amort":0.377767205},{"dev":"H100","solver":"direct","mode":"jit","dof":104517,"batch":1,"compile":16.85078979,"mean":0.86313752,"std":0.041106627,"thru":121089.6266,"amort":0.86313752},{"dev":"H100","solver":"direct","mode":"jit","dof":202800,"batch":1,"compile":30.2485504,"mean":1.302997497,"std":0.053441734,"thru":155641.1279,"amort":1.302997497},{"dev":"H100","solver":"direct","mode":"jit","dof":348843,"batch":1,"compile":45.94700155,"mean":2.638138642,"std":0.413390214,"thru":132230.7306,"amort":2.638138642},{"dev":"H100","solver":"direct","mode":"jit","dof":499800,"batch":1,"compile":61.29321823,"mean":3.723449287,"std":0.425672705,"thru":134230.3766,"amort":3.723449287},{"dev":"H100","solver":"direct","mode":"jit","dof":748800,"batch":1,"compile":63.29895267,"mean":6.145609088,"std":0.995665365,"thru":121843.0898,"amort":6.145609088},{"dev":"H100","solver":"direct","mode":"jit","dof":998976,"batch":1,"compile":75.77229059,"mean":8.135847981,"std":0.018674288,"thru":122786.955,"amort":8.135847981},{"dev":"H100","solver":"direct","mode":"vmap-lhs","dof":47616,"batch":10,"compile":13.78616832,"mean":0.250166415,"std":0.000384239,"thru":1903373.001,"amort":0.025016642},{"dev":"H100","solver":"direct","mode":"vmap-lhs","dof":104517,"batch":10,"compile":20.51570175,"mean":0.79238042,"std":0.002980705,"thru":1319025.526,"amort":0.079238042},{"dev":"H100","solver":"direct","mode":"vmap-lhs","dof":202800,"batch":10,"compile":44.5698899,"mean":2.212994991,"std":0.003289856,"thru":916405.1468,"amort":0.221299499},{"dev":"H100","solver":"direct","mode":"vmap-lhs","dof":348843,"batch":10,"compile":69.24477947,"mean":5.147413178,"std":0.011798269,"thru":677705.457,"amort":0.514741318},{"dev":"GB10","solver":"direct","mode":"eager","dof":47616,"batch":1,"compile":null,"mean":0.857800736,"std":0.060889684,"thru":55509.39515,"amort":0.857800736},{"dev":"GB10","solver":"direct","mode":"eager","dof":104517,"batch":1,"compile":null,"mean":1.39479698,"std":0.013987639,"thru":74933.48604,"amort":1.39479698},{"dev":"GB10","solver":"direct","mode":"eager","dof":202800,"batch":1,"compile":null,"mean":3.689932308,"std":0.041427949,"thru":54960.35782,"amort":3.689932308},{"dev":"GB10","solver":"direct","mode":"eager","dof":348843,"batch":1,"compile":null,"mean":7.629345038,"std":0.462872454,"thru":45723.84632,"amort":7.629345038},{"dev":"GB10","solver":"direct","mode":"eager","dof":499800,"batch":1,"compile":null,"mean":13.82744671,"std":0.052119954,"thru":36145.5018,"amort":13.82744671},{"dev":"GB10","solver":"direct","mode":"eager","dof":748800,"batch":1,"compile":null,"mean":26.20128792,"std":1.026587029,"thru":28578.74782,"amort":26.20128792},{"dev":"GB10","solver":"direct","mode":"eager","dof":998976,"batch":1,"compile":null,"mean":43.63191643,"std":1.016360495,"thru":22895.5334,"amort":43.63191643},{"dev":"GB10","solver":"direct","mode":"jit","dof":47616,"batch":1,"compile":3.463064089,"mean":0.309434657,"std":0.003725224,"thru":153880.6299,"amort":0.309434657},{"dev":"GB10","solver":"direct","mode":"jit","dof":104517,"batch":1,"compile":7.245482638,"mean":0.966976952,"std":0.002998503,"thru":108086.3404,"amort":0.966976952},{"dev":"GB10","solver":"direct","mode":"jit","dof":202800,"batch":1,"compile":15.63467102,"mean":3.061567166,"std":0.273596177,"thru":66240.58497,"amort":3.061567166},{"dev":"GB10","solver":"direct","mode":"jit","dof":348843,"batch":1,"compile":27.66070488,"mean":7.021796707,"std":0.451852787,"thru":49680.01988,"amort":7.021796707},{"dev":"GB10","solver":"direct","mode":"jit","dof":499800,"batch":1,"compile":41.98334167,"mean":12.64720536,"std":0.666274694,"thru":39518.61187,"amort":12.64720536},{"dev":"GB10","solver":"direct","mode":"jit","dof":748800,"batch":1,"compile":52.54700947,"mean":24.9880123,"std":0.009412524,"thru":29966.36912,"amort":24.9880123},{"dev":"GB10","solver":"direct","mode":"jit","dof":998976,"batch":1,"compile":82.18791017,"mean":43.58319786,"std":0.092462985,"thru":22921.1267,"amort":43.58319786},{"dev":"GB10","solver":"direct","mode":"vmap-lhs","dof":47616,"batch":10,"compile":8.232884328,"mean":1.5170179,"std":0.002826992,"thru":313878.9595,"amort":0.15170179},{"dev":"GB10","solver":"direct","mode":"vmap-lhs","dof":104517,"batch":10,"compile":16.69229205,"mean":5.932816128,"std":0.003424337,"thru":176167.6036,"amort":0.593281613},{"dev":"GB10","solver":"direct","mode":"vmap-lhs","dof":202800,"batch":10,"compile":42.66127263,"mean":19.54456892,"std":0.042895333,"thru":103762.8412,"amort":1.954456892},{"dev":"GB10","solver":"direct","mode":"vmap-lhs","dof":348843,"batch":10,"compile":93.63164246,"mean":53.82499833,"std":0.031233349,"thru":64810.59189,"amort":5.382499833},{"dev":"RTX 4500","solver":"direct","mode":"eager","dof":47616,"batch":1,"compile":null,"mean":0.673910132,"std":0.005584657,"thru":70656.30526,"amort":0.673910132},{"dev":"RTX 4500","solver":"direct","mode":"eager","dof":104517,"batch":1,"compile":null,"mean":1.092623191,"std":0.015832824,"thru":95656.94819,"amort":1.092623191},{"dev":"RTX 4500","solver":"direct","mode":"eager","dof":202800,"batch":1,"compile":null,"mean":2.176323726,"std":0.030377237,"thru":93184.66623,"amort":2.176323726},{"dev":"RTX 4500","solver":"direct","mode":"eager","dof":348843,"batch":1,"compile":null,"mean":4.498284433,"std":0.029905538,"thru":77550.2317,"amort":4.498284433},{"dev":"RTX 4500","solver":"direct","mode":"eager","dof":499800,"batch":1,"compile":null,"mean":7.784533954,"std":0.056072403,"thru":64204.22892,"amort":7.784533954},{"dev":"GB10","solver":"amg","mode":"eager","dof":19872,"batch":1,"compile":null,"mean":1.454950156,"std":0.040791356,"thru":13658.19984,"amort":1.454950156},{"dev":"GB10","solver":"amg","mode":"jit","dof":19872,"batch":1,"compile":4.091540916,"mean":0.062170859,"std":0.003478188,"thru":319635.2832,"amort":0.062170859},{"dev":"GB10","solver":"amg","mode":"eager","dof":58089,"batch":1,"compile":null,"mean":1.579873215,"std":0.035723827,"thru":36768.14027,"amort":1.579873215},{"dev":"GB10","solver":"amg","mode":"jit","dof":58089,"batch":1,"compile":7.559287113,"mean":0.184361774,"std":0.003433481,"thru":315081.5845,"amort":0.184361774},{"dev":"GB10","solver":"amg","mode":"eager","dof":144417,"batch":1,"compile":null,"mean":2.02979032,"std":0.048761792,"thru":71148.72829,"amort":2.02979032},{"dev":"GB10","solver":"amg","mode":"jit","dof":144417,"batch":1,"compile":21.40111865,"mean":0.513758276,"std":0.003270353,"thru":281099.1214,"amort":0.513758276},{"dev":"GB10","solver":"amg","mode":"eager","dof":290145,"batch":1,"compile":null,"mean":3.13370496,"std":0.040453538,"thru":92588.48669,"amort":3.13370496},{"dev":"GB10","solver":"amg","mode":"jit","dof":290145,"batch":1,"compile":44.93085177,"mean":1.166094366,"std":0.004884431,"thru":248817.7701,"amort":1.166094366},{"dev":"H100","solver":"amg","mode":"jit","dof":998976,"batch":1,"compile":137.3584694,"mean":1.27571196,"std":0.001639257,"thru":783073.3201,"amort":1.27571196},{"dev":"H100","solver":"amg","mode":"jit","dof":47616,"batch":1,"compile":7.474943036,"mean":0.052400241,"std":0.000220566,"thru":908698.1038,"amort":0.052400241},{"dev":"H100","solver":"amg","mode":"jit","dof":104517,"batch":1,"compile":14.03565737,"mean":0.155358658,"std":0.000574714,"thru":672746.5433,"amort":0.155358658},{"dev":"H100","solver":"amg","mode":"jit","dof":202800,"batch":1,"compile":27.76676719,"mean":0.257768193,"std":0.001026596,"thru":786753.3925,"amort":0.257768193},{"dev":"H100","solver":"amg","mode":"jit","dof":348843,"batch":1,"compile":47.54433546,"mean":0.384609601,"std":0.000986707,"thru":907005.4385,"amort":0.384609601},{"dev":"H100","solver":"amg","mode":"jit","dof":499800,"batch":1,"compile":67.44833696,"mean":0.604897459,"std":0.008872653,"thru":826255.7434,"amort":0.604897459},{"dev":"H100","solver":"amg","mode":"eager","dof":47616,"batch":1,"compile":null,"mean":2.491258001,"std":0.069510492,"thru":19113.23515,"amort":2.491258001},{"dev":"H100","solver":"amg","mode":"eager","dof":104517,"batch":1,"compile":null,"mean":2.655077531,"std":0.053747898,"thru":39364.95216,"amort":2.655077531},{"dev":"H100","solver":"amg","mode":"eager","dof":202800,"batch":1,"compile":null,"mean":2.768541075,"std":0.069714973,"thru":73251.5771,"amort":2.768541075},{"dev":"H100","solver":"amg","mode":"eager","dof":348843,"batch":1,"compile":null,"mean":3.362647474,"std":0.075159312,"thru":103740.5802,"amort":3.362647474},{"dev":"H100","solver":"amg","mode":"eager","dof":499800,"batch":1,"compile":null,"mean":3.579946326,"std":0.028206412,"thru":139611.0317,"amort":3.579946326},{"dev":"H100","solver":"amg","mode":"eager","dof":748800,"batch":1,"compile":null,"mean":4.007642024,"std":0.091450897,"thru":186843.0352,"amort":4.007642024},{"dev":"H100","solver":"amg","mode":"eager","dof":998976,"batch":1,"compile":null,"mean":4.22132667,"std":0.055001838,"thru":236649.7734,"amort":4.22132667},{"dev":"GB10","solver":"krylov","mode":"eager","dof":47616,"batch":1,"compile":null,"mean":1.311258638196159,"std":0.025320195219596192,"thru":36313.202150190016,"amort":1.311258638196159},{"dev":"GB10","solver":"krylov","mode":"eager","dof":104517,"batch":1,"compile":null,"mean":2.5690241187927314,"std":0.04882255525008695,"thru":40683.541752467456,"amort":2.5690241187927314},{"dev":"GB10","solver":"krylov","mode":"eager","dof":202800,"batch":1,"compile":null,"mean":5.356597157788928,"std":0.022148392817008446,"thru":37859.8565518619,"amort":5.356597157788928},{"dev":"GB10","solver":"krylov","mode":"eager","dof":348843,"batch":1,"compile":null,"mean":10.49954010300571,"std":0.030652929310937455,"thru":33224.59808502817,"amort":10.49954010300571},{"dev":"GB10","solver":"krylov","mode":"eager","dof":499800,"batch":1,"compile":null,"mean":16.527078543615062,"std":0.038199069375198125,"thru":30241.27940585656,"amort":16.527078543615062},{"dev":"GB10","solver":"krylov","mode":"eager","dof":748800,"batch":1,"compile":null,"mean":28.191998063016218,"std":0.04170117337784665,"thru":26560.728272123295,"amort":28.191998063016218},{"dev":"GB10","solver":"krylov","mode":"eager","dof":998976,"batch":1,"compile":null,"mean":41.17753205359914,"std":0.01829706958128984,"thru":24260.22032354132,"amort":41.17753205359914},{"dev":"GB10","solver":"krylov","mode":"jit","dof":47616,"batch":1,"compile":2.9301464619929902,"mean":0.4657557865837589,"std":0.005705260861197024,"thru":102233.83449351307,"amort":0.4657557865837589},{"dev":"GB10","solver":"krylov","mode":"jit","dof":104517,"batch":1,"compile":6.216102086997125,"mean":1.3908099705935455,"std":0.0036079105162162752,"thru":75148.29646741465,"amort":1.3908099705935455},{"dev":"GB10","solver":"krylov","mode":"jit","dof":202800,"batch":1,"compile":12.341014491044916,"mean":3.320258477202151,"std":0.008798965837885113,"thru":61079.58202425597,"amort":3.320258477202151},{"dev":"GB10","solver":"krylov","mode":"jit","dof":348843,"batch":1,"compile":22.23058166098781,"mean":6.886912251217291,"std":0.005484742453297186,"thru":50653.03393960632,"amort":6.886912251217291},{"dev":"GB10","solver":"krylov","mode":"jit","dof":499800,"batch":1,"compile":32.68432459898759,"mean":11.210663244617171,"std":0.018162275807657422,"thru":44582.554046477155,"amort":11.210663244617171},{"dev":"GB10","solver":"krylov","mode":"jit","dof":748800,"batch":1,"compile":40.81531253195135,"mean":24.874448132398538,"std":0.03447961923695769,"thru":30103.18042090353,"amort":24.874448132398538},{"dev":"GB10","solver":"krylov","mode":"jit","dof":998976,"batch":1,"compile":58.69205245899502,"mean":36.54004610262346,"std":0.016094543299132746,"thru":27339.210169422222,"amort":36.54004610262346},{"dev":"GB10","solver":"amg","mode":"jit","dof":47616,"batch":1,"compile":3.645028201979585,"mean":0.17857292138505726,"std":0.0012024234729902945,"thru":266647.3708929558,"amort":0.17857292138505726},{"dev":"GB10","solver":"amg","mode":"jit","dof":104517,"batch":1,"compile":7.073529879038688,"mean":0.5573660367983393,"std":0.0020278980072749044,"thru":187519.49903581102,"amort":0.5573660367983393},{"dev":"GB10","solver":"amg","mode":"jit","dof":202800,"batch":1,"compile":14.848683307995088,"mean":1.0049732382060028,"std":0.001883320656824549,"thru":201796.41834246472,"amort":1.0049732382060028},{"dev":"GB10","solver":"amg","mode":"jit","dof":348843,"batch":1,"compile":24.31372871703934,"mean":1.548993624607101,"std":0.0020622975695521926,"thru":225206.22064437697,"amort":1.548993624607101},{"dev":"GB10","solver":"amg","mode":"jit","dof":499800,"batch":1,"compile":37.28457636595704,"mean":2.471958771010395,"std":0.00182736190709494,"thru":202187.8381878151,"amort":2.471958771010395},{"dev":"GB10","solver":"amg","mode":"jit","dof":748800,"batch":1,"compile":54.29629572597332,"mean":4.1063383251894265,"std":0.12230941730358742,"thru":182352.24199785283,"amort":4.1063383251894265},{"dev":"GB10","solver":"amg","mode":"jit","dof":998976,"batch":1,"compile":68.33939569798531,"mean":5.166473438998219,"std":0.007282729159350518,"thru":193357.42490407574,"amort":5.166473438998219},{"dev":"GB10","solver":"direct","mode":"vmap-rhs","dof":47616,"batch":10,"compile":2.1280411839834414,"mean":0.3521646654000506,"std":0.010615025971595433,"thru":1352094.7635649184,"amort":0.035216466540005056},{"dev":"GB10","solver":"direct","mode":"vmap-rhs","dof":104517,"batch":10,"compile":4.561260137008503,"mean":1.0630601448123342,"std":0.006999884528233859,"thru":983171.0887670495,"amort":0.10630601448123342},{"dev":"GB10","solver":"direct","mode":"vmap-rhs","dof":202800,"batch":10,"compile":11.141265707963612,"mean":3.094609976815991,"std":0.2095835784624261,"thru":655332.9870947376,"amort":0.30946099768159907},{"dev":"GB10","solver":"direct","mode":"vmap-rhs","dof":348843,"batch":10,"compile":20.39468594698701,"mean":7.674109113193117,"std":0.45626921746386156,"thru":454571.3318048589,"amort":0.7674109113193117},{"dev":"GB10","solver":"amg","mode":"eager","dof":47616,"batch":1,"compile":null,"mean":1.6303132893866858,"std":0.04235458214236137,"thru":29206.656358614888,"amort":1.6303132893866858},{"dev":"GB10","solver":"amg","mode":"eager","dof":104517,"batch":1,"compile":null,"mean":2.02276276841294,"std":0.061227587649100294,"thru":51670.419108022266,"amort":2.02276276841294},{"dev":"GB10","solver":"amg","mode":"eager","dof":202800,"batch":1,"compile":null,"mean":2.535416600992903,"std":0.04415638058441575,"thru":79986.85498887276,"amort":2.535416600992903},{"dev":"GB10","solver":"amg","mode":"eager","dof":348843,"batch":1,"compile":null,"mean":3.343343664996792,"std":0.04312022562293667,"thru":104339.55792586305,"amort":3.343343664996792},{"dev":"GB10","solver":"amg","mode":"eager","dof":499800,"batch":1,"compile":null,"mean":4.319810583186336,"std":0.047200338670432045,"thru":115699.51746156019,"amort":4.319810583186336},{"dev":"GB10","solver":"amg","mode":"eager","dof":748800,"batch":1,"compile":null,"mean":5.984661138197407,"std":0.03388924363856121,"thru":125119.86605569787,"amort":5.984661138197407},{"dev":"GB10","solver":"amg","mode":"eager","dof":998976,"batch":1,"compile":null,"mean":6.862257062399294,"std":0.04004679654042466,"thru":145575.42670235116,"amort":6.862257062399294}];
+
+const SOLVERS = ["direct","amg","krylov"];
+const SOLVER_LABEL = {direct:"cuDSS direct", amg:"AMG-CG", krylov:"Krylov CG"};
+const SOLVER_COLOR = {direct:"var(--direct)", amg:"var(--amg)", krylov:"var(--krylov)"};
+const MODES = ["eager","jit","vmap-lhs","vmap-rhs"];
+const MODE_LABEL = {eager:"eager",jit:"jit","vmap-lhs":"vmap·lhs","vmap-rhs":"vmap·rhs"};
+const MODE_DASH = {eager:"", jit:"7 4", "vmap-lhs":"2 4", "vmap-rhs":"8 3 2 3"};
+const MODE_SHAPE = {eager:"circle", jit:"square", "vmap-lhs":"tri", "vmap-rhs":"diamond"};
+
+const METRICS = {
+  amort:{title:"Time per solve", unit:"seconds per solve · log–log", key:"amort", ylog:true, fmt:v=>fmtTime(v)},
+  thru:{title:"Throughput", unit:"million DOF / second · log-x", key:"thru", ylog:false, scale:1e-6, fmt:v=>v.toFixed(v<0.1?3:v<1?2:1)+" M/s"},
+  compile:{title:"Compile time", unit:"seconds (one-time JIT/XLA) · log–log", key:"compile", ylog:true, fmt:v=>fmtTime(v)},
+};
+function fmtTime(v){ if(v>=1) return v.toFixed(v<10?2:1)+" s";
+  if(v>=1e-3) return (v*1e3).toFixed(v<0.01?1:0)+" ms"; return (v*1e6).toFixed(0)+" µs"; }
+function fmtDof(d){ return d>=1e6?(d/1e6).toFixed(d%1e6?2:0)+"M":(d/1e3).toFixed(0)+"k"; }
+
+const devices = [...new Set(DATA.map(d=>d.dev))].sort((a,b)=>a.localeCompare(b));
+const DEV_SLOTS = ["var(--dev-a)","var(--dev-b)","var(--dev-c)","var(--dev-d)"];
+const DEVICE_COLOR = {}; devices.forEach((d,i)=>DEVICE_COLOR[d]=DEV_SLOTS[i%DEV_SLOTS.length]);
+
+const state = {
+  colorBy:"solver",
+  device: devices.includes("GB10")?"GB10":devices[0],
+  devices: new Set(devices),
+  solver: "direct",
+  solvers: new Set(SOLVERS),
+  modes: new Set(["eager","jit"]),
+  metric: "amort",
+};
+
+/* ---------- controls ---------- */
+let syncers=[];                       // re-apply aria-pressed from state on every render
+function segWidget(items, get, set){
+  const el=document.createElement("div"); el.className="seg"; el.setAttribute("role","group");
+  const btns=[];
+  items.forEach(it=>{ const b=document.createElement("button"); b.textContent=it.label;
+    b.setAttribute("aria-pressed", get()===it.val);
+    b.onclick=()=>{ set(it.val); render(); };
+    el.appendChild(b); btns.push([b,it]); });
+  syncers.push(()=>btns.forEach(([b,it])=>b.setAttribute("aria-pressed", get()===it.val)));
+  return el;
+}
+function chipsWidget(items, has, toggle){
+  const el=document.createElement("div"); el.className="chips"; el.setAttribute("role","group");
+  const btns=[];
+  items.forEach(it=>{ const b=document.createElement("button"); b.className="chip";
+    b.setAttribute("aria-pressed", has(it.val));
+    b.innerHTML=(it.color?`<span class="sw" style="background:${it.color}"></span>`:"")+it.label;
+    b.onclick=()=>{ toggle(it.val); render(); };
+    el.appendChild(b); btns.push([b,it]); });
+  syncers.push(()=>btns.forEach(([b,it])=>b.setAttribute("aria-pressed", has(it.val))));
+  return el;
+}
+function toggleSet(set,v){ set.has(v)?(set.size>1&&set.delete(v)):set.add(v); }
+
+function buildControls(){
+  syncers=[];                         // widgets are rebuilt below; re-register their syncers
+  // Compare toggle
+  const cmp=document.getElementById("cmpseg"); cmp.replaceChildren(
+    ...["solver","device"].map(v=>{ const b=document.createElement("button");
+      b.textContent = v==="solver"?"By solver":"By device";
+      b.setAttribute("aria-pressed", state.colorBy===v);
+      b.onclick=()=>{ if(state.colorBy!==v){ state.colorBy=v; buildControls(); render(); } };
+      return b; }));
+
+  const byDev = state.colorBy==="device";
+  document.getElementById("devlabel").textContent = byDev? "Devices (color)" : "Device";
+  document.getElementById("sollabel").textContent = byDev? "Solver" : "Solvers (color)";
+
+  // Device host
+  const dh=document.getElementById("devhost");
+  dh.replaceChildren(byDev
+    ? chipsWidget(devices.map(d=>({label:d,val:d,color:DEVICE_COLOR[d]})), v=>state.devices.has(v), v=>toggleSet(state.devices,v))
+    : segWidget(devices.map(d=>({label:d,val:d})), ()=>state.device, v=>state.device=v));
+
+  // Solver host
+  const sh=document.getElementById("solhost");
+  sh.replaceChildren(byDev
+    ? segWidget(SOLVERS.map(s=>({label:SOLVER_LABEL[s],val:s})), ()=>state.solver, v=>state.solver=v)
+    : chipsWidget(SOLVERS.map(s=>({label:SOLVER_LABEL[s],val:s,color:SOLVER_COLOR[s]})), v=>state.solvers.has(v), v=>toggleSet(state.solvers,v)));
+
+  // Mode + metric
+  document.getElementById("modechips").replaceChildren(
+    chipsWidget(MODES.map(m=>({label:MODE_LABEL[m],val:m})), v=>state.modes.has(v), v=>toggleSet(state.modes,v)));
+  document.getElementById("metseg").replaceChildren(
+    segWidget([["amort","Time / solve"],["thru","Throughput"],["compile","Compile"]].map(([v,l])=>({label:l,val:v})),
+      ()=>state.metric, v=>state.metric=v));
+}
+
+/* ---------- data selection ---------- */
+function seriesFor(){
+  const m=METRICS[state.metric], scale=m.scale||1, out=[];
+  const pick=(dev,solver)=>{
+    for(const mode of MODES){ if(!state.modes.has(mode)) continue;
+      const pts=DATA.filter(d=>d.dev===dev && d.solver===solver && d.mode===mode && d[m.key]!=null)
+        .map(d=>({dof:d.dof,v:d[m.key]*scale,batch:d.batch})).sort((a,b)=>a.dof-b.dof);
+      if(!pts.length) continue;
+      if(state.colorBy==="device")
+        out.push({group:dev,color:DEVICE_COLOR[dev],dash:MODE_DASH[mode],shape:MODE_SHAPE[mode],
+          label:dev+" · "+MODE_LABEL[mode],dev,solver,mode,pts});
+      else
+        out.push({group:solver,color:SOLVER_COLOR[solver],dash:MODE_DASH[mode],shape:MODE_SHAPE[mode],
+          label:SOLVER_LABEL[solver]+" · "+MODE_LABEL[mode],dev,solver,mode,pts});
+    }
+  };
+  if(state.colorBy==="device"){ for(const dv of devices){ if(state.devices.has(dv)) pick(dv,state.solver); } }
+  else { for(const s of SOLVERS){ if(state.solvers.has(s)) pick(state.device,s); } }
+  return out;
+}
+
+/* ---------- scales ---------- */
+function niceLog(min,max){ const lo=Math.floor(Math.log10(min)),hi=Math.ceil(Math.log10(max)),t=[];
+  for(let k=lo;k<=hi;k++) t.push(Math.pow(10,k)); return {lo,hi,ticks:t}; }
+function niceLin(min,max){ min=Math.min(min,0); const span=max-min||1,step=Math.pow(10,Math.floor(Math.log10(span/4)));
+  const err=span/4/step,s=err>=5?5:err>=2?2:1,st=s*step,lo=Math.floor(min/st)*st,hi=Math.ceil(max/st)*st,t=[];
+  for(let v=lo;v<=hi+st/2;v+=st) t.push(+v.toFixed(10)); return {lo,hi,ticks:t}; }
+
+/* ---------- render ---------- */
+const NS="http://www.w3.org/2000/svg";
+let ro;
+function render(){
+  const m=METRICS[state.metric];
+  document.getElementById("ctitle").textContent=m.title;
+  document.getElementById("cunit").textContent=m.unit;
+  syncers.forEach(f=>f());            // keep every control's pressed state in sync with state
+  drawChart(); buildLegend(); if(!document.getElementById("tablewrap").hidden) buildTable();
+}
+
+function drawChart(){
+  const wrap=document.getElementById("plotwrap");
+  const W=wrap.clientWidth||820, H=Math.max(360,Math.min(460,W*0.52));
+  const svg=document.getElementById("chart");
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`); svg.innerHTML="";
+  const S=seriesFor(), m=METRICS[state.metric];
+  const allDof=[],allV=[]; S.forEach(s=>s.pts.forEach(p=>{allDof.push(p.dof);allV.push(p.v);}));
+  const tip=document.getElementById("tooltip");
+  if(!S.length){ svg.innerHTML=`<text x="${W/2}" y="${H/2}" text-anchor="middle" class="empty">no data for this selection</text>`;
+    tip.style.opacity=0; return; }
+
+  const mL=58,mR=18,mT=14,mB=40, px0=mL,px1=W-mR,py0=H-mB,py1=mT;
+  const xs=niceLog(Math.min(...allDof),Math.max(...allDof));
+  const X=d=>px0+(Math.log10(d)-xs.lo)/(xs.hi-xs.lo)*(px1-px0);
+  let Y,ys;
+  if(m.ylog){ ys=niceLog(Math.min(...allV),Math.max(...allV)); Y=v=>py0-(Math.log10(v)-ys.lo)/(ys.hi-ys.lo)*(py0-py1); }
+  else { ys=niceLin(Math.min(...allV),Math.max(...allV)); Y=v=>py0-(v-ys.lo)/(ys.hi-ys.lo)*(py0-py1); }
+
+  const add=(tag,attrs,txt)=>{const e=document.createElementNS(NS,tag);
+    for(const k in attrs) e.setAttribute(k,attrs[k]); if(txt!=null) e.textContent=txt; svg.appendChild(e); return e;};
+
+  ys.ticks.forEach(t=>{ if(m.ylog&&(t<Math.pow(10,ys.lo)-1e-12||t>Math.pow(10,ys.hi)+1e-12))return;
+    const y=Y(t); if(y<py1-1||y>py0+1)return;
+    add("line",{x1:px0,x2:px1,y1:y,y2:y,class:"gl"});
+    add("text",{x:px0-9,y:y+3.5,"text-anchor":"end",class:"tick"}, m.ylog?fmtTime(t):(t>=1e3?(t/1e3)+"k":t)); });
+  xs.ticks.forEach(t=>{ const x=X(t); if(x<px0-1||x>px1+1)return;
+    add("line",{x1:x,x2:x,y1:py1,y2:py0,class:"gl"});
+    add("text",{x:x,y:py0+18,"text-anchor":"middle",class:"tick"}, fmtDof(t)); });
+  add("line",{x1:px0,x2:px1,y1:py0,y2:py0,class:"axl"});
+  add("line",{x1:px0,x2:px0,y1:py1,y2:py0,class:"axl"});
+  add("text",{x:(px0+px1)/2,y:H-4,"text-anchor":"middle",class:"axtitle"},"degrees of freedom");
+
+  const flat=[];
+  S.forEach(s=>{
+    const dpath=s.pts.map((p,i)=>`${i?"L":"M"}${X(p.dof).toFixed(1)},${Y(p.v).toFixed(1)}`).join("");
+    add("path",{d:dpath,class:"series-line",stroke:s.color,"stroke-dasharray":s.dash});
+    s.pts.forEach(p=>{ const x=X(p.dof),y=Y(p.v); marker(add,s.shape,x,y,s.color);
+      flat.push({x,y,dof:p.dof,v:p.v,label:s.label,color:s.color}); });
+  });
+
+  const cvx=add("line",{class:"crosshair",y1:py1,y2:py0});
+  const hit=add("rect",{x:px0,y:py1,width:px1-px0,height:py0-py1,fill:"transparent",class:"hit"});
+  hit.addEventListener("pointermove",e=>{
+    const r=svg.getBoundingClientRect(), sx=(e.clientX-r.left)*W/r.width;
+    let best=null,bd=1e9; flat.forEach(p=>{const d=Math.abs(p.x-sx); if(d<bd){bd=d;best=p;}});
+    if(!best){tip.style.opacity=0;return;}
+    const col=flat.filter(p=>Math.abs(p.dof-best.dof)<1).sort((a,b)=>a.v-b.v);
+    cvx.setAttribute("x1",best.x); cvx.setAttribute("x2",best.x); cvx.setAttribute("opacity",1);
+    tip.innerHTML=`<div class="tt-h">${fmtDof(best.dof)} DOF</div>`+
+      col.map(p=>`<div class="tt-row"><span class="tt-name"><span class="tt-dot" style="background:${p.color}"></span>${p.label}</span><span class="tt-val">${m.fmt(p.v)}</span></div>`).join("");
+    const rx=(best.x/W)*r.width, ry=(col[0].y/H)*r.height;
+    tip.style.left=rx+"px"; tip.style.top=ry+"px"; tip.style.opacity=1;
+  });
+  hit.addEventListener("pointerleave",()=>{tip.style.opacity=0;cvx.setAttribute("opacity",0);});
+}
+
+function marker(add,shape,x,y,color){
+  const a={fill:color,class:"marker"};
+  if(shape==="circle") add("circle",{cx:x,cy:y,r:4.2,...a});
+  else if(shape==="square") add("rect",{x:x-3.8,y:y-3.8,width:7.6,height:7.6,rx:1.2,...a});
+  else if(shape==="diamond") add("path",{d:`M${x},${y-5}L${x+5},${y}L${x},${y+5}L${x-5},${y}Z`,...a});
+  else if(shape==="triD") add("path",{d:`M${x-4.6},${y-4}L${x+4.6},${y-4}L${x},${y+4.6}Z`,...a});
+  else add("path",{d:`M${x},${y-4.6}L${x+4.6},${y+4}L${x-4.6},${y+4}Z`,...a});
+}
+
+function buildLegend(){
+  const el=document.getElementById("legend"); el.innerHTML="";
+  const shown=seriesFor();
+  const byDev=state.colorBy==="device";
+  const groups=[...new Set(shown.map(s=>s.group))];
+  const mset=[...new Set(shown.map(s=>s.mode))];
+  groups.forEach(g=>{ const el2=document.createElement("span"); el2.className="lg-group";
+    const color=byDev?DEVICE_COLOR[g]:SOLVER_COLOR[g];
+    const name=byDev?g:SOLVER_LABEL[g];
+    el2.innerHTML=`<span class="lg-sw" style="background:${color}"></span>${name}`; el.appendChild(el2); });
+  if(groups.length&&mset.length){ const sep=document.createElement("span"); sep.className="lg-sep"; el.appendChild(sep); }
+  mset.forEach(mode=>{ const g=document.createElement("span"); g.className="lg-mode";
+    const mk=document.createElementNS(NS,"svg"); mk.setAttribute("class","lg-mk"); mk.setAttribute("viewBox","0 0 22 12");
+    const ln=document.createElementNS(NS,"line"); ln.setAttribute("x1",1);ln.setAttribute("x2",21);ln.setAttribute("y1",6);ln.setAttribute("y2",6);
+    ln.setAttribute("stroke","var(--muted)");ln.setAttribute("stroke-width",2);ln.setAttribute("stroke-dasharray",MODE_DASH[mode]);
+    mk.appendChild(ln); const tmp=document.createElementNS(NS,"g"); mk.appendChild(tmp);
+    marker((t,at)=>{const e=document.createElementNS(NS,t);for(const k in at)e.setAttribute(k,at[k]);tmp.appendChild(e);}, MODE_SHAPE[mode],11,6,"var(--muted)");
+    g.appendChild(mk); g.appendChild(document.createTextNode(MODE_LABEL[mode])); el.appendChild(g); });
+}
+
+/* ---------- table ---------- */
+function buildTable(){
+  const w=document.getElementById("tablewrap");
+  const devSet = state.colorBy==="device"? state.devices : new Set([state.device]);
+  const solSet = state.colorBy==="device"? new Set([state.solver]) : state.solvers;
+  const rows=DATA.filter(d=>devSet.has(d.dev) && solSet.has(d.solver) && state.modes.has(d.mode))
+    .sort((a,b)=> a.dev.localeCompare(b.dev) || SOLVERS.indexOf(a.solver)-SOLVERS.indexOf(b.solver)
+      || MODES.indexOf(a.mode)-MODES.indexOf(b.mode) || a.dof-b.dof);
+  w.innerHTML = `<table><thead><tr>
+    <th class="l">Device</th><th class="l">Solver</th><th class="l">Mode</th><th>DOF</th><th>Batch</th>
+    <th>Time/solve</th><th>Throughput</th><th>Compile</th></tr></thead><tbody>`+
+    rows.map(d=>`<tr>
+      <td class="l"><span class="sdot" style="background:${DEVICE_COLOR[d.dev]}"></span>${d.dev}</td>
+      <td class="l"><span class="sdot" style="background:${SOLVER_COLOR[d.solver]}"></span>${SOLVER_LABEL[d.solver]}</td>
+      <td class="l">${MODE_LABEL[d.mode]}</td>
+      <td>${d.dof.toLocaleString()}</td><td>${d.batch}</td>
+      <td>${d.amort!=null?fmtTime(d.amort):"—"}</td>
+      <td>${d.thru!=null?(d.thru/1e6).toFixed(3)+" M/s":"—"}</td>
+      <td>${d.compile!=null?fmtTime(d.compile):"—"}</td></tr>`).join("")+`</tbody></table>`;
+}
+
+/* ---------- toggles ---------- */
+document.getElementById("tabletgl").onclick=function(){
+  const w=document.getElementById("tablewrap"); const show=w.hidden;
+  w.hidden=!show; this.setAttribute("aria-pressed",show); if(show) buildTable();
+};
+document.getElementById("themetgl").onclick=function(){
+  const cur=document.documentElement.getAttribute("data-theme")
+    || (matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");
+  document.documentElement.setAttribute("data-theme", cur==="dark"?"light":"dark");
+  drawChart();
+};
+
+buildControls();
+render();
+if(window.ResizeObserver){ ro=new ResizeObserver(()=>drawChart()); ro.observe(document.getElementById("plotwrap")); }
+
+/* embed helpers (e.g. Docusaurus iframe): theme sync + auto-height */
+function postHeight(){ try{ if(parent!==window){
+  // Measure the CONTENT box (.wrap), not body.scrollHeight — the latter can grow
+  // to match a taller iframe viewport and cause a runaway feedback loop.
+  const w=document.querySelector(".wrap");
+  const h=w?Math.ceil(w.getBoundingClientRect().height):document.body.scrollHeight;
+  parent.postMessage({feaxHeight:h},"*");
+} }catch(_){} }
+try{
+  const q=new URLSearchParams(location.search).get("theme");
+  if(q==="dark"||q==="light") document.documentElement.setAttribute("data-theme",q);
+  window.addEventListener("message",e=>{
+    const t=e&&e.data&&e.data.feaxTheme;
+    if(t==="dark"||t==="light"){ document.documentElement.setAttribute("data-theme",t); drawChart(); }
+  });
+  const _render=render; render=function(){ _render.apply(this,arguments); postHeight(); };
+  ["tabletgl","themetgl"].forEach(id=>document.getElementById(id).addEventListener("click",()=>setTimeout(postHeight,0)));
+  window.addEventListener("load",()=>setTimeout(postHeight,60));
+  // re-report height on any content reflow (width change, wrapping, table toggle)
+  if(window.ResizeObserver) new ResizeObserver(()=>postHeight()).observe(document.body);
+  setTimeout(postHeight,120);
+}catch(_){}
+
+</script>

@@ -508,6 +508,30 @@ scatter map (``problem.res_perm`` / ``res_sorted_dofs``). This replaces the
 ``1 + num_boundaries`` scatter-adds with one deterministic reduction (no
 atomics), matching the CSR-direct Jacobian assembly.
 
+#### detect\_zero\_surface\_jacobian
+
+```python
+def detect_zero_surface_jacobian(problem: 'Problem',
+                                 traced_params: TracedParams,
+                                 ts=None) -> bool
+```
+
+Probe whether every surface load is u-independent (a &#x27;dead&#x27; load), i.e.
+its contribution to the tangent stiffness is identically zero.
+
+Returns ``True`` only when the assembled surface Jacobian is exactly zero at
+two distinct nonzero displacement patterns — the usual case for Neumann
+tractions / pressures that do not follow the deformation. Configuration
+(``u``-)dependent &#x27;follower&#x27; loads, or any probing error, return ``False``
+(keep the surface term — correct, just not the fast path).
+
+When ``True``, :func:`_get_J_csr` drops the surface Jacobian term. Besides
+saving a zero assembly, this removes the operator&#x27;s trace dependence on
+``surface_vars``, so a ``jax.vmap`` over the LOAD leaves the stiffness
+unbatched and its cuDSS factorization is hoisted out of the batch
+(factor-once / solve-many). The result is cached on ``problem`` as
+``_surface_jac_zero`` and read (Python-side, untraced) by :func:`_get_J_csr`.
+
 #### get\_jacobian
 
 ```python

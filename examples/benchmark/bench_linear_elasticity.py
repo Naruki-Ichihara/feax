@@ -7,22 +7,25 @@ scale-invariant and the per-DOF numbers are directly comparable.
 
 For each target DOF the solver wall time is measured in three execution modes:
 
-* ``eager`` — op-by-op dispatch (no top-level jit)
-* ``jit``   — ``jax.jit`` (compile time reported separately from steady state)
-* ``vmap``  — ``jax.jit(jax.vmap(...))`` over a batch of load/stiffness cases
+* ``eager``    — op-by-op dispatch (no top-level jit)
+* ``jit``      — ``jax.jit`` (compile time reported separately from steady state)
+* ``vmap-lhs`` — ``jax.jit(jax.vmap(...))`` batching the MATERIAL: the left-hand-side
+                 matrix ``A`` varies per case (B factorizations)
+* ``vmap-rhs`` — batching the LOAD: the right-hand side ``b`` varies with ``A`` fixed
+                 (factor-once / solve-many; direct solver only)
 
-Results (with the auto-detected device name) are appended to a CSV, so repeated
-runs on different machines / solvers accumulate in one file.
+Results (with the auto-detected device name) are appended to ``bench.csv``, so
+repeated runs on different machines / solvers accumulate in one file.
 
 Run:
     python bench_linear_elasticity.py --dofs 20000 100000 300000
     python bench_linear_elasticity.py --solver direct --modes eager jit
-    python bench_linear_elasticity.py --dofs 50000 --batch 16 --modes vmap
+    python bench_linear_elasticity.py --dofs 50000 --batch 16 --modes vmap-rhs
     python bench_linear_elasticity.py --no-x64 --output my_run.csv --tag laptop
 
 Solvers: ``krylov`` (matrix-free CG, scales in memory — default), ``direct``
-(cuDSS/host sparse), ``amg`` (rigid-body near-null-space; ``vmap`` is skipped —
-its host setup cannot be vmapped).
+(cuDSS/host sparse), ``amg`` (rigid-body near-null-space; the ``vmap`` modes are
+skipped — its host setup cannot be vmapped).
 """
 import argparse
 import csv
@@ -50,19 +53,19 @@ def parse_args(argv=None):
                    help="Fixed physical cantilever dimensions (scale-invariant).")
     p.add_argument("--solver", choices=["krylov", "direct", "amg"], default="krylov")
     p.add_argument("--modes", nargs="+",
-                   choices=["eager", "jit", "vmap", "vmap-a", "vmap-b"],
-                   default=["eager", "jit", "vmap-a", "vmap-b"],
-                   help="vmap-a: batch the material E (matrix A varies -> B "
-                        "factorizations). vmap-b: batch the load/traction (RHS b "
-                        "varies, A fixed -> factor once, multi-RHS solve). "
-                        "'vmap' is an alias for vmap-a.")
+                   choices=["eager", "jit", "vmap-lhs", "vmap-rhs"],
+                   default=["eager", "jit", "vmap-lhs", "vmap-rhs"],
+                   help="vmap-lhs: batch the material E (left-hand-side matrix A "
+                        "varies -> B factorizations). vmap-rhs: batch the "
+                        "load/traction (right-hand side b varies, A fixed -> "
+                        "factor once, multi-RHS solve).")
     p.add_argument("--batch", type=int, default=8, help="vmap batch size.")
     p.add_argument("--repeats", type=int, default=5, help="Timed repeats per point.")
     p.add_argument("--warmup", type=int, default=2, help="Untimed warmup runs.")
     p.add_argument("--tol", type=float, default=1e-8, help="Krylov relative tol.")
     p.add_argument("--maxiter", type=int, default=2000, help="Krylov max iterations.")
     p.add_argument("--output", default=None,
-                   help="CSV path (default: results.csv next to this script).")
+                   help="CSV path (default: bench.csv next to this script).")
     p.add_argument("--tag", default="", help="Free-form label written to every row.")
     p.add_argument("--device-name", default=None,
                    help="Override the auto-detected device name in the CSV.")
@@ -176,7 +179,7 @@ def main(argv=None):
     os.environ["FEAX_X64"] = "1" if args.x64 else "0"
     if args.preallocate:
         os.environ["FEAX_PREALLOCATE"] = "1"
-    # vmap-a batches the MATRIX -> B live factorizations at once; size the spineax
+    # vmap-lhs batches the MATRIX -> B live factorizations at once; size the spineax
     # factor cache above B so it does not evict tokens ("unknown/evicted token").
     os.environ.setdefault("SPINEAX_FACTOR_CACHE", str(max(16, args.batch + 4)))
 
@@ -193,7 +196,7 @@ def main(argv=None):
     plat, device = device_info(jax, args.device_name)
     dtype = "float64" if args.x64 else "float32"
     out_path = args.output or os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                           "results.csv")
+                                           "bench.csv")
 
     print(f"device={device} ({plat})  dtype={dtype}  solver={args.solver}  "
           f"jax={jax.__version__}  feax={feax_version}")
@@ -205,7 +208,7 @@ def main(argv=None):
 
     def solver_options():
         if args.solver == "direct":
-            # reuse_factorization=True lets vmap-b (load-batched, matrix fixed)
+            # reuse_factorization=True lets vmap-rhs (load-batched, matrix fixed)
             # factor once and multi-RHS solve (factor-once / solve-many).
             return fe.DirectSolverOptions(reuse_factorization=True)
         if args.solver == "amg":
@@ -305,15 +308,15 @@ def main(argv=None):
             except Exception as e:
                 record("jit", dof, res, 1, float("nan"), [], note=type(e).__name__)
 
-        # vmap-a: batch the material E (matrix A varies per element -> B distinct
-        #         cuDSS factorizations). vmap-b: batch the load/traction (RHS b
-        #         varies, A FIXED -> ONE factorization + a single multi-RHS solve,
-        #         factor-once / solve-many). 'vmap' is an alias for vmap-a.
+        # vmap-lhs: batch the material E (left-hand-side matrix A varies per
+        #           element -> B distinct cuDSS factorizations). vmap-rhs: batch
+        #           the load/traction (right-hand side b varies, A FIXED -> ONE
+        #           factorization + a single multi-RHS solve, factor-once/solve-many).
         vmap_kinds = []
-        if "vmap-a" in args.modes or "vmap" in args.modes:
-            vmap_kinds.append("a")
-        if "vmap-b" in args.modes:
-            vmap_kinds.append("b")
+        if "vmap-lhs" in args.modes:
+            vmap_kinds.append("lhs")
+        if "vmap-rhs" in args.modes:
+            vmap_kinds.append("rhs")
         for kind in vmap_kinds:
             label = f"vmap-{kind}"
             if args.solver == "amg":
@@ -324,14 +327,14 @@ def main(argv=None):
             try:
                 B = args.batch
                 scales = jnp.linspace(0.8, 1.2, B)
-                if kind == "a":
+                if kind == "lhs":
                     E_batch = E[None, :] * scales[:, None]         # (B, num_nodes)
 
                     def solve_one(E_field):
                         tpi = fe.TracedParams(volume_vars=(E_field,), surface_vars=surf)
                         return solver(tpi, initial, traced_structure=ts)
                     batched_arg = E_batch
-                else:                                              # kind == "b"
+                else:                                              # kind == "rhs"
                     traction = surf[0][0]                          # the load leaf
                     tr_batch = traction[None] * scales.reshape((B,) + (1,) * traction.ndim)
 

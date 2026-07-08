@@ -68,6 +68,7 @@ const sidebars: SidebarsConfig = {
         'advanced/batched_topology_optimization',
       ],
     },
+    'benchmarks',
   ],
 
   // API Reference sidebar - manually configured

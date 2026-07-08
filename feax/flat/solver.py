@@ -13,13 +13,15 @@ fluctuation problem is solved and the volume-averaged stress response is
 assembled into C_hom.
 """
 
+import warnings
 from typing import Any, NamedTuple, Tuple
 
+import numpy as onp
 import jax
 import jax.numpy as np
 
 from ..solver import create_solver
-from ..solvers.options import KrylovSolverOptions
+from ..solvers.options import DirectSolverOptions, KrylovSolverOptions, has_cudss
 
 # ---------------------------------------------------------------------------
 # Unit strain tensors in Voigt order
@@ -187,6 +189,141 @@ class HomogenizationResult(NamedTuple):
 
 
 # ---------------------------------------------------------------------------
+# Direct (factor-once / solve-many) homogenization path
+# ---------------------------------------------------------------------------
+# The fully-periodic reduced operator ``PᵀKP`` is SHARED by all n unit-strain
+# cases (only the RHS — the macroscopic load — changes), so the ideal solve is a
+# single factorization reused across every case (and every adjoint). ``PᵀKP`` is
+# also SINGULAR (rigid-body translations survive periodicity), which a direct
+# factorization cannot handle, so we pin one reduced dof per translation
+# direction ("zero-mean" gauge: C_hom is translation-invariant, and the output
+# fluctuation is re-centred to zero mean). The custom_vjp factors once and reuses
+# that factorization for the n forward solves AND the n adjoint solves.
+
+
+def _translation_pin_dofs(P, vec, dim):
+    """Reduced dofs to pin (one per translation direction) to remove the rigid-
+    body null space of ``PᵀKP``. A reduced dof carries a single spatial component
+    (``full_dof % vec``); pinning one dof of each component c<dim kills the
+    corresponding translation while leaving the operator symmetric positive
+    definite."""
+    coo = onp.asarray(P.indices)                 # (nnz, 2): [full_dof, reduced_dof]
+    comp = coo[:, 0] % vec
+    red = coo[:, 1]
+    pins = []
+    for c in range(dim):
+        cand = red[comp == c]
+        if cand.size == 0:
+            raise ValueError(
+                f"No reduced dof carries component {c}; cannot pin translation.")
+        pins.append(int(cand.min()))
+    pins = sorted(set(pins))
+    if len(pins) != dim:
+        raise ValueError("Translation pins are not distinct — unexpected P layout.")
+    return onp.array(pins, dtype=onp.int64)
+
+
+def _create_direct_homogenization_solve(problem, bc, P, mesh, dim,
+                                        unit_strains_arr, labels, solver_options):
+    """Build the differentiable factor-once / solve-many homogenization solve."""
+    from ..assembler import (create_matfree_res_J_parametric,
+                             create_res_bc_parametric)
+    from ..asd import (connectivity_pattern, operator_assembler,
+                       reduced_operator_pattern)
+    from spineax.cudss.factor_solve import factorize, solve_with
+
+    vec = problem.fes[0].vec
+    ndof = problem.num_total_dofs_all_vars
+
+    matfree_res_J = create_matfree_res_J_parametric(problem, symmetric=True)
+    res_bc_parametric = create_res_bc_parametric(problem)
+
+    # Reduced operator pattern (values-independent) → static CSR structure.
+    R_pat = reduced_operator_pattern(P, connectivity_pattern(problem))
+    assemble = operator_assembler(R_pat)
+    indptr = np.asarray(R_pat.indptr)
+    indices = np.asarray(R_pat.indices)
+
+    # Symmetric pin: zero the pinned rows AND columns, set unit diagonal. Built
+    # from the static pattern so it is a cheap masked update of the CSR values.
+    pins = _translation_pin_dofs(P, vec, dim)
+    ip = onp.asarray(R_pat.indptr); jc = onp.asarray(R_pat.indices)
+    rows_np = onp.repeat(onp.arange(len(ip) - 1), onp.diff(ip))
+    keep = np.asarray(~(onp.isin(rows_np, pins) | onp.isin(jc, pins)))
+    diag_slots = []
+    for p in pins:
+        hit = onp.where((rows_np == p) & (jc == p))[0]
+        if hit.size == 0:
+            raise ValueError(f"Diagonal slot for pinned dof {p} missing from the "
+                             "reduced pattern.")
+        diag_slots.append(int(hit[0]))
+    diag_slots = np.asarray(diag_slots)
+    pins_j = np.asarray(pins)
+
+    _mtype, _mview = 1, 0                         # cuDSS SYMMETRIC, FULL storage
+
+    def _pinned_data(K_data):
+        return np.where(keep, K_data, 0.0).at[diag_slots].set(1.0)
+
+    # custom_vjp linear solve: factor ONCE, solve every RHS, and reuse the same
+    # factorization for the adjoint (PᵀKP is symmetric ⇒ Kᵀ = K).
+    @jax.custom_vjp
+    def _solve_many(data, rhs_batch):
+        token = factorize(data, indptr, indices, mtype_id=_mtype, mview_id=_mview)
+        return jax.vmap(lambda b: solve_with(token, b))(rhs_batch)
+
+    def _solve_fwd(data, rhs_batch):
+        token = factorize(data, indptr, indices, mtype_id=_mtype, mview_id=_mview)
+        x = jax.vmap(lambda b: solve_with(token, b))(rhs_batch)
+        return x, (token, x)
+
+    def _solve_bwd(res, x_bar):
+        token, x = res                           # reuse the forward factorization
+        lam = jax.vmap(lambda b: solve_with(token, b))(x_bar)
+        # A x = b ⇒ ∂/∂A = -Σ_case λ ⊗ x, gathered onto the CSR slots.
+        data_bar = -(lam[:, np.asarray(rows_np)] * x[:, indices]).sum(axis=0)
+        return data_bar, lam
+
+    _solve_many.defvjp(_solve_fwd, _solve_bwd)
+
+    def _reduced_operator_data(traced_params):
+        # Linear elasticity: J is constant, evaluate the reduced operator at u=0.
+        _, J_matvec = matfree_res_J(np.zeros(ndof), traced_params, bc, None)
+        K = assemble(lambda v: P.T @ J_matvec(P @ v))
+        return _pinned_data(K.data)
+
+    def _case_rhs(unit_strain, traced_params):
+        u_macro = macro_displacement(mesh, unit_strain)
+        rhs = -(P.T @ res_bc_parametric(u_macro, traced_params, bc, None))
+        return rhs.at[pins_j].set(0.0), u_macro
+
+    def _zero_mean(fluct):
+        # Re-centre each spatial component to zero volume-mean (nodal mean is a
+        # fine gauge fix; C_hom is unaffected by the constant translation).
+        f = fluct.reshape(-1, vec)
+        return (f - f.mean(axis=0)).reshape(-1)
+
+    def solve(traced_params) -> HomogenizationResult:
+        data = _reduced_operator_data(traced_params)
+        rhs_batch, u_macros = jax.vmap(
+            lambda s: _case_rhs(s, traced_params))(unit_strains_arr)
+        sol_reduced = _solve_many(data, rhs_batch)          # (n_cases, n_red)
+
+        def _finish(u_macro, sol_red):
+            fluct = _zero_mean(P @ sol_red)
+            u_total = u_macro + fluct
+            return average_stress(problem, u_total, traced_params, dim), u_total
+
+        columns, u_totals = jax.vmap(_finish)(u_macros, sol_reduced)
+        return HomogenizationResult(C_hom=columns.T, u_totals=u_totals,
+                                    u_macros=u_macros)
+
+    solve.labels = labels
+    solve.unit_strains = unit_strains_arr
+    return solve
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -224,8 +361,13 @@ def create_homogenization_solver(
         Shape ``(num_dofs, num_reduced_dofs)``.
     mesh :
         FEAX mesh of the unit cell.
-    solver_options : KrylovSolverOptions, optional
-        Iterative solver configuration.
+    solver_options : KrylovSolverOptions or DirectSolverOptions, optional
+        Solver configuration. Default (``None``) is matrix-free Krylov (CG),
+        which handles the singular periodic system directly. Pass
+        ``DirectSolverOptions`` (GPU/cuDSS) to use the factor-once / solve-many
+        direct path — one zero-mean-regularized factorization of ``PᵀKP`` reused
+        across all strain cases and adjoints (machine-precise, faster at
+        moderate-to-large cells; falls back to Krylov if cuDSS is unavailable).
     dim : int
         Problem dimension. ``2`` or ``3``. Default: ``3``.
 
@@ -251,8 +393,25 @@ def create_homogenization_solver(
         else ('eps11', 'eps22', 'gam12')
     )
 
+    # Default: matrix-free Krylov (CG) — robust on the singular periodic system
+    # and light on memory at any scale. Passing DirectSolverOptions instead
+    # selects the direct factor-once / solve-many path: the reduced operator
+    # PᵀKP is identical across all unit-strain cases, so a single (zero-mean
+    # regularized) factorization is reused for every case AND every adjoint —
+    # machine-precise C_hom, competitive at moderate-to-large cells.
     if solver_options is None:
         solver_options = KrylovSolverOptions()
+
+    if isinstance(solver_options, DirectSolverOptions):
+        if has_cudss():
+            return _create_direct_homogenization_solve(
+                problem, bc, P, mesh, dim, unit_strains_arr, labels, solver_options)
+        warnings.warn(
+            "DirectSolverOptions requested for homogenization but cuDSS is "
+            "unavailable; falling back to matrix-free Krylov (CG).",
+            RuntimeWarning)
+        solver_options = KrylovSolverOptions()
+
     _verbose = solver_options.verbose
 
     # Internal: the raw flat vector feeds average_stress / vmapped strain cases.

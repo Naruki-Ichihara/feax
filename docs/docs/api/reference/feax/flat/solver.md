@@ -103,7 +103,7 @@ Parameters
 - **bc** (*FEAX DirichletBC. Leave EMPTY for periodic unit cells: the reduced*): system is singular (rigid translations) but consistent, and the Krylov solve handles it. Do NOT pin a node to suppress the translations — the affine initial guess ``u_macro`` does not satisfy such a pin, which corrupts the fluctuation field around the pinned node (invisible for a homogeneous cell, wrong C_hom for a heterogeneous one).
 - **P** (*Prolongation matrix from ``feax.flat.pbc.prolongation_matrix``.*): Shape ``(num_dofs, num_reduced_dofs)``.
 - **mesh** (*FEAX mesh of the unit cell.*)
-- **solver_options** (*KrylovSolverOptions, optional*): Iterative solver configuration.
+- **solver_options** (*KrylovSolverOptions or DirectSolverOptions, optional*): Solver configuration. Default (``None``) is matrix-free Krylov (CG), which handles the singular periodic system directly. Pass ``DirectSolverOptions`` (GPU/cuDSS) to use the factor-once / solve-many direct path — one zero-mean-regularized factorization of ``PᵀKP`` reused across all strain cases and adjoints (machine-precise, faster at moderate-to-large cells; falls back to Krylov if cuDSS is unavailable).
 - **dim** (*int*): Problem dimension. ``2`` or ``3``. Default: ``3``.
 
 

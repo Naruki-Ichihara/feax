@@ -10,27 +10,27 @@
 # the run but keeps the host alive.
 #
 # Two vmap flavors over a batch of B linear-elasticity solves of the SAME box:
-#   vmap-a : batch the MATERIAL E  -> stiffness A varies -> B cuDSS factorizations
+#   vmap-lhs : batch the MATERIAL E  -> stiffness A varies -> B cuDSS factorizations
 #            (memory-safe: spineax custom_vmap factorizes one at a time via
 #            jax.lax.map, peak ~one factorization, NOT batch-multiplied).
-#   vmap-b : batch the LOAD/traction (RHS b) -> A FIXED -> ONE factorization + a
+#   vmap-rhs : batch the LOAD/traction (RHS b) -> A FIXED -> ONE factorization + a
 #            single multi-RHS solve (factor-once / solve-many). Needs
 #            DirectSolverOptions(reuse_factorization=True) + the dead-load
-#            surface-Jacobian skip (both wired into feax); expect ~9x over vmap-a.
+#            surface-Jacobian skip (both wired into feax); expect ~9x over vmap-lhs.
 # Both vmap flavors are capped at 500k DOF, batch 10; eager/jit sweep to 1,000,000.
 #
 # Usage:
 #   bash run_cudss_guarded.sh eager        # eager, DOF sweep to 1,000,000
 #   bash run_cudss_guarded.sh jit          # jit  (the host-crash-prone one)
-#   bash run_cudss_guarded.sh vmap-a       # material-batched vmap, <=500k, b=10
-#   bash run_cudss_guarded.sh vmap-b       # load-batched vmap (reuse), <=500k, b=10
+#   bash run_cudss_guarded.sh vmap-lhs       # material-batched vmap, <=500k, b=10
+#   bash run_cudss_guarded.sh vmap-rhs       # load-batched vmap (reuse), <=500k, b=10
 #   RESERVE_GIB=15 bash run_cudss_guarded.sh eager
 #
-# Results append to results_direct_1M.csv next to this script.
+# Results append to bench.csv next to this script.
 #
 set -uo pipefail
 
-MODE="${1:?usage: run_cudss_guarded.sh <eager|jit|vmap-a|vmap-b>}"
+MODE="${1:?usage: run_cudss_guarded.sh <eager|jit|vmap-lhs|vmap-rhs>}"
 
 # A jit(vmap) compile constant-folds a huge gather (pred[~39M]) whose host-side
 # evaluation spikes RAM fast enough to trip the watchdog. Disabling the XLA
@@ -51,7 +51,7 @@ esac
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$HERE/bench_linear_elasticity.py"
-OUT="$HERE/results_direct_1M.csv"
+OUT="$HERE/bench.csv"
 RESERVE_KB=$(( RESERVE_GIB * 1024 * 1024 ))
 
 # vmap-*: cap DOF at 500k, batch 10.  eager/jit: full sweep to 1M.

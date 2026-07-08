@@ -1,0 +1,136 @@
+---
+title: Benchmarks
+sidebar_label: Benchmarks
+description: Interactive scaling benchmark of FEAX's cuDSS-direct, AMG, and matrix-free Krylov solvers across NVIDIA GPUs.
+---
+
+import BenchmarkEmbed from '@site/src/components/BenchmarkEmbed';
+
+# Solver Benchmarks
+
+A fixed linear-elasticity cantilever (HEX8, float64) refined from **48k to 1M degrees of
+freedom**, solved three ways and timed on several NVIDIA GPUs:
+
+- **cuDSS direct** — sparse Cholesky/LDLᵀ factorization on GPU.
+- **AMG-CG** — algebraic-multigrid-preconditioned conjugate gradient (rigid-body near-null-space).
+- **Krylov CG** — fully matrix-free conjugate gradient (Jacobi-preconditioned).
+
+Each solver is measured in **eager**, **JIT**, and **batched (`vmap`)** execution. Use the
+controls to compare *by solver* on one device, or *by device* for a fixed solver, across
+solve time, throughput, and one-time compile cost.
+
+<BenchmarkEmbed minHeight={680} />
+
+:::note How to read it
+- **Time per solve** is batch-amortized (a `vmap` batch of 10 is divided by 10); **throughput**
+  counts the whole batch; **compile** is the one-time JIT/XLA trace+compile (eager has none).
+- Colour encodes the compared dimension (solver *or* device); line dash encodes the execution
+  mode. A table view (▤) and a light/dark toggle sit in the top-right.
+- The `vmap·rhs` mode batches the **load** — the right-hand side `b` varies with the operator
+  fixed (factor-once / solve-many) — while `vmap·lhs` batches the **material**, so the
+  left-hand-side matrix `A` (and its factorization) changes per case. See
+  [Periodic Boundary Conditions](./advanced/periodic_boundary_conditions.md) and the
+  `vmap` transform guide for where this matters.
+:::
+
+## Benchmark setup
+
+### Physical problem
+
+A three-dimensional **linear-elastic cantilever**: one physical box, clamped at one
+face and pulled by a uniform traction on the opposite face. Only the mesh resolution
+changes across the sweep, so every DOF point is the *same* problem refined — the
+per-DOF numbers are directly comparable.
+
+Static equilibrium of a linear-elastic solid on a domain $\Omega$:
+
+$$
+\nabla\cdot\boldsymbol{\sigma} = \mathbf{0},\qquad
+\boldsymbol{\sigma} = \lambda\,\mathrm{tr}(\boldsymbol{\varepsilon})\,\mathbf{I} + 2\mu\,\boldsymbol{\varepsilon},\qquad
+\boldsymbol{\varepsilon} = \tfrac{1}{2}\left(\nabla\mathbf{u} + \nabla\mathbf{u}^{\mathsf{T}}\right),
+$$
+
+with Lamé parameters $\mu = E/[2(1+\nu)]$ and $\lambda = E\nu/[(1+\nu)(1-2\nu)]$.
+The boundary conditions are a clamp $\mathbf{u}=\mathbf{0}$ at $x=0$ and a uniform tip
+traction $\mathbf{t}=(0,0,t_z)$ at $x=L_x$, traction-free elsewhere.
+
+| Quantity | Value |
+| --- | --- |
+| Domain | $8 \times 2 \times 2$ box (fixed, scale-invariant) |
+| Element | HEX8, `vec=3` (3-D displacement) |
+| Young's modulus $E$ | $70{,}000$ |
+| Poisson's ratio $\nu$ | $0.3$ |
+| Clamp | $\mathbf{u} = \mathbf{0}$ on $x = 0$ |
+| Tip traction $\mathbf{t}$ | $(0,\,0,\,10^{-3})$ on $x = L_x$ |
+| Precision | `float64` |
+| DOF sweep | $\approx 48\text{k} \to 1\text{M}$, with $3(n_x{+}1)(n_y{+}1)(n_z{+}1)$ |
+
+### Solvers
+
+| Label | Method | Key settings |
+| --- | --- | --- |
+| **cuDSS direct** | GPU sparse Cholesky / LDLᵀ factorization | `reuse_factorization=True` |
+| **AMG-CG** | algebraic-multigrid-preconditioned CG | `near_nullspace="rigid_body"` |
+| **Krylov CG** | matrix-free CG | Jacobi preconditioner, `tol=1e-8`, `maxiter=2000` |
+
+### Code
+
+The problem definition and the three interchangeable solver backends, condensed from
+`examples/benchmark/bench_linear_elasticity.py`:
+
+```python
+import feax as fe
+import jax.numpy as jnp
+
+nu = 0.3
+
+class LinearElasticity(fe.Problem):
+    def get_tensor_map(self):
+        def stress(u_grad, E):                       # Cauchy stress σ(∇u, E)
+            mu  = E / (2. * (1. + nu))
+            lam = E * nu / ((1. + nu) * (1. - 2. * nu))
+            eps = 0.5 * (u_grad + u_grad.T)
+            return lam * jnp.trace(eps) * jnp.eye(self.dim) + 2. * mu * eps
+        return stress
+
+    def get_surface_maps(self):
+        def traction(u, x, mag):                     # uniform tip load, +z
+            return jnp.array([0., 0., mag])
+        return [traction]
+
+# fixed 8 x 2 x 2 box, refined to hit each DOF target
+lx, ly, lz = 8.0, 2.0, 2.0
+mesh = fe.StructuredGrid((nx, ny, nz),
+                         spacing=(lx/nx, ly/ny, lz/nz)).to_mesh()
+
+clamp = lambda p: jnp.isclose(p[0], 0.0, 1e-5)                 # x = 0
+tip   = lambda p: jnp.isclose(p[0], lx, 1e-5 + 0.5 * lx / nx)  # x = Lx
+
+problem = LinearElasticity(mesh, vec=3, dim=3, ele_type="HEX8",
+                           location_fns=[tip])
+bc = fe.DirichletBCConfig([
+    fe.DirichletBCSpec(location=clamp, component="all", value=0.),
+]).create_bc(problem)
+
+E        = fe.TracedParams.create_node_var(problem, 70e3)      # Young's modulus
+traction = fe.TracedParams.create_uniform_surface_var(problem, 1e-3)
+tp = fe.TracedParams(volume_vars=(E,), surface_vars=[(traction,)])
+ts = fe.TracedStructure.from_problem(problem)
+
+# three interchangeable solver backends
+direct = fe.DirectSolverOptions(reuse_factorization=True)             # cuDSS
+amg    = fe.AMGSolverOptions(near_nullspace="rigid_body")             # AMG-CG
+krylov = fe.KrylovSolverOptions(solver="cg", tol=1e-8, atol=1e-11,
+                                maxiter=2000, use_jacobi_preconditioner=True)
+
+solver = fe.create_solver(problem, bc, solver_options=direct, linear=True,
+                          traced_params=tp, traced_structure=ts)
+u = solver(tp, fe.zero_like_initial_guess(problem, bc), traced_structure=ts)
+```
+
+`eager` runs this op-by-op, `jit` wraps it in `jax.jit`, and the `vmap` modes map it
+over a batch — the **material** for `vmap·lhs` (matrix `A` varies), or the **load** for
+`vmap·rhs` (`A` fixed, factor-once / solve-many).
+
+The underlying data lives in `examples/benchmark/bench.csv`; regenerate it with
+`examples/benchmark/bench_linear_elasticity.py` (see the script's `--help`).
