@@ -75,6 +75,10 @@ def parse_args(argv=None):
                    help="float32.")
     p.add_argument("--preallocate", action="store_true",
                    help="Re-enable XLA GPU memory preallocation.")
+    p.add_argument("--cpu", action="store_true",
+                   help="Force the JAX CPU backend (JAX_PLATFORMS=cpu). Note: the "
+                        "direct solver falls back to a host sparse solver — no "
+                        "cuDSS, so vmap-rhs has no factor-once benefit on CPU.")
     p.add_argument("--verbose", action="store_true")
     return p.parse_args(argv)
 
@@ -117,6 +121,27 @@ def resolution_for_dof(target, dims):
 # ---------------------------------------------------------------------------
 # Device / environment capture
 # ---------------------------------------------------------------------------
+def _cpu_name():
+    """Best-effort human-readable CPU model name (lscpu -> /proc/cpuinfo -> arch)."""
+    try:
+        out = subprocess.check_output(["lscpu"], text=True, stderr=subprocess.DEVNULL)
+        for line in out.splitlines():
+            if line.lower().startswith("model name"):
+                n = line.split(":", 1)[1].strip()
+                if n:
+                    return n
+    except Exception:
+        pass
+    try:
+        with open("/proc/cpuinfo") as fh:
+            for line in fh:
+                if line.lower().startswith("model name"):        # x86
+                    return line.split(":", 1)[1].strip()
+    except Exception:
+        pass
+    return _platform.processor() or _platform.machine() or "cpu"
+
+
 def device_info(jax, override):
     dev = jax.devices()[0]
     plat = dev.platform
@@ -130,7 +155,7 @@ def device_info(jax, override):
         except Exception:
             name = f"{_platform.machine()}-gpu"
     if not override and plat == "cpu":
-        name = _platform.processor() or _platform.machine() or "cpu"
+        name = _cpu_name()
     return plat, name
 
 
@@ -176,6 +201,8 @@ def main(argv=None):
     args = parse_args(argv)
 
     # Env flags must be set before importing jax/feax.
+    if args.cpu:                                  # force the JAX CPU backend
+        os.environ["JAX_PLATFORMS"] = "cpu"
     os.environ["FEAX_X64"] = "1" if args.x64 else "0"
     if args.preallocate:
         os.environ["FEAX_PREALLOCATE"] = "1"
