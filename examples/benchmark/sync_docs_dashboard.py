@@ -46,6 +46,7 @@ def load_rows(path):
         for r in csv.DictReader(fh):
             out.append({
                 "dev": DEVICE_SHORT.get(r["device"], r["device"]),
+                "plat": r.get("platform", "gpu"),
                 "solver": r["solver"], "mode": r["mode"],
                 "dof": int(r["dof"]), "batch": int(r["batch"]),
                 "compile": _f(r, "compile_s"), "mean": _f(r, "mean_s"),
