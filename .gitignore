@@ -1,5 +1,7 @@
 
 CLAUDE.md
+# Local agent planning artifacts; public documentation remains under docs/.
+.claude/tasks/
 docker-compose.override.yml
 jax-distributed-run.sh
 distributed.yml

@@ -196,6 +196,7 @@ from .solvers.eigen import (
     generalized_eigh,
 )
 from .solvers.linear import create_linear_solver, linear_solve
+from .solvers.nullspace import NullspaceConstraint
 from .solvers.time_solver import (
     AdaptiveDtConfig,
     Callback,
