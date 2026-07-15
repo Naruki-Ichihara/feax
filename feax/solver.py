@@ -26,6 +26,7 @@ from .problem import Problem
 from .solvers.linear import (
     create_linear_solver,
 )
+from .solvers.nullspace import NullspaceConstraint, validate_nullspace_constraint
 from .solvers.newton import (
     create_newton_solver,
 )
@@ -58,6 +59,7 @@ def create_solver(
     symmetric_elimination: bool = True,
     traced_structure=None,
     return_solution: bool = True,
+    nullspace: Optional[NullspaceConstraint] = None,
 ) -> Callable:
     """Create a differentiable solver with custom VJP for gradient computation.
 
@@ -180,6 +182,13 @@ def create_solver(
         expected (``jnp.dot``, ``sol - ref``, ``band.scatter_sol``, or as the
         next call's ``initial_guess``). Pass ``False`` for the raw flat DOF
         vector.
+    nullspace : NullspaceConstraint, optional
+        Enable the v1 mass-lumped mean-zero pure-Neumann gauge. This is
+        supported only with ``linear=True`` and explicit
+        ``KrylovSolverOptions(solver="cg")`` on one scalar field with an
+        empty DirichletBC. Each disconnected mesh component has its own
+        constant null mode and mass-zero gauge. FEAX assumes the supplied load
+        is compatible on every component and does not alter or validate it.
 
     Returns
     -------
@@ -247,6 +256,16 @@ def create_solver(
 
     linear_options = solver_options
     adjoint_linear_options = adjoint_solver_options
+
+    if nullspace is not None:
+        if not linear:
+            raise ValueError("Pure-Neumann v1 supports only linear=True solves.")
+        if P is not None:
+            raise ValueError("Pure-Neumann v1 does not support a prolongation matrix P.")
+        validate_nullspace_constraint(
+            nullspace, problem, bc, linear_options, adjoint_linear_options,
+            symmetric_elimination=symmetric_elimination,
+        )
 
     # SolverOptions is now deprecated
     if isinstance(linear_options, SolverOptions) or isinstance(adjoint_linear_options, SolverOptions):
@@ -400,6 +419,7 @@ def create_solver(
             adjoint_solver_options=adjoint_linear_options,
             traced_params=traced_params,
             traced_structure=traced_structure,
+            nullspace=nullspace,
         ))
 
     # 3) Nonlinear Newton path
