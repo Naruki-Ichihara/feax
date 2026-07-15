@@ -203,7 +203,7 @@ def main():
         ),
         surface_vars=(),
     )
-    solver_opts = fe.DirectSolverOptions()
+    solver_opts = fe.DirectSolverOptions(verbose=True, reuse_factorization=True)
     solver = fe.create_solver(
         problem, bc=bc,
         solver_options=solver_opts,

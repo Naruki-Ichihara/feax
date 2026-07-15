@@ -21,7 +21,8 @@
       "Bash(chmod +x /workspace/scripts/colab_setup.sh)",
       "Bash(bash -n /workspace/scripts/colab_setup.sh)",
       "Bash(pdftoppm -v)",
-      "Bash(pdftotext -layout /workspace/private/1-s2.0-S1359836819307218-main.pdf /tmp/paper.txt)"
+      "Bash(pdftotext -layout /workspace/private/1-s2.0-S1359836819307218-main.pdf /tmp/paper.txt)",
+      "WebSearch"
     ]
   }
 }

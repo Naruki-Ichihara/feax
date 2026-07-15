@@ -1,0 +1,151 @@
+---
+title: Solver Internals
+sidebar_label: Solver Internals
+description: How FEAX implements its three heavy linear solvers — cuDSS direct, algebraic multigrid (AMG), and geometric multigrid (GMG) — down to the factorization phases, the V-cycle, and the matrix-free operator.
+---
+
+# Solver Internals
+
+The [Solver Guide](./getting-started/solver.md) covers *how to configure* each solver
+and *when to pick which*. This page opens them up and shows *how they work inside* —
+the cuDSS three-phase factorization, the AMG V-cycle, and the geometric-multigrid
+operator — as FEAX actually implements them.
+
+All three solve the same assembled system $A\mathbf{u}=\mathbf{b}$ coming from the FEM
+residual, but they differ in **what is precomputed before the matrix values are known**
+and **what runs on every solve**. That single distinction explains their scaling,
+memory, and JIT behaviour (see the [Benchmarks](./benchmarks.mdx)).
+
+---
+
+## 1. cuDSS direct — a three-phase GPU factorization
+
+**What FEAX feeds it.** A direct solver needs matrix *entries*, so FEAX assembles the
+tangent into a deduplicated CSR matrix (`create_J_bc_csr_*` in
+[`assembler.py`](./api/reference/feax/assembler.md)) with Dirichlet rows eliminated.
+On GPU, `DirectSolverOptions` resolves to `cudss`, and `detect_matrix_property` tags the
+matrix as **SPD**, **SYMMETRIC**, or **GENERAL** so cuDSS picks Cholesky / LDLᵀ / LU.
+
+**The engine.** cuDSS is wrapped by [spineax](https://github.com/) as JAX **FFI custom
+calls**, and a sparse direct solve runs in three phases:
+
+```text
+  A (CSR)  ──▶  ① analysis        symbolic: fill-reducing reordering + sparsity of the factors
+           ──▶  ② factorization   numeric:  compute L (and D) for THESE values   ← dominant cost
+           ──▶  ③ solve           triangular forward/back substitution against b  ← cheap per RHS
+```
+
+Phase ① depends only on the **pattern**; phases ② and ③ depend on the **values**. This is
+why a direct factorization cannot be hoisted out of a solve when the values change: the
+expensive phase ② is inseparable from the specific matrix.
+
+**The factorization token.** `factorize(...)` returns an ordinary JAX array — a
+`token` (`int32[1]`) — and `solve_with(token, b)` reuses those factors. Because the token
+is a normal array, it threads through `jax.jit` and a `custom_vjp` backward pass; the data
+dependency forces XLA to run every `solve_with` after its `factorize`. For a **symmetric**
+operator $J=J^\mathsf{T}$ the same token also solves the adjoint
+($\boldsymbol{\lambda}=J^{-\mathsf{T}}\mathbf{v}=J^{-1}\mathbf{v}$) with **no
+refactorization** — this is what `reuse_factorization=True` exploits for gradients and for
+`vmap`-over-RHS (factor once, multi-RHS solve). Factors live in a process-global LRU cache
+(`SPINEAX_FACTOR_CACHE`).
+
+**Takeaway.** Exact to round-off. Setup = symbolic analysis only; every solve re-runs the
+numeric factorization (3D fill makes it super-linear in DOF). Fastest when memory permits
+and the matrix is solved once, or against many right-hand sides.
+
+---
+
+## 2. AMG — a host-built hierarchy run as a JAX V-cycle
+
+Algebraic multigrid is an **outer Krylov method preconditioned by a multigrid cycle**.
+FEAX splits it cleanly into a one-time host build and a per-solve JAX cycle
+([`solvers/amg.py`](./api/reference/feax/solvers/amg.md)).
+
+**Stage A — build the hierarchy once (host, PyAMG).** From one *sample* assembled CSR
+Jacobian, `smoothed_aggregation_solver(A, B=...)` groups DOFs into aggregates and forms the
+prolongation $P$, restriction $R=P^\mathsf{T}$, and Galerkin coarse operators
+$A_c = R A P$ for every level. The key argument is the **near-null-space** $B$ — the
+low-energy modes the coarse grid must represent:
+
+- scalar elliptic (Poisson/heat): the constant vector (PyAMG default);
+- **vector elasticity: the rigid-body modes** (`rigid_body_modes`, 6 in 3D = 3
+  translations + 3 rotations, built from the mesh node coordinates). Plain AMG *fails* on
+  elasticity without them.
+
+**Stage B — convert to a JAX V-cycle.** `MultilevelSolver.from_pyamg` turns the hierarchy
+into an [AMJax](https://github.com/vboussange/AMJax) object whose cycle is **pure JAX**.
+One V-cycle is:
+
+```text
+  smooth (damped Jacobi)         xₗ ← xₗ + ω D⁻¹(bₗ − Aₗ xₗ)     ← SpMV + diagonal scale
+  restrict residual to coarse    b_{ℓ+1} ← R (bₗ − Aₗ xₗ)
+      … recurse to the coarsest level, solved directly (pinv) …
+  prolong + correct              xₗ ← xₗ + P x_{ℓ+1}
+  smooth again (post-smoothing)
+```
+
+Every operator ($A_\ell, R, P, D^{-1}$) is a **fixed sparse array**, so the whole cycle is
+a static sequence of SpMVs — no host callback, no dynamic shapes. XLA fuses it across
+levels, which is why AMG's per-solve cost is low and its `eager → jit` speedup is large.
+(Undamped Jacobi diverges on elasticity, so FEAX defaults to a damped sweep,
+$\omega=0.67$.)
+
+**Wiring.** `amg_to_krylov_options` assembles the sample Jacobian, builds the V-cycle `M`,
+and returns a plain `KrylovSolverOptions` with `preconditioner=M`. The **outer** CG/GMRES
+then applies the *current* operator matrix-free while reusing the fixed `M` — so the
+hierarchy stays valid as the operator drifts between Newton steps or parameter sweeps
+(refresh policy: `rebuild_every`).
+
+**Takeaway.** Approximate (stops at `tol`). The dominant cost (the hierarchy) is built once
+and *reused as values change*, so it belongs at setup; each solve is a handful of
+matrix-free iterations. Near-mesh-independent convergence → near-linear scaling; overtakes a
+direct factorization as the problem grows.
+
+---
+
+## 3. Geometric MG — grid-native and fully matrix-free (`NarrowBandCMG`)
+
+For domains on a structured voxel grid, `fe.NarrowBandCMG`
+([`solvers/cmg.py`](./api/reference/feax/solvers/cmg.md)) is a multigrid-preconditioned CG
+(MGPCG) that takes its transfers and smoothers **from the grid geometry itself** — no
+algebraic setup, and nothing is ever assembled.
+
+- **Matrix-free operator.** A single 24×24 element stiffness `KE = make_KE_3d(ν)` is shared
+  by every voxel; the per-cell material is a SIMP scaling $E = E_{\mathrm{min}} + \rho^p(E_0-E_{\mathrm{min}})$.
+  The action $K\mathbf{u}$ is a gather → local `KE @ u_e` → scatter over active cells — cost
+  and memory are **O(active band)**, not O(domain).
+- **Smoother.** An 8-colour block Gauss–Seidel over 3×3 node blocks (the node-diagonal
+  blocks are inverted once); colouring makes each sweep embarrassingly parallel.
+- **Transfers.** Trilinear **prolongation** $P$ and full-weighting **restriction**
+  $P^\mathsf{T}$ built on the compact active set; coarse dimensions are ceil-halved so odd
+  sizes still coarsen.
+- **Cycle.** One V-cycle preconditions an outer CG run as a `jax.lax.while_loop` (jittable).
+  The **coarsest** level is closed by cuDSS (via spineax) or, dependency-free, a matrix-free
+  block-Jacobi Krylov solve — chosen by the `solver_options` you pass to `create_solver`.
+
+Because the structure (colours, transfers, coarse pattern) is fixed while the values
+($K(\rho)$, the coarse factors) are JAX functions of $\rho$, the whole MGPCG is
+differentiable by implicit-diff `custom_vjp` ($K(\rho)\mathbf{u}=\mathbf{b}$). The
+O(band) memory is what makes giga-voxel narrow-band topology optimization feasible where an
+assembled factorization or an algebraic hierarchy would exhaust memory.
+
+**Takeaway.** Approximate (CG to tolerance), matrix-free, O(band) memory. No per-solve
+setup beyond the cheap grid transfers; the coarsest solve is the only dense-ish work.
+
+---
+
+## At a glance
+
+| | **cuDSS direct** | **AMG** | **GMG (`NarrowBandCMG`)** |
+| --- | --- | --- | --- |
+| Operator | assembled CSR | assembled CSR (hierarchy) + matrix-free outer | fully matrix-free |
+| Precomputed once | symbolic analysis | multigrid hierarchy + near-null-space | grid transfers / colouring |
+| Per solve | numeric factorization + triangular solve | few matrix-free Krylov iters (fixed V-cycle) | MGPCG V-cycles |
+| Accuracy | exact (round-off) | approximate (`tol`) | approximate (`tol`) |
+| Memory | high (3D fill) | moderate (coarse operators) | **O(active band)** |
+| Scaling | super-linear | near-linear | near-linear, band-bounded |
+| Differentiable | `custom_vjp` (factor reuse for adjoint) | `custom_vjp` | implicit-diff `custom_vjp` |
+
+For configuration, auto-selection, and worked examples, see the
+[Solver Guide](./getting-started/solver.md); for measured numbers across GPUs, the
+[Benchmarks](./benchmarks.mdx).

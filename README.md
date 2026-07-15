@@ -12,6 +12,7 @@
 [**Documentation**](https://naruki-ichihara.github.io/feax/)
 | [**Install guide**](https://naruki-ichihara.github.io/feax/getting-started/installation)
 | [**API**](https://naruki-ichihara.github.io/feax/api/)
+| [**Benchmark**](https://naruki-ichihara.github.io/feax/benchmarks/)
 
 [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)

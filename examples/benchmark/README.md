@@ -53,3 +53,26 @@ exception name in `note`, so one failure does not abort the sweep.
 
 The `device` column comes from `jax.devices()[0].device_kind` (with an
 `nvidia-smi` fallback); override it with `--device-name`.
+
+### Comparing `direct` vs `amg` fairly
+
+All solvers solve the *same* assembled `A u = b`, but the timed region is not
+identical work. Each solver hoists whatever it can precompute *before* seeing the
+matrix values into `create_solver` (untimed) and times the rest — but the
+"precomputable" boundary differs by method, so this is **not** an arbitrary tilt:
+
+- **`amg`** builds its whole multigrid hierarchy once at setup (its main cost) and
+  reuses that fixed V-cycle as values change; each timed solve is just matrix-free
+  `A@v` + the preconditioner. AMG's dominant cost is value-independent, so it
+  legitimately belongs at setup.
+- **`direct`** can only do symbolic analysis at setup; the numeric factorization
+  (its main cost) is inseparable from the matrix *values* and recurs every timed
+  solve. `reuse_factorization=True` shares factors forward↔adjoint and powers
+  `vmap-rhs` (factor-once / solve-many) — it does **not** cache across independent
+  solves.
+
+So the `jit`/`eager` single-solve columns model *"many systems, same pattern,
+changing values"* (Newton / sweeps / topopt), where `amg` has a real edge; the
+`vmap-rhs` column models *"one matrix, many RHS,"* where `direct` amortizes its
+factorization and wins. Also note accuracy is not equalized: `direct` is exact to
+round-off while `amg`/`krylov` stop at `tol` (default `1e-8`).

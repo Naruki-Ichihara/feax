@@ -42,6 +42,8 @@ FEAX has three solver-option classes for `create_solver`, plus a dedicated geome
 | `fe.AMGSolverOptions()` | Krylov preconditioned by smoothed-aggregation **AMG** ([AMJax](https://github.com/vboussange/AMJax) + [PyAMG](https://github.com/pyamg/pyamg)) | Assembled CSR (for the AMG hierarchy) + matrix-free outer Krylov | Large scalar-elliptic problems (Poisson / thermal / diffusion); elasticity via a rigid-body near-null-space. Requires `feax[amg]` |
 | `fe.NarrowBandCMG` ([GMG](#geometric-multigrid-gmg--narrowbandcmg)) | CG preconditioned by **geometric multigrid** (grid-coarsening transfers, MGPCG) | **Matrix-free** on a `StructuredGrid` band (one shared element stiffness) | Very large voxel domains / moving narrow bands (giga-voxel topology optimization). Not a `create_solver` route — a dedicated solver class |
 
+This page focuses on **configuring** the solvers and **choosing** between them. For how each one works under the hood — the cuDSS factorization phases, the AMG V-cycle, the matrix-free GMG operator — see [Solver Internals](../solver_internals.mdx).
+
 The distinction is the operator representation:
 
 - **Direct** solvers need the matrix entries (to factorize), so the Jacobian is assembled straight into a deduplicated CSR matrix.

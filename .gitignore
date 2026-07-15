@@ -1,4 +1,4 @@
-
+examples/advance/microstructure_compression
 CLAUDE.md
 docker-compose.override.yml
 jax-distributed-run.sh

@@ -73,6 +73,40 @@ traction $\mathbf{t}=(0,0,t_z)$ at $x=L_x$, traction-free elsewhere.
 | **AMG-CG** | algebraic-multigrid-preconditioned CG | `near_nullspace="rigid_body"` |
 | **Krylov CG** | matrix-free CG | Jacobi preconditioner, `tol=1e-8`, `maxiter=2000` |
 
+### Reading the comparison fairly
+
+All three solve the *same* assembled system $A\mathbf{u}=\mathbf{b}$, but the timed
+region does not measure identical numerical work — for two reasons worth keeping in
+mind when reading the plots.
+
+**Setup is hoisted out of the timing — symmetrically.** Whatever each solver can
+precompute *before* seeing the matrix values is built once inside `create_solver`
+(outside the timed loop), and the rest is timed per solve. The catch is that the two
+methods have a different "precomputable" boundary:
+
+| | Built once in `create_solver` (untimed) | Per solve (timed) |
+| --- | --- | --- |
+| **AMG-CG** | the whole multigrid hierarchy — aggregation, Galerkin coarse operators $A_c = RAP$, rigid-body near-null-space (its main cost) | matrix-free $A\mathbf{v}$ + apply the **fixed** V-cycle `M` |
+| **cuDSS direct** | symbolic analysis / fill-reducing ordering only | numeric factorization (its main cost) **+** triangular solves |
+
+This is **not** a thumb on the scale for AMG: each solver hoists everything it *can*.
+AMG's dominant cost (the hierarchy) is value-independent enough to build from one
+sample matrix and **reuse as values change** — so it belongs at setup. A direct
+factorization is inseparable from the specific matrix *values*, so it cannot be
+hoisted and recurs every solve (`reuse_factorization` shares factors between the
+forward and adjoint solve and powers `vmap·rhs`'s factor-once / solve-many — it does
+**not** cache across independent solves). The comparison therefore models **"solve
+many systems of the same sparsity pattern but changing values"** (Newton steps,
+parameter sweeps, topology optimization), where that asymmetry is exactly the
+real-world trade-off. For **"one matrix, many right-hand sides,"** the direct
+factorization amortizes too — that is what the `vmap·rhs` column shows, and there the
+direct solver wins.
+
+**Accuracy is not equalized.** The direct solve is exact to round-off
+($\sim$machine precision); AMG-CG and Krylov CG stop at a relative residual
+(`tol=1e-8`). The iterative throughput therefore reflects a looser-but-sufficient
+answer; tightening the tolerance would trade some of it back.
+
 ### Code
 
 The problem definition and the three interchangeable solver backends, condensed from
