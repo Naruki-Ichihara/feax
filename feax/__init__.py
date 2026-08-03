@@ -159,7 +159,7 @@ try:
     from importlib.metadata import PackageNotFoundError, version
     __version__ = version("feax")
 except (ImportError, PackageNotFoundError):
-    __version__ = "0.7.0"
+    __version__ = "0.8.0"
 
 # Main API
 from .assembler import create_energy_fn, create_J_bc_csr_function, create_res_bc_function, get_jacobian, get_jacobian_info, get_res

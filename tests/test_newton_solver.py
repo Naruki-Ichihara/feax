@@ -33,7 +33,7 @@ def has_cudss():
     if not has_gpu():
         return False
     try:
-        from spineax.cudss.solver import CuDSSSolver  # noqa: F401
+        from spineax.cudss.solver import analyze  # noqa: F401
         return True
     except Exception:
         return False

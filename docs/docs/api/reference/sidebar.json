@@ -28,8 +28,7 @@
             "reference/feax/gene/mesh_extraction",
             "reference/feax/gene/narrowband",
             "reference/feax/gene/optimizer",
-            "reference/feax/gene/responses",
-            "reference/feax/gene/sdf"
+            "reference/feax/gene/responses"
           ],
           "label": "feax.gene",
           "type": "category"

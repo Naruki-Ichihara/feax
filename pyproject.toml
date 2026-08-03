@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "feax"
-version = "0.7.0"
+version = "0.8.0"
 description = "A GPU-accelerated finite element analysis framework with JAX."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -36,12 +36,10 @@ dependencies = [
     "pandas",
     "scipy",
     "matplotlib",
-    "meshio",
     "fenics-basix",
     "equinox",
     "optax",
     "scikit-image",
-    "trimesh",
     "pyvista",
     "asdex",
 ]
@@ -70,6 +68,15 @@ matfree = [
 
 amg = [
     "amjax",
+]
+# Curved primitive meshing (sphere_mesh / cylinder_mesh) via PyVista + TetGen.
+mesh = [
+    "tetgen",
+]
+# Optional Gmsh backend, only for feax.gene adaptive remeshing and
+# SDF/density -> volume-mesh extraction. Core meshing no longer needs it.
+gmsh = [
+    "gmsh",
 ]
 cuda12 = [
     "jax[cuda12]",

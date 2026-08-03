@@ -10,11 +10,25 @@ from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 
 import jax
 import jax.numpy as np
-import meshio
 import numpy as onp
 
 from feax.DCboundary import DirichletBC
-from feax.mesh import Mesh, get_meshio_cell_type
+from feax.mesh import Mesh
+
+
+# feax element type -> VTK cell type id (meshio/VTK share node ordering for
+# all of these, which is the ordering feax stores cells in).
+_VTK_CELL_TYPE_ID = {
+    'TRI3': 5,    # VTK_TRIANGLE
+    'QUAD4': 9,   # VTK_QUAD
+    'TET4': 10,   # VTK_TETRA
+    'HEX8': 12,   # VTK_HEXAHEDRON
+    'TRI6': 22,   # VTK_QUADRATIC_TRIANGLE
+    'QUAD8': 23,  # VTK_QUADRATIC_QUAD
+    'TET10': 24,  # VTK_QUADRATIC_TETRA
+    'HEX20': 25,  # VTK_QUADRATIC_HEXAHEDRON
+    'QUAD9': 28,  # VTK_BIQUADRATIC_QUAD
+}
 
 if TYPE_CHECKING:
     from feax.problem import Problem
@@ -58,7 +72,9 @@ def save_sol(
     elif n_nodes_per_element == 6:
         element_type = 'TRI6'
     elif n_nodes_per_element == 8:
-        element_type = 'HEX8'
+        element_type = 'QUAD8' if n_dim == 2 else 'HEX8'
+    elif n_nodes_per_element == 9:
+        element_type = 'QUAD9'
     elif n_nodes_per_element == 10:
         element_type = 'TET10'
     elif n_nodes_per_element == 20:
@@ -66,31 +82,30 @@ def save_sol(
     else:
         raise ValueError(f"Unsupported element type with {n_nodes_per_element} nodes per element")
 
-    cell_type = get_meshio_cell_type(element_type)
+    if element_type not in _VTK_CELL_TYPE_ID:
+        raise ValueError(f"Unsupported element type '{element_type}' for VTK output")
+    vtk_cell_type = _VTK_CELL_TYPE_ID[element_type]
+
+    import pyvista as pv
 
     # Create output directory if needed
     sol_dir = os.path.dirname(sol_file)
     if sol_dir:
         os.makedirs(sol_dir, exist_ok=True)
 
-    # Convert JAX arrays to numpy for meshio
-    nodes_np = onp.array(mesh.points)
-    elements_np = onp.array(mesh.cells)
+    # Convert JAX arrays to numpy; VTK points are always 3D (pad 2-D meshes).
+    nodes_np = onp.asarray(mesh.points, dtype=onp.float64)
+    if nodes_np.shape[1] == 2:
+        nodes_np = onp.column_stack([nodes_np, onp.zeros(len(nodes_np))])
+    elements_np = onp.asarray(mesh.cells)
 
-    # Create meshio mesh
-    out_mesh = meshio.Mesh(
-        points=nodes_np,
-        cells={cell_type: elements_np}
-    )
+    grid = pv.UnstructuredGrid({vtk_cell_type: elements_np}, nodes_np)
 
     # Process cell data
     if cell_infos is not None:
-        out_mesh.cell_data = {}
         for name, data in cell_infos:
-            # Convert to numpy if it's a JAX array
             data = onp.array(data, dtype=onp.float32)
 
-            # Validate shape
             if data.shape[0] != mesh.cells.shape[0]:
                 raise ValueError(
                     f"Cell data '{name}' has wrong shape: got {data.shape}, "
@@ -108,26 +123,23 @@ def save_sol(
                 # Scalar (n_elements,) -> (n_elements, 1)
                 data = data.reshape(mesh.cells.shape[0], 1)
 
-            out_mesh.cell_data[name] = [data]
+            grid.cell_data[name] = data
 
     # Process point data
     if point_infos is not None:
-        out_mesh.point_data = {}
         for name, data in point_infos:
-            # Convert to numpy if it's a JAX array
             data = onp.array(data, dtype=onp.float32)
 
-            # Validate shape
             if data.shape[0] != mesh.points.shape[0]:
                 raise ValueError(
                     f"Point data '{name}' has wrong shape: got {data.shape}, "
                     f"expected first dimension = {mesh.points.shape[0]}"
                 )
 
-            out_mesh.point_data[name] = data
+            grid.point_data[name] = data
 
-    # Write the mesh
-    out_mesh.write(sol_file)
+    # Write the mesh (format inferred from extension: .vtu, .vtk, ...)
+    grid.save(sol_file)
 
 
 def _normalize_field(name: str, data, expected_n: int):

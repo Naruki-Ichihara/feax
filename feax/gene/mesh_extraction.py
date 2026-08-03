@@ -164,8 +164,6 @@ def extract_volume_mesh(
             "extract_volume_mesh requires gmsh. "
             "Install with: pip install gmsh"
         )
-    import meshio
-    from feax.mesh import Mesh
 
     # Step 1: extract closed surface
     surface = extract_surface(density, mesh, threshold=threshold)
@@ -222,17 +220,12 @@ def extract_volume_mesh(
 
     gmsh.model.mesh.generate(3)
 
-    with tempfile.NamedTemporaryFile(suffix='.msh', delete=False) as f:
-        msh_path = f.name
-    gmsh.write(msh_path)
+    # Step 5: convert the Gmsh model directly to a feax Mesh (no meshio).
+    from feax.gene._gmsh_io import gmsh_volume_to_mesh
+    result_mesh = gmsh_volume_to_mesh(gmsh, element_type)
     gmsh.finalize()
 
-    # Step 5: convert to feax Mesh
-    msh_data = meshio.read(msh_path)
-    result_mesh = Mesh.from_gmsh(msh_data, element_type=element_type)
-
     os.unlink(stl_path)
-    os.unlink(msh_path)
 
     print(f"Volume mesh: {result_mesh.points.shape[0]} nodes, "
           f"{result_mesh.cells.shape[0]} elements ({element_type})")

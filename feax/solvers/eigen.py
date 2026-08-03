@@ -402,10 +402,10 @@ def _create_cudss_bf(free_dofs, num_modes: int = 3, num_matvecs: int = 30,
     SIMP void floor leaves ``K`` near-indefinite).
     """
     try:
-        from spineax.cudss.factor_solve import factorize, solve_with
+        from feax.solvers._cudss_compat import factorize, solve_with
     except ImportError as e:                          # pragma: no cover
         raise ImportError(
-            "solver='cudss' requires spineax (spineax.cudss.factor_solve). "
+            "solver='cudss' requires spineax. "
             "Install spineax, or use solver='sparse'/'dense'.") from e
     mtype_ids = {"spd": 3, "symmetric": 1}
     if matrix_type not in mtype_ids:

@@ -17,9 +17,27 @@ import numpy as onp
 from scipy.spatial import cKDTree
 from typing import Callable, Union, Tuple, Optional
 
-import gmsh
+try:
+    import gmsh
+except ImportError:  # pragma: no cover - optional dependency
+    gmsh = None
 
 from feax.mesh import Mesh
+
+
+def _require_gmsh():
+    """Return the gmsh module or raise a helpful error.
+
+    Adaptive graded remeshing relies on Gmsh's mesh-size callback, which has no
+    pure-numpy / PyVista+TetGen equivalent, so Gmsh remains an optional
+    dependency for this module only.
+    """
+    if gmsh is None:
+        raise ImportError(
+            "feax.gene.adaptive requires the optional 'gmsh' package for "
+            "adaptive remeshing. Install it with `pip install gmsh`."
+        )
+    return gmsh
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +385,7 @@ def adaptive_mesh(
                          h_min=0.5, h_max=3.0)
     ```
     """
+    _require_gmsh()
     size_cb, _ = _make_size_callback(refinement_field, old_mesh, h_min, h_max)
 
     gmsh.initialize()
@@ -438,6 +457,7 @@ def adaptive_box_mesh(
     Mesh
         New TET4 mesh.
     """
+    _require_gmsh()
     if isinstance(size, (int, float)):
         lx = ly = lz = float(size)
     else:

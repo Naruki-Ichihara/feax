@@ -18,14 +18,15 @@
 #     pip install "feax[sksparse] @ git+https://github.com/Naruki-Ichihara/feax.git"           # + cholmod/umfpack
 #   SUITESPARSE_INCLUDE_DIR=/usr/local/include/suitesparse SUITESPARSE_LIBRARY_DIR=/usr/local/lib \
 #     pip install "feax[cuda13,sksparse] @ git+https://github.com/Naruki-Ichihara/feax.git"    # GPU
-# For the cuDSS direct solver also install spineax:
-#   CMAKE_ARGS="-DBUILD_PBATCH_SOLVE=OFF" \
-#     pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
+# For the cuDSS direct solver also install spineax. Use --no-deps so it does NOT
+# reinstall jax[cuda13] / upgrade NumPy over Colab's versions (a plain
+# `pip install spineax` forces a runtime restart and clashes with Colab's
+# numba, which pins numpy<2.1). lineax is spineax's only extra pure-Python dep;
+# equinox / jaxtyping / cuDSS + cuSPARSE come from feax[cuda13]:
+#   pip install --no-deps lineax spineax
 #
 # The SUITESPARSE_* env vars are needed because scikit-sparse's setup.py only
 # auto-searches /usr/include/suitesparse (the apt path); we install to /usr/local.
-# CMAKE_ARGS=-DBUILD_PBATCH_SOLVE=OFF works around a __cudaGetKernel link error
-# in spineax's optional pbatch_solve module on Colab GPU.
 #
 # Usage:
 #   bash scripts/colab_setup.sh

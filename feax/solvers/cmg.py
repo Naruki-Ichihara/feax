@@ -27,7 +27,7 @@ import jax.numpy as jnp
 import scipy.sparse as sp
 
 try:                                    # optional: only the cuDSS coarse solve needs it
-    from spineax.cudss.factor_solve import factorize as _factorize, solve_with as _solve_with
+    from feax.solvers._cudss_compat import factorize as _factorize, solve_with as _solve_with
 except ImportError:
     _factorize = _solve_with = None
 

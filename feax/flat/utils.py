@@ -2,7 +2,6 @@
 
 import jax
 import jax.numpy as np
-import meshio
 import numpy as onp
 
 
@@ -111,15 +110,11 @@ def visualize_stiffness_sphere(C, output_file, n_theta=30, n_phi=60):
 
     cells_np = onp.array(cells)
 
-    # Create meshio mesh
-    mesh = meshio.Mesh(
-        points=points,
-        cells=[("quad", cells_np)],
-        point_data={"youngs_modulus": E_np.flatten()}
-    )
-
-    # Save to VTK
-    meshio.write(output_file, mesh)
+    # Create quad surface grid and save to VTK (9 = VTK_QUAD).
+    import pyvista as pv
+    grid = pv.UnstructuredGrid({9: cells_np}, points)
+    grid.point_data["youngs_modulus"] = E_np.flatten()
+    grid.save(output_file)
 
     # Compute statistics
     anisotropy_ratio = float(E_max / E_min)

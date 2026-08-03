@@ -174,7 +174,7 @@ def create_direct_solve_fn(
         return solve
 
     if solver == "cudss":
-        from spineax.cudss.solver import CuDSSSolver
+        from feax.solvers._cudss_compat import CuDSSSolver
         cudss_solver = None
         _actual_nnz = None
 

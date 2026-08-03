@@ -56,7 +56,7 @@ def has_cudss() -> bool:
     if not is_cuda():
         return False
     try:
-        from spineax.cudss.solver import CuDSSSolver  # noqa: F401
+        from spineax.cudss.solver import analyze  # noqa: F401
         return True
     except ImportError:
         return False
@@ -85,7 +85,7 @@ def detect_available_solver_backends(solver: str = "auto") -> tuple[str, ...]:
         if backend != "gpu":
             return False
         try:
-            from spineax.cudss.solver import CuDSSSolver  # noqa: F401
+            from spineax.cudss.solver import analyze  # noqa: F401
             return True
         except Exception:
             return False
@@ -116,7 +116,7 @@ def detect_available_solver_backends(solver: str = "auto") -> tuple[str, ...]:
         if solver == "cudss":
             if backend != "gpu":
                 raise RuntimeError(
-                    "spineax.cudss.solver.CuDSSSolver is only enabled on the GPU"
+                    "the cuDSS solver (spineax) is only enabled on the GPU"
                 )
             if not _has_cudss():
                 raise RuntimeError("spineax is not installed")

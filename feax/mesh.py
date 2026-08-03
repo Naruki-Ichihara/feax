@@ -7,10 +7,8 @@ functions for mesh generation, validation, and format conversion.
 
 from typing import Callable, Optional, Tuple, Union
 
-import gmsh
 import jax
 import jax.numpy as np
-import meshio
 import numpy as onp
 from jax import Array
 
@@ -54,16 +52,18 @@ class Mesh():
         self.ele_type = ele_type
 
     @staticmethod
-    def from_gmsh(gmsh_mesh: meshio.Mesh, element_type: Optional[str] = None) -> 'Mesh':
-        """Convert meshio.Mesh (from Gmsh) to FEAX Mesh.
+    def from_gmsh(gmsh_mesh: 'object', element_type: Optional[str] = None) -> 'Mesh':
+        """Convert a meshio-style mesh (e.g. from Gmsh) to a FEAX Mesh.
 
-        This static method converts a meshio.Mesh object (typically from reading
-        a Gmsh file or using meshio's mesh generation) to a FEAX Mesh object.
+        Accepts any object exposing meshio's ``.points`` array and ``.cells``
+        list of cell blocks (each with ``.type`` and ``.data``) — for example a
+        ``meshio.Mesh`` returned by ``meshio.read(...)``. ``meshio`` is not a
+        FEAX dependency; install it separately if you need to read mesh files.
 
         Parameters
         ----------
-        gmsh_mesh : meshio.Mesh
-            Meshio mesh object containing points and cells
+        gmsh_mesh : meshio.Mesh (or compatible)
+            Mesh object containing points and cells
         element_type : str, optional
             FEAX element type to use. If None, automatically detects from gmsh_mesh.
             Supported: 'TET4', 'TET10', 'HEX8', 'HEX20', 'HEX27', 'TRI3', 'TRI6', 'QUAD4', 'QUAD8'
@@ -272,6 +272,167 @@ def get_meshio_cell_type(ele_type: str) -> str:
 
 
 
+# Local hexahedron corners (meshio/VTK ordering) split into 6 tetrahedra that
+# all share the 0-6 body diagonal (Freudenthal / Kuhn decomposition). Each row
+# is a right-handed (positive-volume) tet given the corner layout produced by
+# _structured_hex_grid.
+_HEX_TO_TET6 = onp.array([
+    [0, 1, 2, 6],
+    [0, 2, 3, 6],
+    [0, 3, 7, 6],
+    [0, 7, 4, 6],
+    [0, 4, 5, 6],
+    [0, 5, 1, 6],
+], dtype=onp.int32)
+
+
+def _tetrahedralize_surface(surface, mesh_size: float) -> Tuple[onp.ndarray, onp.ndarray]:
+    """Fill a closed triangulated surface with TET4 elements via TetGen.
+
+    Parameters
+    ----------
+    surface : pyvista.PolyData
+        Closed, watertight triangle surface mesh.
+    mesh_size : float
+        Target edge length; controls the TetGen maximum tetrahedron volume.
+
+    Returns
+    -------
+    points : np.ndarray, shape (n_nodes, 3)
+    cells : np.ndarray, shape (n_cells, 4), int32
+    """
+    try:
+        import tetgen
+    except ImportError as exc:  # pragma: no cover - environment dependent
+        raise ImportError(
+            "sphere_mesh/cylinder_mesh require the 'tetgen' package. "
+            "Install it with `pip install tetgen`."
+        ) from exc
+
+    tet = tetgen.TetGen(surface.triangulate())
+    # Roughly one tet per (mesh_size)^3 of volume; the /6 keeps element edge
+    # lengths close to mesh_size.
+    max_volume = (mesh_size ** 3) / 6.0
+    tet.tetrahedralize(order=1, mindihedral=20, minratio=1.5, maxvolume=max_volume)
+    grid = tet.grid
+    points = onp.asarray(grid.points, dtype=onp.float64)
+    # VTK_TETRA == 10
+    cells = onp.asarray(grid.cells_dict[10], dtype=onp.int32)
+    return points, cells
+
+
+def _structured_hex_grid(
+    origin: Tuple[float, float, float],
+    lengths: Tuple[float, float, float],
+    n_pts: Tuple[int, int, int],
+) -> Tuple[onp.ndarray, onp.ndarray]:
+    """Build a structured HEX8 grid (points + connectivity) with pure numpy.
+
+    Node ``(i, j, k)`` has global id ``(i * nyp + j) * nzp + k`` (k fastest),
+    and each cell's 8 corners are emitted in meshio/VTK hexahedron order.
+
+    Returns
+    -------
+    points : np.ndarray, shape (nxp*nyp*nzp, 3)
+    hexes : np.ndarray, shape (num_cells, 8), int32
+    """
+    x0, y0, z0 = origin
+    lx, ly, lz = lengths
+    nxp, nyp, nzp = n_pts
+
+    xp = onp.linspace(x0, x0 + lx, nxp)
+    yp = onp.linspace(y0, y0 + ly, nyp)
+    zp = onp.linspace(z0, z0 + lz, nzp)
+    X, Y, Z = onp.meshgrid(xp, yp, zp, indexing='ij')
+    points = onp.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
+
+    # Element base-corner indices.
+    ei, ej, ek = onp.meshgrid(
+        onp.arange(nxp - 1), onp.arange(nyp - 1), onp.arange(nzp - 1),
+        indexing='ij',
+    )
+    ei, ej, ek = ei.ravel(), ej.ravel(), ek.ravel()
+
+    def nid(di, dj, dk):
+        return ((ei + di) * nyp + (ej + dj)) * nzp + (ek + dk)
+
+    hexes = onp.stack([
+        nid(0, 0, 0), nid(1, 0, 0), nid(1, 1, 0), nid(0, 1, 0),
+        nid(0, 0, 1), nid(1, 0, 1), nid(1, 1, 1), nid(0, 1, 1),
+    ], axis=1).astype(onp.int32)
+
+    return points, hexes
+
+
+# HEX20 (serendipity) node offsets on a half-element fine grid (spacing = 1),
+# in meshio/VTK ``hexahedron20`` order: 8 corners, then 12 edge midpoints
+# (bottom edges 0-1,1-2,2-3,3-0; top edges 4-5,5-6,6-7,7-4; verticals
+# 0-4,1-5,2-6,3-7). No face/body centres — that is what makes it serendipity.
+_HEX20_OFFSETS = onp.array([
+    # corners
+    (0, 0, 0), (2, 0, 0), (2, 2, 0), (0, 2, 0),
+    (0, 0, 2), (2, 0, 2), (2, 2, 2), (0, 2, 2),
+    # bottom edges
+    (1, 0, 0), (2, 1, 0), (1, 2, 0), (0, 1, 0),
+    # top edges
+    (1, 0, 2), (2, 1, 2), (1, 2, 2), (0, 1, 2),
+    # vertical edges
+    (0, 0, 1), (2, 0, 1), (2, 2, 1), (0, 2, 1),
+], dtype=onp.int64)
+
+
+def _structured_hex20_grid(
+    origin: Tuple[float, float, float],
+    lengths: Tuple[float, float, float],
+    n_elem: Tuple[int, int, int],
+) -> Tuple[onp.ndarray, onp.ndarray]:
+    """Build a structured HEX20 (serendipity) grid with pure numpy.
+
+    Uses a half-element fine grid ``(2*nex+1, 2*ney+1, 2*nez+1)`` and keeps
+    only nodes with at most one odd fine index (corners + edge midpoints),
+    dropping face centres and body centres. Cells are emitted in meshio/VTK
+    ``hexahedron20`` order.
+
+    Returns
+    -------
+    points : np.ndarray, shape (n_nodes, 3)
+    cells : np.ndarray, shape (num_cells, 20), int32
+    """
+    x0, y0, z0 = origin
+    lx, ly, lz = lengths
+    nex, ney, nez = n_elem
+    nfx, nfy, nfz = 2 * nex + 1, 2 * ney + 1, 2 * nez + 1
+
+    xf = onp.linspace(x0, x0 + lx, nfx)
+    yf = onp.linspace(y0, y0 + ly, nfy)
+    zf = onp.linspace(z0, z0 + lz, nfz)
+    Xf, Yf, Zf = onp.meshgrid(xf, yf, zf, indexing='ij')
+    all_points = onp.stack([Xf.ravel(), Yf.ravel(), Zf.ravel()], axis=1)
+
+    # Keep corners (0 odd) and edge midpoints (1 odd); drop face/body centres.
+    I, J, K = onp.meshgrid(
+        onp.arange(nfx), onp.arange(nfy), onp.arange(nfz), indexing='ij',
+    )
+    n_odd = (I % 2) + (J % 2) + (K % 2)
+    used = (n_odd <= 1).ravel()
+    old_to_new = onp.full(nfx * nfy * nfz, -1, dtype=onp.int64)
+    old_to_new[used] = onp.arange(int(used.sum()))
+    points = all_points[used]
+
+    ei, ej, ek = onp.meshgrid(
+        onp.arange(nex), onp.arange(ney), onp.arange(nez), indexing='ij',
+    )
+    ei, ej, ek = ei.ravel(), ej.ravel(), ek.ravel()
+    base = onp.stack([2 * ei, 2 * ej, 2 * ek], axis=1)  # (n_cells, 3)
+
+    # Fine-grid ids for all 20 local nodes: (n_cells, 20)
+    fine = base[:, None, :] + _HEX20_OFFSETS[None, :, :]
+    gids = (fine[:, :, 0] * nfy + fine[:, :, 1]) * nfz + fine[:, :, 2]
+    cells = old_to_new[gids].astype(onp.int32)
+
+    return points, cells
+
+
 def box_mesh(
     size: Union[float, Tuple[float, float, float]],
     origin: Tuple[float, float, float] = (0.0, 0.0, 0.0),
@@ -279,10 +440,11 @@ def box_mesh(
     element_type: str = 'HEX8',
     recombine: bool = True
 ) -> Mesh:
-    """Generate structured or unstructured mesh for box domain using Gmsh.
+    """Generate a structured mesh for a box domain (pure numpy, no Gmsh).
 
-    Creates high-quality meshes using Gmsh, supporting both hexahedral (HEX8)
-    and tetrahedral (TET4) elements with structured or unstructured meshing.
+    Creates a structured tensor-product grid of hexahedral (HEX8) elements, or
+    a conforming tetrahedral (TET4) mesh obtained by splitting each hexahedron
+    into 6 tetrahedra. No external mesh generator is required.
 
     Parameters
     ----------
@@ -292,12 +454,15 @@ def box_mesh(
     origin : tuple of 3 floats, optional
         Origin point (x0, y0, z0) of the box. Default is (0, 0, 0)
     mesh_size : float, optional
-        Target element size. Smaller values create finer meshes. Default is 0.1
+        Target element size. Smaller values create finer meshes. Default is 0.1.
+        The number of elements along an edge of length L is ``int(L / mesh_size)``
+        (at least one).
     element_type : str, optional
-        'HEX8' for hexahedral elements (default) or 'TET4' for tetrahedral
+        'HEX8' (default) or 'HEX20' for hexahedral elements, or 'TET4' for
+        tetrahedral.
     recombine : bool, optional
-        If True and element_type='HEX8', use structured recombination algorithm.
-        Default is True for better quality hexahedral meshes.
+        Deprecated / no-op. Kept for backward compatibility; the box mesh is
+        always a structured grid now.
 
     Returns
     -------
@@ -306,29 +471,29 @@ def box_mesh(
 
     Raises
     ------
-    ImportError
-        If gmsh is not installed
     ValueError
         If element_type is not 'HEX8' or 'TET4'
 
     Examples
     --------
     Create structured HEX8 mesh:
-    >>> mesh = box_mesh_gmsh(1.0, mesh_size=0.1, element_type='HEX8')
+    >>> mesh = box_mesh(1.0, mesh_size=0.1, element_type='HEX8')
 
-    Create unstructured TET4 mesh:
-    >>> mesh = box_mesh_gmsh((2.0, 1.0, 0.5), mesh_size=0.05, element_type='TET4')
+    Create TET4 mesh:
+    >>> mesh = box_mesh((2.0, 1.0, 0.5), mesh_size=0.05, element_type='TET4')
 
     Notes
     -----
-    - Gmsh provides superior mesh quality compared to simple structured meshes
-    - HEX8 meshes are preferred for most applications (better accuracy per DOF)
-    - TET4 meshes are more flexible for complex geometries
-    - For simple boxes with uniform elements, use box_mesh() for speed
+    - HEX8 nodes/cells follow the meshio/VTK hexahedron ordering.
+    - TET4 uses a Freudenthal (6-tet) split of each hexahedron; the result is
+      conforming because every cell of the structured grid is a pure translate.
     """
+    del recombine  # no-op, kept for backward-compatible signature
 
-    if element_type not in ['HEX8', 'TET4']:
-        raise ValueError(f"element_type must be 'HEX8' or 'TET4', got {element_type}")
+    if element_type not in ['HEX8', 'HEX20', 'TET4']:
+        raise ValueError(
+            f"element_type must be 'HEX8', 'HEX20' or 'TET4', got {element_type}"
+        )
 
     # Parse size argument
     if isinstance(size, (int, float)):
@@ -338,110 +503,33 @@ def box_mesh(
 
     x0, y0, z0 = origin
 
-    # Initialize Gmsh
-    gmsh.initialize()
-    gmsh.option.setNumber("General.Terminal", 0)  # Suppress terminal output
+    # Number of nodes per direction. Matches the previous Gmsh transfinite
+    # behaviour: n_pts = max(2, int(L / mesh_size) + 1) => int(L/mesh_size)
+    # elements along each edge (at least one).
+    nxp = max(2, int(lx / mesh_size) + 1)
+    nyp = max(2, int(ly / mesh_size) + 1)
+    nzp = max(2, int(lz / mesh_size) + 1)
 
-    try:
-        gmsh.model.add("box")
+    if element_type == 'HEX20':
+        # Serendipity quadratic box: nex = nxp - 1 elements per edge.
+        points, cells = _structured_hex20_grid(
+            (x0, y0, z0), (lx, ly, lz), (nxp - 1, nyp - 1, nzp - 1)
+        )
+        return Mesh(points, cells, ele_type='HEX20')
 
-        # Create box geometry
-        box_tag = gmsh.model.occ.addBox(x0, y0, z0, lx, ly, lz)
-        gmsh.model.occ.synchronize()
+    points, hexes = _structured_hex_grid(
+        (x0, y0, z0), (lx, ly, lz), (nxp, nyp, nzp)
+    )
 
-        # Set mesh size
-        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", mesh_size)
-        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size)
+    if element_type == 'HEX8':
+        return Mesh(points, hexes, ele_type='HEX8')
 
-        if element_type == 'HEX8' and recombine:
-            # Use transfinite algorithm for structured HEX mesh
-            # Get all surfaces and curves
-            surfaces = gmsh.model.getEntities(2)
-            curves = gmsh.model.getEntities(1)
-
-            # Calculate number of divisions based on mesh_size
-            nx = max(2, int(lx / mesh_size) + 1)
-            ny = max(2, int(ly / mesh_size) + 1)
-            nz = max(2, int(lz / mesh_size) + 1)
-
-            # Set transfinite curves - assign appropriate number of points based on curve direction
-            for curve in curves:
-                _, curve_tag = curve
-                # Get curve endpoints to determine its direction
-                bounds = gmsh.model.getBoundingBox(1, curve_tag)
-                dx = abs(bounds[3] - bounds[0])
-                dy = abs(bounds[4] - bounds[1])
-                dz = abs(bounds[5] - bounds[2])
-
-                # Determine curve direction and set appropriate number of points
-                if dx > dy and dx > dz:  # X-direction curve
-                    num_points = nx
-                elif dy > dx and dy > dz:  # Y-direction curve
-                    num_points = ny
-                else:  # Z-direction curve
-                    num_points = nz
-
-                gmsh.model.mesh.setTransfiniteCurve(curve_tag, num_points)
-
-            # Set transfinite surfaces
-            for surface in surfaces:
-                _, surface_tag = surface
-                gmsh.model.mesh.setTransfiniteSurface(surface_tag)
-                gmsh.model.mesh.setRecombine(2, surface_tag)
-
-            # Set transfinite volume
-            gmsh.model.mesh.setTransfiniteVolume(box_tag)
-            gmsh.model.mesh.setRecombine(3, box_tag)
-
-        elif element_type == 'HEX8' and not recombine:
-            # Unstructured HEX mesh via recombination
-            gmsh.option.setNumber("Mesh.RecombineAll", 1)
-            gmsh.option.setNumber("Mesh.Algorithm", 8)  # Frontal-Delaunay for quads
-            gmsh.option.setNumber("Mesh.Algorithm3D", 1)  # Delaunay for tets, then recombine
-
-        # Generate 3D mesh
-        gmsh.model.mesh.generate(3)
-
-        # Get mesh data
-        node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
-        points = node_coords.reshape(-1, 3)
-
-        # Get elements
-        if element_type == 'HEX8':
-            elem_types, elem_tags, elem_node_tags = gmsh.model.mesh.getElements(3, -1)
-            # Find hexahedral elements (type 5 in Gmsh)
-            hex_idx = None
-            for i, etype in enumerate(elem_types):
-                if etype == 5:  # Hexahedron
-                    hex_idx = i
-                    break
-            if hex_idx is None:
-                raise RuntimeError("No hexahedral elements found in mesh")
-            cells = elem_node_tags[hex_idx].reshape(-1, 8) - 1  # Gmsh uses 1-based indexing
-            ele_type_out = 'HEX8'
-        else:  # TET4
-            elem_types, elem_tags, elem_node_tags = gmsh.model.mesh.getElements(3, -1)
-            # Find tetrahedral elements (type 4 in Gmsh)
-            tet_idx = None
-            for i, etype in enumerate(elem_types):
-                if etype == 4:  # Tetrahedron
-                    tet_idx = i
-                    break
-            if tet_idx is None:
-                raise RuntimeError("No tetrahedral elements found in mesh")
-            cells = elem_node_tags[tet_idx].reshape(-1, 4) - 1
-            ele_type_out = 'TET4'
-
-        # Reindex nodes to be contiguous from 0
-        unique_nodes = onp.unique(cells.flatten())
-        node_map = onp.full(len(points), -1, dtype=onp.int32)
-        node_map[unique_nodes] = onp.arange(len(unique_nodes))
-        cells_reindexed = node_map[cells]
-        points_filtered = points[unique_nodes]
-
-        return Mesh(points_filtered, cells_reindexed, ele_type=ele_type_out)
-    finally:
-        gmsh.finalize()
+    # TET4: split every hexahedron into 6 tetrahedra sharing the 0-6 body
+    # diagonal. On a structured grid every cell is a pure translate, so the
+    # induced face diagonals match across shared faces and the tet mesh is
+    # conforming.
+    cells = hexes[:, _HEX_TO_TET6].reshape(-1, 4)
+    return Mesh(points, cells, ele_type='TET4')
 
 
 def rectangle_mesh(
@@ -592,11 +680,10 @@ def sphere_mesh(
     mesh_size: float = 0.1,
     element_type: str = 'TET4'
 ) -> Mesh:
-    """Generate mesh for sphere using Gmsh.
+    """Generate a tetrahedral mesh for a sphere (PyVista surface + TetGen).
 
-    Creates a tetrahedral or hexahedral mesh for a spherical domain.
-    Note: Hexahedral meshing of spheres is challenging and may produce
-    lower quality elements.
+    A triangulated sphere surface is generated with PyVista and filled with
+    TET4 elements by TetGen. No Gmsh dependency.
 
     Parameters
     ----------
@@ -607,92 +694,42 @@ def sphere_mesh(
     mesh_size : float, optional
         Target element size. Default is 0.1
     element_type : str, optional
-        'TET4' for tetrahedral (default, recommended) or 'HEX8' for hexahedral
+        Only 'TET4' is supported.
 
     Returns
     -------
     mesh : Mesh
-        Mesh with TET4 or HEX8 elements
+        Mesh with TET4 elements
 
     Raises
     ------
     ImportError
-        If gmsh is not installed
+        If the 'tetgen' package is not installed
+    ValueError
+        If element_type is not 'TET4'
 
     Examples
     --------
     Create TET4 sphere mesh:
-    >>> mesh = sphere_mesh_gmsh(1.0, mesh_size=0.1)
-
-    Notes
-    -----
-    - TET4 is strongly recommended for spheres (better quality)
-    - HEX8 meshes for spheres may have distorted elements
+    >>> mesh = sphere_mesh(1.0, mesh_size=0.1)
     """
 
-    if element_type not in ['HEX8', 'TET4']:
-        raise ValueError(f"element_type must be 'HEX8' or 'TET4', got {element_type}")
+    if element_type != 'TET4':
+        raise ValueError(
+            f"sphere_mesh only supports element_type='TET4', got {element_type}. "
+            f"Hexahedral meshing of curved geometry is no longer supported."
+        )
 
-    gmsh.initialize()
-    gmsh.option.setNumber("General.Terminal", 0)
+    import pyvista as pv
 
-    try:
-        gmsh.model.add("sphere")
-
-        # Create sphere geometry
-        x0, y0, z0 = center
-        sphere_tag = gmsh.model.occ.addSphere(x0, y0, z0, radius)
-        gmsh.model.occ.synchronize()
-
-        # Set mesh size
-        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", mesh_size)
-        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size)
-
-        if element_type == 'HEX8':
-            gmsh.option.setNumber("Mesh.RecombineAll", 1)
-            gmsh.option.setNumber("Mesh.Algorithm3D", 1)
-
-        # Generate mesh
-        gmsh.model.mesh.generate(3)
-
-        # Get mesh data
-        node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
-        points = node_coords.reshape(-1, 3)
-
-        elem_types, elem_tags, elem_node_tags = gmsh.model.mesh.getElements(3, -1)
-
-        if element_type == 'HEX8':
-            hex_idx = None
-            for i, etype in enumerate(elem_types):
-                if etype == 5:
-                    hex_idx = i
-                    break
-            if hex_idx is None:
-                raise RuntimeError("No hexahedral elements found. Try element_type='TET4'")
-            cells = elem_node_tags[hex_idx].reshape(-1, 8) - 1
-            ele_type_out = 'HEX8'
-        else:
-            tet_idx = None
-            for i, etype in enumerate(elem_types):
-                if etype == 4:
-                    tet_idx = i
-                    break
-            if tet_idx is None:
-                raise RuntimeError("No tetrahedral elements found")
-            cells = elem_node_tags[tet_idx].reshape(-1, 4) - 1
-            ele_type_out = 'TET4'
-
-        # Reindex nodes
-        unique_nodes = onp.unique(cells.flatten())
-        node_map = onp.full(len(points), -1, dtype=onp.int32)
-        node_map[unique_nodes] = onp.arange(len(unique_nodes))
-        cells_reindexed = node_map[cells]
-        points_filtered = points[unique_nodes]
-
-        return Mesh(points_filtered, cells_reindexed, ele_type=ele_type_out)
-
-    finally:
-        gmsh.finalize()
+    # Surface resolution from the target edge length along a great circle.
+    res = max(8, int(2.0 * onp.pi * radius / mesh_size))
+    surface = pv.Sphere(
+        radius=radius, center=center,
+        theta_resolution=res, phi_resolution=res,
+    )
+    points, cells = _tetrahedralize_surface(surface, mesh_size)
+    return Mesh(points, cells, ele_type='TET4')
 
 
 def cylinder_mesh(
@@ -703,9 +740,10 @@ def cylinder_mesh(
     mesh_size: float = 0.1,
     element_type: str = 'TET4'
 ) -> Mesh:
-    """Generate mesh for cylinder using Gmsh.
+    """Generate a tetrahedral mesh for a cylinder (PyVista surface + TetGen).
 
-    Creates a tetrahedral or hexahedral mesh for a cylindrical domain.
+    A closed cylinder surface is generated with PyVista and filled with TET4
+    elements by TetGen. No Gmsh dependency.
 
     Parameters
     ----------
@@ -720,128 +758,52 @@ def cylinder_mesh(
     mesh_size : float, optional
         Target element size. Default is 0.1
     element_type : str, optional
-        'TET4' for tetrahedral (default) or 'HEX8' for hexahedral
+        Only 'TET4' is supported.
 
     Returns
     -------
     mesh : Mesh
-        Mesh with TET4 or HEX8 elements
+        Mesh with TET4 elements
 
     Raises
     ------
     ImportError
-        If gmsh is not installed
+        If the 'tetgen' package is not installed
+    ValueError
+        If element_type is not 'TET4'
 
     Examples
     --------
     Create TET4 cylinder mesh:
-    >>> mesh = cylinder_mesh_gmsh(0.5, 2.0, mesh_size=0.1)
-
-    Create HEX8 cylinder mesh:
-    >>> mesh = cylinder_mesh_gmsh(0.5, 2.0, mesh_size=0.1, element_type='HEX8')
+    >>> mesh = cylinder_mesh(0.5, 2.0, mesh_size=0.1)
     """
 
-    if element_type not in ['HEX8', 'TET4']:
-        raise ValueError(f"element_type must be 'HEX8' or 'TET4', got {element_type}")
+    if element_type != 'TET4':
+        raise ValueError(
+            f"cylinder_mesh only supports element_type='TET4', got {element_type}. "
+            f"Hexahedral meshing of curved geometry is no longer supported."
+        )
 
-    gmsh.initialize()
-    gmsh.option.setNumber("General.Terminal", 0)
+    import pyvista as pv
 
-    try:
-        gmsh.model.add("cylinder")
+    axis_norm = onp.asarray(axis, dtype=onp.float64)
+    axis_norm = axis_norm / onp.linalg.norm(axis_norm)
 
-        # Normalize axis
-        axis_array = onp.array(axis)
-        axis_norm = axis_array / onp.linalg.norm(axis_array)
+    # PyVista's Cylinder is centred on its midpoint; the FEAX convention treats
+    # `center` as the base, so shift by half the height along the axis.
+    base = onp.asarray(center, dtype=onp.float64)
+    pv_center = base + 0.5 * height * axis_norm
 
-        # For simplicity, create cylinder along z-axis then rotate if needed
-        # Gmsh's addCylinder works best with z-aligned cylinders
-        x0, y0, z0 = center
-
-        # Create cylinder along z-axis
-        cylinder_tag = gmsh.model.occ.addCylinder(x0, y0, z0, 0, 0, height, radius)
-
-        # If axis is not z-aligned, rotate the cylinder
-        if not onp.allclose(axis_norm, [0, 0, 1]):
-            # Calculate rotation to align z-axis with desired axis
-            z_axis = onp.array([0, 0, 1])
-            rotation_axis = onp.cross(z_axis, axis_norm)
-            if onp.linalg.norm(rotation_axis) > 1e-10:
-                rotation_axis = rotation_axis / onp.linalg.norm(rotation_axis)
-                angle = onp.arccos(onp.dot(z_axis, axis_norm))
-                gmsh.model.occ.rotate([(3, cylinder_tag)], x0, y0, z0,
-                                     rotation_axis[0], rotation_axis[1], rotation_axis[2], angle)
-
-        gmsh.model.occ.synchronize()
-
-        # Set mesh size
-        gmsh.option.setNumber("Mesh.CharacteristicLengthMin", mesh_size)
-        gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size)
-
-        if element_type == 'HEX8':
-            gmsh.option.setNumber("Mesh.RecombineAll", 1)
-            gmsh.option.setNumber("Mesh.Algorithm3D", 1)
-
-        # Generate mesh
-        gmsh.model.mesh.generate(3)
-
-        # Get mesh data
-        node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
-        points = node_coords.reshape(-1, 3)
-
-        elem_types, elem_tags, elem_node_tags = gmsh.model.mesh.getElements(3, -1)
-
-        if element_type == 'HEX8':
-            hex_idx = None
-            for i, etype in enumerate(elem_types):
-                if etype == 5:
-                    hex_idx = i
-                    break
-            if hex_idx is None:
-                raise RuntimeError("No hexahedral elements found. Try element_type='TET4'")
-            cells = elem_node_tags[hex_idx].reshape(-1, 8) - 1
-            ele_type_out = 'HEX8'
-        else:
-            tet_idx = None
-            for i, etype in enumerate(elem_types):
-                if etype == 4:
-                    tet_idx = i
-                    break
-            if tet_idx is None:
-                raise RuntimeError("No tetrahedral elements found")
-            cells = elem_node_tags[tet_idx].reshape(-1, 4) - 1
-            ele_type_out = 'TET4'
-
-        # Reindex nodes
-        unique_nodes = onp.unique(cells.flatten())
-        node_map = onp.full(len(points), -1, dtype=onp.int32)
-        node_map[unique_nodes] = onp.arange(len(unique_nodes))
-        cells_reindexed = node_map[cells]
-        points_filtered = points[unique_nodes]
-
-        return Mesh(points_filtered, cells_reindexed, ele_type=ele_type_out)
-
-    finally:
-        gmsh.finalize()
+    res = max(8, int(2.0 * onp.pi * radius / mesh_size))
+    surface = pv.Cylinder(
+        center=pv_center, direction=axis_norm,
+        radius=radius, height=height, resolution=res, capping=True,
+    )
+    points, cells = _tetrahedralize_surface(surface, mesh_size)
+    return Mesh(points, cells, ele_type='TET4')
 
 
-# ── Generic Gmsh-based mesh refinement ─────────────────────────────────────
-
-# Gmsh element type IDs (see https://gmsh.info/doc/texinfo/gmsh.html#MSH-file-format).
-_GMSH_ELE_TYPE_ID = {
-    'LINE2':  1,
-    'TRI3':   2,
-    'QUAD4':  3,
-    'TET4':   4,
-    'HEX8':   5,
-    'PRISM6': 6,
-    'TRI6':   9,
-    'QUAD9':  10,
-    'TET10':  11,
-    'HEX27':  12,
-    'QUAD8':  16,
-    'HEX20':  17,
-}
+# ── Generic pure-numpy uniform mesh refinement ─────────────────────────────
 
 # Per-element node count and topological dimension.
 _ELE_INFO = {
@@ -860,24 +822,140 @@ _ELE_INFO = {
 }
 
 
+# Uniform-subdivision templates. Each template is a list of child cells; each
+# child cell is a list of *node descriptors*. A descriptor is a tuple of local
+# corner indices of the parent element: the new node sits at the average of
+# those corners, and its identity (for sharing across parent elements) is the
+# sorted set of the corresponding global corner ids. Thus a 1-tuple is a corner
+# (shared trivially), a 2-tuple an edge midpoint (shared by all elements on that
+# edge), a 4-tuple a quad-face centre (shared by the two elements on that face),
+# and the full-corner tuple a cell centre (never shared).
+
+_TRI3_TEMPLATE = [
+    [(0,),   (0, 1), (2, 0)],
+    [(0, 1), (1,),   (1, 2)],
+    [(2, 0), (1, 2), (2,)],
+    [(0, 1), (1, 2), (2, 0)],
+]
+
+_QUAD4_TEMPLATE = [
+    [(0,),          (0, 1),         (0, 1, 2, 3), (3, 0)],
+    [(0, 1),        (1,),           (1, 2),       (0, 1, 2, 3)],
+    [(0, 1, 2, 3),  (1, 2),         (2,),         (2, 3)],
+    [(3, 0),        (0, 1, 2, 3),   (2, 3),       (3,)],
+]
+
+# TET4 → 8 sub-tets (Bey subdivision). Inner octahedron split along the
+# (m02, m13) diagonal. Orientation is fixed up numerically in _refine_once.
+_TET4_TEMPLATE = [
+    [(0,),   (0, 1), (0, 2), (0, 3)],
+    [(0, 1), (1,),   (1, 2), (1, 3)],
+    [(0, 2), (1, 2), (2,),   (2, 3)],
+    [(0, 3), (1, 3), (2, 3), (3,)],
+    [(0, 2), (1, 3), (0, 1), (0, 3)],
+    [(0, 2), (1, 3), (0, 3), (2, 3)],
+    [(0, 2), (1, 3), (2, 3), (1, 2)],
+    [(0, 2), (1, 3), (1, 2), (0, 1)],
+]
+
+# HEX8 corner <-> unit-cube coordinate maps (meshio/VTK ordering).
+_HEX_ID_TO_COORD = [
+    (0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),
+    (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1),
+]
+_HEX_COORD_TO_ID = {c: i for i, c in enumerate(_HEX_ID_TO_COORD)}
+
+
+def _build_hex8_template():
+    """8 sub-hexes of a HEX8 via trilinear (2x2x2) subdivision."""
+
+    def descriptor(a, b, c):
+        # Fine-grid coord (a,b,c) in {0,1,2} -> parent corners it averages.
+        xs = [0] if a == 0 else ([1] if a == 2 else [0, 1])
+        ys = [0] if b == 0 else ([1] if b == 2 else [0, 1])
+        zs = [0] if c == 0 else ([1] if c == 2 else [0, 1])
+        return tuple(_HEX_COORD_TO_ID[(x, y, z)] for x in xs for y in ys for z in zs)
+
+    template = []
+    for ok in (0, 1):
+        for oj in (0, 1):
+            for oi in (0, 1):
+                sub = []
+                for (ux, uy, uz) in _HEX_ID_TO_COORD:  # meshio corner order
+                    sub.append(descriptor(oi + ux, oj + uy, ok + uz))
+                template.append(sub)
+    return template
+
+
+_HEX8_TEMPLATE = _build_hex8_template()
+
+_REFINE_TEMPLATES = {
+    'TRI3':  _TRI3_TEMPLATE,
+    'QUAD4': _QUAD4_TEMPLATE,
+    'TET4':  _TET4_TEMPLATE,
+    'HEX8':  _HEX8_TEMPLATE,
+}
+
+
+def _refine_once(points: onp.ndarray, cells: onp.ndarray, ele_type: str):
+    """Apply one level of uniform subdivision (pure numpy)."""
+    template = _REFINE_TEMPLATES[ele_type]
+
+    # Unique descriptors across the template drive node creation.
+    node_index = {}          # key -> new global node id
+    new_points = []
+
+    def get_node(cell_corners, desc):
+        gids = cell_corners[list(desc)]
+        key = tuple(sorted(int(g) for g in gids))
+        idx = node_index.get(key)
+        if idx is None:
+            idx = len(new_points)
+            node_index[key] = idx
+            new_points.append(points[list(gids)].mean(axis=0))
+        return idx
+
+    new_cells = []
+    for cell in cells:
+        for child in template:
+            new_cells.append([get_node(cell, desc) for desc in child])
+
+    new_points = onp.asarray(new_points, dtype=points.dtype)
+    new_cells = onp.asarray(new_cells, dtype=onp.int32)
+
+    # Ensure positive-volume TET4 (interior diagonal choice may invert some).
+    if ele_type == 'TET4':
+        p = new_points[new_cells]
+        vol = onp.einsum(
+            'ij,ij->i',
+            onp.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]),
+            p[:, 3] - p[:, 0],
+        )
+        flip = vol < 0
+        new_cells[flip] = new_cells[flip][:, [0, 1, 3, 2]]
+
+    return new_points, new_cells
+
+
 def refine_mesh(mesh: Mesh, levels: int = 1) -> Mesh:
-    """Uniformly refine a mesh by edge subdivision via Gmsh.
+    """Uniformly refine a mesh by edge subdivision (pure numpy, no Gmsh).
 
     Each refinement level subdivides every cell into smaller cells of
-    the *same type* (Gmsh ``mesh.refine``):
+    the *same type*:
 
-    * ``QUAD4`` → 4 sub-quads        (1 mesh-edge midpoint per edge + cell centre)
+    * ``QUAD4`` → 4 sub-quads        (4 edge midpoints + cell centre)
     * ``TRI3``  → 4 sub-triangles    (3 edge midpoints)
-    * ``HEX8``  → 8 sub-hexes        (Bey-style refinement)
-    * ``TET4``  → 8 sub-tets         (Bey-style refinement)
+    * ``HEX8``  → 8 sub-hexes        (trilinear 2x2x2 subdivision)
+    * ``TET4``  → 8 sub-tets         (Bey subdivision)
 
-    Edge midpoints are shared between adjacent cells, so node counts
-    grow as ``≈ 4ⁿ`` (2-D) / ``≈ 8ⁿ`` (3-D) per level — call multiple
-    times only if you really need it (memory grows quickly).
+    Edge midpoints (and quad-face centres) are shared between adjacent
+    cells, so the result is conforming. Node counts grow as ``≈ 4ⁿ``
+    (2-D) / ``≈ 8ⁿ`` (3-D) per level — call multiple times only if you
+    really need it (memory grows quickly).
 
-    Works on *any* mesh — structured or unstructured, generated by
-    :func:`box_mesh`, :func:`rectangle_mesh`, :func:`Mesh.from_gmsh`,
-    or read from an external file.
+    Works on *any* mesh of a supported type — structured or unstructured,
+    generated by :func:`box_mesh`, :func:`rectangle_mesh`,
+    :func:`Mesh.from_gmsh`, or read from an external file.
 
     Parameters
     ----------
@@ -902,13 +980,9 @@ def refine_mesh(mesh: Mesh, levels: int = 1) -> Mesh:
 
     Notes
     -----
-    * Internally feeds the mesh to Gmsh as a discrete entity, calls
-      ``gmsh.model.mesh.refine()`` ``levels`` times, then reads it back.
-    * Higher-order elements (``TRI6``/``QUAD8``/``QUAD9``/``TET10``/
-      ``HEX20``/``HEX27``) are accepted but Gmsh refines them as their
-      first-order counterpart and re-promotes; node ordering of the
-      newly inserted mid-edge / centre nodes follows Gmsh's convention,
-      which matches meshio.
+    * Only the linear element types ``TRI3``, ``QUAD4``, ``TET4`` and
+      ``HEX8`` are supported. Refine the linear mesh first, then promote
+      to a higher order if needed.
     """
     if levels < 0:
         raise ValueError(f"levels must be >= 0, got {levels}")
@@ -916,14 +990,13 @@ def refine_mesh(mesh: Mesh, levels: int = 1) -> Mesh:
         return mesh
 
     ele_type = mesh.ele_type
-    if ele_type not in _GMSH_ELE_TYPE_ID:
+    if ele_type not in _REFINE_TEMPLATES:
         raise NotImplementedError(
             f"refine_mesh: unsupported ele_type '{ele_type}'. "
-            f"Supported: {sorted(_GMSH_ELE_TYPE_ID)}"
+            f"Supported: {sorted(_REFINE_TEMPLATES)}"
         )
 
-    n_nodes_per_cell, dim = _ELE_INFO[ele_type]
-    gmsh_ele_id = _GMSH_ELE_TYPE_ID[ele_type]
+    n_nodes_per_cell, _ = _ELE_INFO[ele_type]
 
     pts = onp.asarray(mesh.points, dtype=onp.float64)
     cells = onp.asarray(mesh.cells, dtype=onp.int64)
@@ -940,72 +1013,7 @@ def refine_mesh(mesh: Mesh, levels: int = 1) -> Mesh:
             f"expects {n_nodes_per_cell}"
         )
 
-    # Pad 2-D coordinates with z = 0; Gmsh always uses 3-D.
-    if pts.shape[1] == 2:
-        pts3 = onp.column_stack([pts, onp.zeros(len(pts))])
-    else:
-        pts3 = pts
+    for _ in range(levels):
+        pts, cells = _refine_once(pts, cells, ele_type)
 
-    # Initialise Gmsh and inject the existing mesh as a discrete entity.
-    gmsh.initialize()
-    gmsh.option.setNumber("General.Terminal", 0)
-    try:
-        gmsh.model.add("refine")
-        ent_tag = gmsh.model.addDiscreteEntity(dim)
-
-        n_nodes = pts3.shape[0]
-        node_tags = onp.arange(1, n_nodes + 1, dtype=onp.int64)  # 1-based
-        gmsh.model.mesh.addNodes(
-            dim, ent_tag,
-            node_tags.tolist(),
-            pts3.flatten().tolist(),
-        )
-
-        n_cells = cells.shape[0]
-        elem_tags = onp.arange(1, n_cells + 1, dtype=onp.int64)
-        elem_node_tags = (cells + 1).flatten()  # 1-based for Gmsh
-        gmsh.model.mesh.addElements(
-            dim, ent_tag,
-            [gmsh_ele_id],
-            [elem_tags.tolist()],
-            [elem_node_tags.tolist()],
-        )
-
-        for _ in range(levels):
-            gmsh.model.mesh.refine()
-
-        # Read the refined mesh back.
-        node_tags_new, node_coords_new, _ = gmsh.model.mesh.getNodes()
-        new_points = onp.asarray(node_coords_new).reshape(-1, 3)
-        # Build dense 1-based -> 0-based remap (Gmsh tags can be sparse).
-        max_tag = int(onp.max(node_tags_new))
-        remap = onp.full(max_tag + 1, -1, dtype=onp.int64)
-        remap[onp.asarray(node_tags_new, dtype=onp.int64)] = \
-            onp.arange(len(node_tags_new))
-
-        elem_types, _, elem_node_tags_new = \
-            gmsh.model.mesh.getElements(dim, ent_tag)
-        block_idx = None
-        for i, etype in enumerate(elem_types):
-            if int(etype) == gmsh_ele_id:
-                block_idx = i
-                break
-        if block_idx is None:
-            raise RuntimeError(
-                f"refine_mesh: refined mesh did not contain elements of "
-                f"type {ele_type} (Gmsh id {gmsh_ele_id}); got types "
-                f"{list(elem_types)}"
-            )
-
-        new_cells_1b = onp.asarray(
-            elem_node_tags_new[block_idx], dtype=onp.int64,
-        ).reshape(-1, n_nodes_per_cell)
-        new_cells = remap[new_cells_1b]
-
-        # Trim z-padding for 2-D meshes.
-        if pts.shape[1] == 2:
-            new_points = new_points[:, :2]
-
-        return Mesh(new_points, new_cells, ele_type=ele_type)
-    finally:
-        gmsh.finalize()
+    return Mesh(pts, cells, ele_type=ele_type)

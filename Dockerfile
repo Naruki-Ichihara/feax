@@ -19,13 +19,22 @@ WORKDIR /workspace
 # JAX compiled for CUDA 13.1.1. Use pip install .[cuda13,jax] outside containers.
 RUN pip install .[cuda13,sksparse]
 
-# Install spineax (patched fork for cuDSS 0.8) WITHOUT touching the base JAX.
-# Pre-install the build backend + cuDSS 0.8 (headers for build, libcudss.so.0 for
-# runtime), then build spineax against the container's own jaxlib headers so the
-# FFI ABI matches at runtime. --no-deps keeps the NVCR base JAX in place.
-RUN pip install --no-build-isolation "scikit-build-core>=0.5" nanobind nvidia-cudss-cu13
-RUN pip install --no-build-isolation --no-deps \
-    "git+https://github.com/Naruki-Ichihara/spineax.git"
+# Install spineax WITHOUT touching the base JAX. --no-deps is essential: both the
+# wheel and its lineax dep declare jax[cuda13], which would otherwise clobber the
+# NVCR base JAX. The official PyPI release ships an x86_64-only abi3 wheel, so on
+# other arches (e.g. aarch64 / GB10) fall back to building the fork from source
+# against the container's own jaxlib (matching the cuDSS FFI ABI at runtime).
+# cuDSS 0.8 (libcudss.so.0) and lineax are the runtime deps installed here;
+# jaxtyping / equinox / cusparse already come from the feax install above.
+RUN pip install nvidia-cudss-cu13 && \
+    pip install --no-deps lineax && \
+    if [ "$(uname -m)" = "x86_64" ]; then \
+        pip install --no-deps spineax ; \
+    else \
+        pip install --no-build-isolation "scikit-build-core>=0.5" nanobind && \
+        pip install --no-build-isolation --no-deps \
+            "git+https://github.com/johnviljoen/spineax.git" ; \
+    fi
 
 # Algebraic-multigrid solver (feax[amg]): smoothed-aggregation AMG via PyAMG,
 # run on JAX/GPU through AMJax, as a preconditioner for a matrix-free outer

@@ -134,8 +134,6 @@ move_bc_pos = int(move_bc_pos[0])
 sol = fe.zero_like_initial_guess(problem, bc)
 
 # ── VTK output setup ─────────────────────────────────────────────────
-import meshio
-
 out_dir = os.path.join(os.path.dirname(__file__), "data", "vtk_tmc")
 os.makedirs(out_dir, exist_ok=True)
 pts_3d = onp.zeros((len(points_np), 3))
@@ -163,18 +161,16 @@ def save_vtk(step_idx, u_nodes_np, converged):
     u_3d = onp.zeros((len(u_nodes_np), 3))
     u_3d[:, :2] = u_nodes_np
     detF = compute_element_detF(u_nodes_np)
-    m = meshio.Mesh(
-        points=pts_3d,
-        cells=[("quad9", cells_np)],
-        point_data={"displacement": u_3d},
-        cell_data={
-            "is_medium": [onp.array(is_medium_np)],
-            "min_detF": [detF],
-        },
-    )
     tag = "ok" if converged else "FAIL"
     path = os.path.join(out_dir, f"step_{step_idx:03d}_{tag}.vtu")
-    m.write(path)
+    fe.save_sol(
+        mesh, path,
+        point_infos=[("displacement", u_3d)],
+        cell_infos=[
+            ("is_medium", onp.array(is_medium_np)),
+            ("min_detF", detF),
+        ],
+    )
     return detF
 
 

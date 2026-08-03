@@ -27,7 +27,7 @@ def has_gpu():
 
 def has_spineax():
     try:
-        from spineax.cudss.factor_solve import factorize  # noqa: F401
+        from spineax.cudss.solver import analyze  # noqa: F401
         return has_gpu()
     except ImportError:
         return False

@@ -374,7 +374,7 @@ def create_linear_solver(
         _reuse_factor = _mtype_id in (1, 3)   # SYMMETRIC or SPD => J = Jᵀ
 
     if _reuse_factor:
-        from spineax.cudss.factor_solve import factorize as _factorize, solve_with as _solve_with
+        from feax.solvers._cudss_compat import factorize as _factorize, solve_with as _solve_with
 
         def _factor_and_solve(initial_guess, traced_params, effective_bc, ts):
             res = res_bc_parametric(initial_guess, traced_params, effective_bc, ts)

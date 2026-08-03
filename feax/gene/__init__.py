@@ -50,7 +50,6 @@ from . import adaptive
 from . import mesh_extraction
 from . import narrowband
 from . import optimizer
-from . import sdf
 from .narrowband import (
     oc_update,
     run_narrowband_oc,
@@ -67,7 +66,6 @@ from .filters import (
     compute_volume_fraction_threshold,
 )
 from .responses import create_compliance_fn, create_dynamic_compliance_fn, create_volume_fn
-from .sdf import DensityField, from_opt_result, from_vtk
 
 __all__ = [
     # Response functions
@@ -85,12 +83,6 @@ __all__ = [
     # Projection and threshold
     'heaviside_projection',
     'compute_volume_fraction_threshold',
-
-    # SDF conversion
-    'sdf',
-    'DensityField',
-    'from_opt_result',
-    'from_vtk',
 
     # Mesh extraction (pyvista)
     'mesh_extraction',

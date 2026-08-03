@@ -22,7 +22,6 @@ import os
 
 import jax
 import jax.numpy as np
-import meshio
 import numpy as onp
 
 import feax as fe
@@ -66,122 +65,66 @@ h_far = 3e-3       # Mesh size far field
 # ============================================================
 # 3D HEX mesh with split interface at y=0 (tatva-identical)
 # ============================================================
-def generate_unstructured_hex_fracture_3d(
+def generate_structured_hex_fracture_3d(
     length, height, thickness, crack_tip_x, mesh_size_tip, mesh_size_far,
-    work_dir=None,
 ):
-    """Generate a 3D fracture mesh with unstructured hexahedra.
+    """Generate a 3D fracture mesh with structured hexahedra (pure numpy).
 
-    Identical to the tatva example mesh generation: builds top half-block
-    with explicit geo kernel, subdivides to hex, mirrors for bottom half.
+    Builds the top half-block ``0 <= y <= height/2`` as a structured HEX8 grid,
+    graded finer along x in the cracked region ``[crack_tip_x, length]``, then
+    mirrors it about ``y=0`` to create the bottom half. The ``y=0`` face quads
+    form the cohesive interface. No external mesh generator is required.
+
+    Returns the same tuple as the former Gmsh-based generator:
+    ``(coords, elements, top_interface_nodes, bottom_interface_nodes,
+    active_quads_top, active_quads_bottom)``.
     """
-    import gmsh
-
-    if work_dir is None:
-        work_dir = os.path.join(os.path.dirname(__file__), 'data')
-    os.makedirs(work_dir, exist_ok=True)
-    filename = os.path.join(work_dir, "temp_half_block_hex.msh")
-
-    gmsh.initialize()
-    gmsh.model.add("half_block_hex")
-
     h_half = height / 2.0
 
-    # Points: Bottom Face (y=0)
-    p1 = gmsh.model.geo.addPoint(0, 0, 0, mesh_size_far)
-    p4 = gmsh.model.geo.addPoint(0, 0, thickness, mesh_size_far)
-    pt1 = gmsh.model.geo.addPoint(crack_tip_x, 0, 0, mesh_size_tip)
-    pt2 = gmsh.model.geo.addPoint(crack_tip_x, 0, thickness, mesh_size_tip)
-    p2 = gmsh.model.geo.addPoint(length, 0, 0, mesh_size_tip)
-    p3 = gmsh.model.geo.addPoint(length, 0, thickness, mesh_size_tip)
+    def graded_axis(segments):
+        """1D node positions from (start, end, target_h) segments (joints deduped)."""
+        nodes = [segments[0][0]]
+        for (a, b, h) in segments:
+            n_el = max(1, int(round((b - a) / h)))
+            nodes.extend(onp.linspace(a, b, n_el + 1)[1:].tolist())
+        return onp.asarray(nodes, dtype=onp.float64)
 
-    # Points: Top Face (y=h/2)
-    p5 = gmsh.model.geo.addPoint(0, h_half, 0, mesh_size_far)
-    p8 = gmsh.model.geo.addPoint(0, h_half, thickness, mesh_size_far)
-    pt3 = gmsh.model.geo.addPoint(crack_tip_x, h_half, 0, mesh_size_far)
-    pt4 = gmsh.model.geo.addPoint(crack_tip_x, h_half, thickness, mesh_size_far)
-    p6 = gmsh.model.geo.addPoint(length, h_half, 0, mesh_size_far)
-    p7 = gmsh.model.geo.addPoint(length, h_half, thickness, mesh_size_far)
+    # Fine spacing in the cracked span [crack_tip_x, length], coarse ahead of it.
+    x_nodes = graded_axis([
+        (0.0, crack_tip_x, mesh_size_far),
+        (crack_tip_x, length, mesh_size_tip),
+    ])
+    y_nodes = graded_axis([(0.0, h_half, mesh_size_far)])
+    z_nodes = graded_axis([(0.0, thickness, mesh_size_far)])
+    nx, ny, nz = len(x_nodes), len(y_nodes), len(z_nodes)
 
-    # Lines: Bottom
-    l1 = gmsh.model.geo.addLine(p1, pt1)
-    l2 = gmsh.model.geo.addLine(pt1, p2)
-    l_right_b = gmsh.model.geo.addLine(p2, p3)
-    l3 = gmsh.model.geo.addLine(p3, pt2)
-    l4 = gmsh.model.geo.addLine(pt2, p4)
-    l_left_b = gmsh.model.geo.addLine(p4, p1)
-    l_crack_b = gmsh.model.geo.addLine(pt1, pt2)
+    X, Y, Z = onp.meshgrid(x_nodes, y_nodes, z_nodes, indexing='ij')
+    points_top = onp.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
 
-    # Lines: Top
-    l5 = gmsh.model.geo.addLine(p5, pt3)
-    l6 = gmsh.model.geo.addLine(pt3, p6)
-    l_right_t = gmsh.model.geo.addLine(p6, p7)
-    l7 = gmsh.model.geo.addLine(p7, pt4)
-    l8 = gmsh.model.geo.addLine(pt4, p8)
-    l_left_t = gmsh.model.geo.addLine(p8, p5)
-    l_crack_t = gmsh.model.geo.addLine(pt3, pt4)
+    # Structured HEX8 connectivity in meshio/VTK hexahedron order.
+    # Node id (i, j, k) = (i * ny + j) * nz + k  (i->x, j->y, k->z).
+    ei, ej, ek = onp.meshgrid(
+        onp.arange(nx - 1), onp.arange(ny - 1), onp.arange(nz - 1), indexing='ij',
+    )
+    ei, ej, ek = ei.ravel(), ej.ravel(), ek.ravel()
 
-    # Lines: Vertical
-    v1 = gmsh.model.geo.addLine(p1, p5)
-    v_tip1 = gmsh.model.geo.addLine(pt1, pt3)
-    v2 = gmsh.model.geo.addLine(p2, p6)
-    v3 = gmsh.model.geo.addLine(p3, p7)
-    v_tip2 = gmsh.model.geo.addLine(pt2, pt4)
-    v4 = gmsh.model.geo.addLine(p4, p8)
+    def nod(di, dj, dk):
+        return ((ei + di) * ny + (ej + dj)) * nz + (ek + dk)
 
-    # Surfaces
-    loop_if_1 = gmsh.model.geo.addCurveLoop([l1, l_crack_b, l4, l_left_b])
-    s_if_1 = gmsh.model.geo.addPlaneSurface([loop_if_1])
-    loop_if_2 = gmsh.model.geo.addCurveLoop([l2, l_right_b, l3, -l_crack_b])
-    s_if_2 = gmsh.model.geo.addPlaneSurface([loop_if_2])
-    loop_top_1 = gmsh.model.geo.addCurveLoop([l5, l_crack_t, l8, l_left_t])
-    s_top_1 = gmsh.model.geo.addPlaneSurface([loop_top_1])
-    loop_top_2 = gmsh.model.geo.addCurveLoop([l6, l_right_t, l7, -l_crack_t])
-    s_top_2 = gmsh.model.geo.addPlaneSurface([loop_top_2])
+    hex_top = onp.stack([
+        nod(0, 0, 0), nod(1, 0, 0), nod(1, 1, 0), nod(0, 1, 0),
+        nod(0, 0, 1), nod(1, 0, 1), nod(1, 1, 1), nod(0, 1, 1),
+    ], axis=1).astype(onp.int64)
 
-    s_left = gmsh.model.geo.addPlaneSurface(
-        [gmsh.model.geo.addCurveLoop([l_left_b, v1, -l_left_t, -v4])])
-    s_right = gmsh.model.geo.addPlaneSurface(
-        [gmsh.model.geo.addCurveLoop([l_right_b, v3, -l_right_t, -v2])])
-    s_front_1 = gmsh.model.geo.addPlaneSurface(
-        [gmsh.model.geo.addCurveLoop([l1, v_tip1, -l5, -v1])])
-    s_front_2 = gmsh.model.geo.addPlaneSurface(
-        [gmsh.model.geo.addCurveLoop([l2, v2, -l6, -v_tip1])])
-    s_back_1 = gmsh.model.geo.addPlaneSurface(
-        [gmsh.model.geo.addCurveLoop([l4, v4, -l8, -v_tip2])])
-    s_back_2 = gmsh.model.geo.addPlaneSurface(
-        [gmsh.model.geo.addCurveLoop([l3, v_tip2, -l7, -v3])])
-    s_mid = gmsh.model.geo.addPlaneSurface(
-        [gmsh.model.geo.addCurveLoop([l_crack_b, v_tip2, -l_crack_t, -v_tip1])])
-
-    # Volumes
-    sl1 = gmsh.model.geo.addSurfaceLoop(
-        [s_if_1, s_top_1, s_left, s_front_1, s_back_1, s_mid])
-    vol1 = gmsh.model.geo.addVolume([sl1])
-    sl2 = gmsh.model.geo.addSurfaceLoop(
-        [s_if_2, s_top_2, s_right, s_front_2, s_back_2, s_mid])
-    vol2 = gmsh.model.geo.addVolume([sl2])
-
-    gmsh.model.geo.synchronize()
-    gmsh.model.addPhysicalGroup(2, [s_if_1, s_if_2], 1, name="interface_surface")
-    gmsh.model.addPhysicalGroup(3, [vol1, vol2], 2, name="top_domain")
-    gmsh.option.setNumber("Mesh.SubdivisionAlgorithm", 2)
-
-    gmsh.model.mesh.generate(3)
-    gmsh.write(filename)
-    gmsh.finalize()
-
-    # Read via meshio (same as tatva)
-    _m = meshio.read(filename)
-    if os.path.exists(filename):
-        os.remove(filename)
-
-    points_top = _m.points
-    hex_top = _m.cells_dict["hexahedron"]
-
-    # Interface quads from physical group
-    interface_surf_idx = _m.cell_sets_dict["interface_surface"]["quad"]
-    all_interface_quads_top = _m.cells_dict["quad"][interface_surf_idx]
+    # Interface (y=0, j=0) face quads, in CCW meshio quad order.
+    qi, qk = onp.meshgrid(onp.arange(nx - 1), onp.arange(nz - 1), indexing='ij')
+    qi, qk = qi.ravel(), qk.ravel()
+    all_interface_quads_top = onp.stack([
+        (qi * ny + 0) * nz + qk,
+        ((qi + 1) * ny + 0) * nz + qk,
+        ((qi + 1) * ny + 0) * nz + (qk + 1),
+        (qi * ny + 0) * nz + (qk + 1),
+    ], axis=1).astype(onp.int64)
 
     # Mirror to create bottom half
     points_bottom = points_top.copy()
@@ -216,7 +159,7 @@ def generate_unstructured_hex_fracture_3d(
 print("Generating 3D mesh...")
 coords, elements, top_nodes, bottom_nodes, \
     active_quads_top, active_quads_bottom = \
-    generate_unstructured_hex_fracture_3d(
+    generate_structured_hex_fracture_3d(
         length=Lx, height=Ly, thickness=Lz,
         crack_tip_x=crack_length,
         mesh_size_tip=h_tip, mesh_size_far=h_far,

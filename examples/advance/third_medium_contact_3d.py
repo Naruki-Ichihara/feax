@@ -21,8 +21,6 @@ import os
 
 import jax.numpy as np
 import numpy as onp
-import gmsh
-import meshio
 
 import feax as fe
 from feax.mechanics.tmc import ThirdMediumContact, classify_medium_cells
@@ -39,61 +37,16 @@ K = 5.0 / 3.0         # bulk-like Lamé constant (lmbda)
 kr = 5e-7             # regularization prefactor
 gamma0 = 5e-7         # medium scaling factor (very soft void)
 
-# ── Mesh construction (HEX20 via Gmsh) ──────────────────────────────
+# ── Mesh construction (structured HEX20 box, pure numpy) ────────────
 domain_x = L + t / 1   # 1.1  (body + medium strip)
 domain_y = H            # 0.5
 domain_z = D            # 0.2
 
 dx = 0.033  # element size (matching 2D: 33×15 grid)
 
-gmsh.initialize()
-gmsh.option.setNumber("General.Terminal", 0)
-
-try:
-    gmsh.model.add("box3d")
-    box_tag = gmsh.model.occ.addBox(0, 0, 0, domain_x, domain_y, domain_z)
-    gmsh.model.occ.synchronize()
-
-    gmsh.option.setNumber("Mesh.CharacteristicLengthMin", dx)
-    gmsh.option.setNumber("Mesh.CharacteristicLengthMax", dx)
-
-    # Structured transfinite meshing
-    nx = max(2, int(domain_x / dx) + 1)
-    ny = max(2, int(domain_y / dx) + 1)
-    nz = max(2, int(domain_z / dx) + 1)
-
-    curves = gmsh.model.getEntities(1)
-    for _, ctag in curves:
-        bounds = gmsh.model.getBoundingBox(1, ctag)
-        ddx = abs(bounds[3] - bounds[0])
-        ddy = abs(bounds[4] - bounds[1])
-        ddz = abs(bounds[5] - bounds[2])
-        if ddx > ddy and ddx > ddz:
-            gmsh.model.mesh.setTransfiniteCurve(ctag, nx)
-        elif ddy > ddx and ddy > ddz:
-            gmsh.model.mesh.setTransfiniteCurve(ctag, ny)
-        else:
-            gmsh.model.mesh.setTransfiniteCurve(ctag, nz)
-
-    for _, stag in gmsh.model.getEntities(2):
-        gmsh.model.mesh.setTransfiniteSurface(stag)
-        gmsh.model.mesh.setRecombine(2, stag)
-
-    gmsh.model.mesh.setTransfiniteVolume(box_tag)
-    gmsh.model.mesh.setRecombine(3, box_tag)
-
-    # Generate first-order mesh, then elevate to order 2 (HEX20 serendipity)
-    gmsh.model.mesh.generate(3)
-    gmsh.option.setNumber("Mesh.SecondOrderIncomplete", 1)
-    gmsh.model.mesh.setOrder(2)
-
-    tmp_msh = "/tmp/_tmc3d.msh"
-    gmsh.write(tmp_msh)
-finally:
-    gmsh.finalize()
-
-gmsh_mesh = meshio.read(tmp_msh)
-mesh = fe.Mesh.from_gmsh(gmsh_mesh, element_type='HEX20')
+mesh = fe.mesh.box_mesh(
+    (domain_x, domain_y, domain_z), mesh_size=dx, element_type='HEX20',
+)
 points_np = onp.array(mesh.points)
 cells_np = onp.array(mesh.cells)
 
@@ -197,14 +150,12 @@ os.makedirs(out_dir, exist_ok=True)
 
 def save_vtk(step_idx, u_nodes_np, converged):
     u_3d = u_nodes_np.reshape(-1, 3)
-    m = meshio.Mesh(
-        points=points_np,
-        cells=[("hexahedron20", cells_np)],
-        point_data={"displacement": u_3d},
-        cell_data={"is_medium": [onp.array(is_medium_np)]},
-    )
     path = os.path.join(out_dir, f"step_{step_idx:03d}.vtu")
-    m.write(path)
+    fe.save_sol(
+        mesh, path,
+        point_infos=[("displacement", u_3d)],
+        cell_infos=[("is_medium", onp.array(is_medium_np))],
+    )
 
 
 # ── Solve ─────────────────────────────────────────────────────────────

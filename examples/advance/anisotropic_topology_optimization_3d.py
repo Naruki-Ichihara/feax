@@ -37,7 +37,6 @@ import jax
 import jax.numpy as np
 import numpy as onp
 import nlopt
-import gmsh
 
 import feax as fe
 import feax.gene as gene
@@ -52,7 +51,7 @@ from feax.mechanics.orientation import (
 # ── Geometry & physics (matches topology_optimization_adaptive.py) ─────────
 
 L, W, H = 100.0, 5.0, 20.0
-MESH_SIZE = 1.0           # initial element size for gmsh
+MESH_SIZE = 1.0           # element size for the structured box mesh
 
 # Transversely-isotropic CFRP-like lamina (axis 1 = fibre):
 E1, E2 = 70.0e3, 5.0e3
@@ -137,14 +136,6 @@ class AnisotropicElasticity3D(fe.Problem):
         return [traction]
 
 
-# ── Gmsh cantilever geometry (matches topology_optimization_adaptive.py) ───
-
-def cantilever_geometry():
-    """Build the 100 x 5 x 20 box via Gmsh OCC (called by adaptive_mesh)."""
-    gmsh.model.occ.addBox(0, 0, 0, L, W, H)
-    gmsh.model.occ.synchronize()
-
-
 # ── Pack / unpack helper ────────────────────────────────────────────────────
 
 # Field ordering: rho, x1, x2, x3, x12, x13, x23
@@ -163,9 +154,9 @@ def unpack(x_flat: np.ndarray, n_nodes: int):
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ── Mesh: Gmsh TET4 (no adaptive remeshing for this multi-field run) ──
+    # ── Mesh: uniform TET4 box (no adaptive remeshing for this multi-field run) ──
     print("Generating initial TET4 mesh ...")
-    mesh = gene.adaptive.adaptive_mesh(cantilever_geometry, h_max=MESH_SIZE)
+    mesh = fe.mesh.box_mesh((L, W, H), mesh_size=MESH_SIZE, element_type='TET4')
     print(f"  {mesh.points.shape[0]} nodes, "
           f"{mesh.cells.shape[0]} {mesh.ele_type} cells")
 

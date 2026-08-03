@@ -230,7 +230,7 @@ def _create_direct_homogenization_solve(problem, bc, P, mesh, dim,
                              create_res_bc_parametric)
     from ..asd import (connectivity_pattern, operator_assembler,
                        reduced_operator_pattern)
-    from spineax.cudss.factor_solve import factorize, solve_with
+    from feax.solvers._cudss_compat import factorize, solve_with
 
     vec = problem.fes[0].vec
     ndof = problem.num_total_dofs_all_vars

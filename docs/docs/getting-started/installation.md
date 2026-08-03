@@ -106,13 +106,31 @@ pip install "feax[cuda13,jax]"
 
 ### cuDSS Direct Solver
 
-When using the cuDSS direct solver, the `spineax` package is also required:
+When using the cuDSS direct solver, the `spineax` package is also required.
+Install it **after** feax and with `--no-deps`, so it does not pull in (and
+reinstall) `jax[cuda13]` / NumPy over the versions your environment already has:
 
 ```bash
-pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
+pip install --no-deps lineax spineax
 ```
 
-> **Note:** This is pre-installed in the Docker image.
+`lineax` is spineax's only pure-Python dependency not already provided by
+`feax[cuda13]` (which supplies equinox, jaxtyping, and the cuDSS / cuSPARSE CUDA
+libraries). Installing spineax *without* `--no-deps` reinstalls `jax[cuda13]` and
+upgrades NumPy, which breaks any environment that must keep its existing JAX
+(Docker's NVCR base, Colab).
+
+> **Note:** The official PyPI release ships an **x86_64-only** wheel. On other
+> architectures (e.g. `aarch64` / GB10), build from source instead (still
+> `--no-deps`):
+>
+> ```bash
+> pip install --no-deps lineax
+> pip install --no-build-isolation --no-deps git+https://github.com/johnviljoen/spineax.git
+> ```
+>
+> The Docker image does this automatically (official wheel on x86_64, source
+> build on other arches).
 
 ## Docker
 
@@ -240,14 +258,20 @@ Colab provides CUDA-enabled GPUs by default. Run the setup script, then install 
 !SUITESPARSE_INCLUDE_DIR=/usr/local/include/suitesparse \
  SUITESPARSE_LIBRARY_DIR=/usr/local/lib \
  pip install "feax[cuda13,sksparse] @ git+https://github.com/Naruki-Ichihara/feax.git"
-!CMAKE_ARGS="-DBUILD_PBATCH_SOLVE=OFF" pip install --no-build-isolation git+https://github.com/johnviljoen/spineax.git
+!pip install --no-deps lineax spineax
 
 # Verify GPU is available
 import jax
 print(jax.devices())  # Should show GPU
 ```
 
-> **`BUILD_PBATCH_SOLVE=OFF`** is required because Colab's system CUDA toolkit does not match the pip-installed `nvidia-cudss-cu13`, which makes spineax's optional `pbatch_solve` module fail to link with `__cudaGetKernel` (see [spineax troubleshooting](https://github.com/johnviljoen/spineax#troubleshooting)). FEAX only uses single-batch cuDSS solves, so this flag has no functional impact.
+> **`--no-deps` is required.** A plain `pip install spineax` pulls spineax's
+> declared `jax[cuda13]` dependency, which reinstalls JAX and upgrades NumPy to
+> 2.x — that forces a "You must restart the runtime" and clashes with Colab's
+> NumPy-pinned packages (e.g. `numba` wants `numpy<2.1`). With `--no-deps`, only
+> spineax and its one extra pure-Python dep `lineax` are installed; equinox /
+> jaxtyping / the cuDSS + cuSPARSE libraries come from `feax[cuda13]`. Colab is
+> x86_64, so the prebuilt wheel installs directly (nothing is compiled).
 
 ## Verification
 
