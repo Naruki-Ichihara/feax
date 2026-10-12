@@ -48,18 +48,23 @@ Example:
 
 from . import adaptive
 from . import mesh_extraction
-from . import narrowband
 from . import optimizer
-from .narrowband import (
-    oc_update,
-    run_narrowband_oc,
-    run_narrowband_multires,
-)
+from . import length_scale
 from .mesh_extraction import extract_surface, extract_volume_mesh
+from .length_scale import (
+    create_geometric_length_scale_fn,
+    create_morphological_length_scale_fn,
+    epsilon_for_radius,
+    helmholtz_equivalent_radius,
+    helmholtz_radius_for_minimum_width,
+    minimum_beta,
+    minimum_width,
+    minimum_width_helmholtz,
+    radius_for_minimum_width,
+)
 from .filters import (
     create_density_filter,
     create_helmholtz_filter,
-    create_sensitivity_filter,
     density_filter,
     helmholtz_filter,
     heaviside_projection,
@@ -78,11 +83,22 @@ __all__ = [
     'helmholtz_filter',
     'create_density_filter',
     'density_filter',
-    'create_sensitivity_filter',
 
     # Projection and threshold
     'heaviside_projection',
     'compute_volume_fraction_threshold',
+
+    # Minimum length scale (Zhou et al. 2015 geometric constraints)
+    'length_scale',
+    'create_geometric_length_scale_fn',
+    'create_morphological_length_scale_fn',
+    'helmholtz_equivalent_radius',
+    'minimum_width',
+    'minimum_width_helmholtz',
+    'radius_for_minimum_width',
+    'helmholtz_radius_for_minimum_width',
+    'epsilon_for_radius',
+    'minimum_beta',
 
     # Mesh extraction (pyvista)
     'mesh_extraction',
@@ -92,12 +108,9 @@ __all__ = [
     # Adaptive remeshing
     'adaptive',
 
-    # Optimization drivers (MMA pipeline / narrow-band OC)
+    # Optimization driver (MMA pipeline); the narrow-band OC loop lives in
+    # feax.experimental.narrowband
     'optimizer',
-    'narrowband',
-    'oc_update',
-    'run_narrowband_oc',
-    'run_narrowband_multires',
 ]
 
 __version__ = "1.0.0"

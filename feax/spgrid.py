@@ -12,16 +12,18 @@ Any mesh-defined space embeds into an enclosing grid: :meth:`StructuredGrid.fit`
 places a grid over the bounding box of arbitrary points, and
 :func:`voxelize_mesh` marks the grid cells an unstructured mesh occupies.
 The resulting active-cell set feeds :class:`feax.NarrowBand` (explicit O(band)
-sub-mesh for any feax solver) or :class:`feax.solvers.cmg.NarrowBandCMG`
+sub-mesh for any feax solver) or :class:`feax.experimental.NarrowBandCMG`
 (matrix-free geometric multigrid directly on the grid).
 """
 
 import numpy as onp
 
-# HEX8 local node ordering used by feax (matches box_mesh / Gmsh), as integer
-# (dx,dy,dz) corner offsets from a cell's base (min) corner.
-_HEX8_OFFSETS = onp.array([(0, 1, 1), (0, 0, 1), (0, 0, 0), (0, 1, 0),
-                           (1, 1, 1), (1, 0, 1), (1, 0, 0), (1, 1, 0)],
+# HEX8 local node ordering used by feax (the meshio/VTK hexahedron order that
+# :func:`feax.mesh.box_mesh` emits), as integer (dx,dy,dz) corner offsets from
+# a cell's base (min) corner. With this order, and the identical node/cell
+# numbering below, ``NarrowBand(grid, all_cells).mesh`` is ``box_mesh`` exactly.
+_HEX8_OFFSETS = onp.array([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),
+                           (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)],
                           dtype=onp.int64)
 
 
@@ -32,8 +34,12 @@ class StructuredGrid:
         cell  e(cx,cy,cz) = (cx*ny + cy)*nz + cz
         node  n(i,j,k)    = (i*(ny+1) + j)*(nz+1) + k,  i in [0,nx] ...
 
-    Node ordering of :meth:`cell_to_nodes` matches feax's box_mesh HEX8
-    convention, so an extracted band is a valid feax ``Mesh``.
+    Node numbering, cell numbering and the HEX8 corner order of
+    :meth:`cell_to_nodes` are exactly those of :func:`feax.mesh.box_mesh`, so
+    an extracted band is a valid feax ``Mesh`` and the band of ALL cells is the
+    box mesh itself (same node ids, same cells): fields and solutions on a
+    ``box_mesh`` Problem and on this grid share one layout.
+    :meth:`from_mesh` recovers the grid of a box mesh.
     """
 
     ele_type = 'HEX8'
@@ -74,6 +80,26 @@ class StructuredGrid:
         if align:
             dims = ((dims + align - 1) // align) * align
         return cls(tuple(int(d) for d in dims), spacing=tuple(spacing), origin=tuple(org))
+
+    @classmethod
+    def from_mesh(cls, mesh, rtol=1e-6):
+        """The grid whose node/cell numbering a :func:`feax.mesh.box_mesh`
+        (HEX8) uses — spacing and origin are read off the points. Raises
+        ``ValueError`` if ``mesh`` is not such a box mesh."""
+        pts = onp.asarray(mesh.points, float).reshape(-1, 3)
+        cells = onp.asarray(mesh.cells)
+        axes = [onp.unique(onp.round(pts[:, d], 12)) for d in range(3)]
+        dims = tuple(int(a.size) - 1 for a in axes)
+        if any(d < 1 for d in dims) or onp.prod([d + 1 for d in dims]) != pts.shape[0]:
+            raise ValueError("mesh is not a structured box mesh")
+        spacing = tuple(float((a[-1] - a[0]) / (a.size - 1)) for a in axes)
+        grid = cls(dims, spacing=spacing, origin=tuple(float(a[0]) for a in axes))
+        tol = rtol * max(spacing)
+        if (cells.shape != (grid.num_cells, 8)
+                or not onp.allclose(pts, grid.node_coords(onp.arange(grid.num_nodes)), atol=tol)
+                or not onp.array_equal(cells, grid.cell_to_nodes(onp.arange(grid.num_cells)))):
+            raise ValueError("mesh numbering does not match feax.mesh.box_mesh / StructuredGrid")
+        return grid
 
     def point_cells(self, points):
         """Cell id containing each point; -1 for points outside the grid."""
@@ -258,7 +284,7 @@ class SparseDesign:
     def traced_params(self, active_cells, *, default=0.0, extra_vars=()):
         """Gather the stored design onto ``active_cells`` as a
         :class:`feax.TracedParams` — the container every feax solver (including
-        :class:`~feax.solvers.cmg.NarrowBandCMG`'s) accepts:
+        :class:`~feax.experimental.NarrowBandCMG`'s) accepts:
         ``volume_vars = (design_on_band, *extra_vars)``."""
         import jax.numpy as jnp
         from .traced_params import TracedParams

@@ -46,7 +46,10 @@
       "Bash(python -m pytest tests/test_cudss.py::test_cudss_reuse_factorization_forward_and_adjoint -q)",
       "Bash(python -c \"import spineax.cudss.factor_solve as fs; print\\(fs.__file__\\)\")",
       "Bash(grep -n \"cache\\\\|_FACTORS\\\\|evict\\\\|release\\\\|pop\\\\|del \" /usr/local/lib/python3.12/dist-packages/spineax/cudss/factor_solve.py | head -20; echo ===; grep -n \"create_linear_buckling_solver\\\\|buckling_solver\\\\|bf\\(\" /workspace/examples/distribute/private/copv_double_wall_buckling_topopt.py | head -8)",
-      "Read(//usr/local/lib/python3.12/dist-packages/spineax/cudss/**)"
+      "Read(//usr/local/lib/python3.12/dist-packages/spineax/cudss/**)",
+      "Bash(python -c \"import nlopt, jax; print\\(nlopt.__version__, jax.__version__\\)\")",
+      "Bash(python -c \"import nlopt; print\\([x for x in dir\\(nlopt\\) if 'MMA' in x or 'CCSA' in x]\\)\")",
+      "Bash(nvidia-smi -L)"
     ],
     "deny": [],
     "ask": [],

@@ -104,13 +104,21 @@ const sidebars: SidebarsConfig = {
         'api/reference/feax/solvers/newton',
         'api/reference/feax/solvers/reduced',
         'api/reference/feax/solvers/amg',
-        'api/reference/feax/solvers/cmg',
         'api/reference/feax/solvers/eigen',
         'api/reference/feax/solvers/time_solver',
         'api/reference/feax/solvers/common',
         'api/reference/feax/solvers/direct/spsolve',
         'api/reference/feax/solvers/direct/umfpack',
         'api/reference/feax/solvers/direct/cholmod',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Experimental',
+      items: [
+        'api/reference/feax/experimental/cmg',
+        'api/reference/feax/experimental/narrowband',
+        'api/reference/feax/experimental/mma',
       ],
     },
     {
@@ -122,7 +130,6 @@ const sidebars: SidebarsConfig = {
       },
       items: [
         'api/reference/feax/gene/optimizer',
-        'api/reference/feax/gene/narrowband',
         'api/reference/feax/gene/adaptive',
         'api/reference/feax/gene/filters',
         'api/reference/feax/gene/responses',

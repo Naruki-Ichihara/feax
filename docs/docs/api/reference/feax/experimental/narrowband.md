@@ -1,28 +1,32 @@
 ---
 sidebar_label: narrowband
-title: feax.gene.narrowband
+title: feax.experimental.narrowband
 ---
 
-Narrow-band topology optimization on a StructuredGrid (cmg + OC).
+Narrow-band topology optimization on a StructuredGrid (cmg + OC) — experimental.
 
-The moving-band SIMP compliance loop for :class:`feax.NarrowBandCMG`: the
-active band is re-extracted from the design every iteration, the solve is
-O(band), and the coarse-to-fine multires bootstrap keeps even the exploration
-phase off the full grid — the giga-voxel scaling path.
+The moving-band SIMP compliance loop for
+:class:`feax.experimental.NarrowBandCMG`: the active band is re-extracted from
+the design every iteration, the solve is O(band), and the coarse-to-fine
+multires bootstrap keeps even the exploration phase off the full grid — the
+giga-voxel scaling path.
 
-The density update is Optimality Criteria (:func:`oc_update`), deliberately:
-the band&#x27;s design vector changes size every iteration and the full-grid
-density can reach 1e9 cells, which rules out NLopt MMA (fixed dimension,
-host-memory heavy). OC is a pure-numpy O(n) bisection and pairs with the
-self-adjoint compliance sensitivity (one forward solve, no adjoint). For
+The density update is Optimality Criteria (:func:`oc_update`): a pure-numpy
+O(n) bisection that pairs with the self-adjoint compliance sensitivity (one
+forward solve, no adjoint) and needs no state across the moving band. It is
+valid for compliance minimisation under a single volume constraint only; for
 general objectives/constraints on a fixed mesh use the MMA driver
-(:func:`feax.gene.optimizer.run`).
+(:func:`feax.gene.optimizer.run`). A band-aware MMA update
+(:mod:`feax.experimental.mma`, state kept on the full grid) is the planned
+generalisation of this loop.
 
-Usage (see ``examples/advance/cantilever3d.py``)::
+Usage (see ``examples/advance/high_reso_topopt.py``)::
+
+    from feax.experimental import NarrowBandCMG, run_narrowband_multires
 
     def build_fn(nx, ny, nz):
         grid = fe.StructuredGrid((nx, ny, nz))
-        cmg = fe.NarrowBandCMG(grid, fixed_pred, ...)
+        cmg = NarrowBandCMG(grid, fixed_pred, ...)
         keep = ...                                  # bool (nx,ny,nz)
         load_fn = lambda c, lv: c.load_vector(lv, tip_nodes(grid), 2, -1.0)
         return dict(grid=grid, cmg=cmg, keep=keep, load_fn=load_fn)
@@ -99,7 +103,7 @@ across resolutions).
 Parameters
 ----------
 - **grid** (*StructuredGrid*)
-- **cmg** (*NarrowBandCMG          already constructed for ``grid``.*)
+- **cmg** (*NarrowBandCMG          already constructed for ``grid`` (any*): :class:`~feax.experimental.cmg.Material` whose                          design is a single per-cell density array).
 - **keep** (*bool ndarray (nx,ny,nz)   always-active cells (near loads/supports).*)
 - **volfrac** (*float              volume target.*)
 - **load_fn** (*callable           ``load_fn(cmg, levels) -&gt; b`` (compact band DOFs),*): e.g. ``lambda c, lv: c.load_vector(lv, [n], 2, -1.)``.
@@ -138,8 +142,33 @@ O(band), the key to giga-voxel scaling.
 
 Parameters
 ----------
-- **build_fn** (*callable*): ``build_fn(nx, ny, nz) -&gt; dict(grid=, cmg=, keep=, load_fn=)`` — builds a :class:`StructuredGrid`, its :class:`NarrowBandCMG`, the always-active ``keep`` mask, and ``load_fn(cmg, levels) -&gt; b`` at ANY resolution. Loads and supports must be placed by PHYSICAL location so every level is the same problem discretised differently.
+- **build_fn** (*callable*): ``build_fn(nx, ny, nz) -&gt; dict(grid=, cmg=, keep=, load_fn=)`` — builds a :class:`StructuredGrid`, its :class:`~feax.experimental.NarrowBandCMG`, the always-active ``keep`` mask, and ``load_fn(cmg, levels) -&gt; b`` at ANY resolution. Loads and supports must be placed by PHYSICAL location so every level is the same problem discretised differently.
 - **dims** (*(nx, ny, nz)          finest resolution.*)
 - **n_levels** (*int               number of resolutions (2 = one coarse + fine).*)
 - **coarse_iter** (*int, optional  iters per non-final level (default max(10, n_iter//2)).*)
+
+
+#### create\_sensitivity\_filter
+
+```python
+def create_sensitivity_filter(grid, rmin: float)
+```
+
+Narrow-band-native sensitivity filter (88-line ``ft=1``) for a StructuredGrid.
+
+Unlike the Helmholtz / density filters above (node-based, mesh-based, and not
+designed for a cell-based moving band), this one is CELL-based and O(band): for
+each active cell it averages the sensitivity over its in-radius ACTIVE
+neighbours using cone weights, addressing neighbours by grid arithmetic +
+``searchsorted`` into the active set — no full-grid array, so it follows the
+moving band. Intended for the analytic-sensitivity + OC workflow (it modifies
+the sensitivity heuristically; it is not a differentiable design transform —
+use Helmholtz/density for ``jax.grad`` design filtering).
+
+Returns ``filt(active_cells, rho_active, dc_active) -&gt; dc_filtered`` (all arrays
+over the active band cells), computing
+
+    dc_filt_e = Σ_n w_en ρ_n dc_n / ( Hs_e · max(1e-3, ρ_e) )
+
+with Hs_e summed over all IN-GRID neighbours (active or void).
 

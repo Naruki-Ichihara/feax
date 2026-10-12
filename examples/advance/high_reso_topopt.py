@@ -23,10 +23,10 @@ import numpy as onp
 
 import feax as fe
 from feax.solvers.options import DirectSolverOptions
-from feax.gene import run_narrowband_multires
+from feax.experimental import NarrowBandCMG, run_narrowband_multires
 
 NELX, NELY, NELZ = 1200, 300, 300            # finest resolution
-VOLFRAC, PENAL, RMIN = 0.01, 3.0, 1.5
+VOLFRAC, PENAL, RMIN = 0.1, 3.0, 1.5
 Emin, E0, XMIN, MOVE = 1e-9, 1.0, 1e-3, 0.2
 N_LEVELS, COARSE_FACTOR = 3, 2              # 3 -> full-grid explore only at 63x32x32 (safe on GB10)
 N_ITER, COARSE_ITER = 10, 10               # iters at fine / at each coarse level
@@ -45,8 +45,8 @@ def build_fn(nx, ny, nz):
     problem discretised differently (clamp x=0 face, unit -z load at x=L centre)."""
     grid = fe.StructuredGrid((nx, ny, nz), spacing=(1.0, 1.0, 1.0))
     fixed_pred = lambda ni, nj, nk, gx, gy, gz: ni == 0           # clamp x=0 face
-    cmg = fe.NarrowBandCMG(grid, fixed_pred, nu=0.3, penal=PENAL, Emin=Emin, E0=E0,
-                           cg_tol=1e-7, cg_maxit=300, bucket=BUCKET)
+    cmg = NarrowBandCMG(grid, fixed_pred, nu=0.3, penal=PENAL, Emin=Emin, E0=E0,
+                        cg_tol=1e-7, cg_maxit=300, bucket=BUCKET)
     load_node = grid.node_id(nx, ny // 2, nz // 2)               # -z load at x=L centre
     keep = onp.zeros((nx, ny, nz), bool)
     keep[0, :, :] = True                                         # support face ex=0

@@ -1,6 +1,6 @@
 # Narrow-Band & Giga-Voxel Topology Optimization
 
-This tutorial demonstrates narrow-band topology optimization on implicit structured grids using FEAX's `StructuredGrid`, `NarrowBand`, and the matrix-free geometric multigrid solver `NarrowBandCMG`. By solving only where material exists and never materializing the background domain, the memory peak scales with the **band** instead of the **domain** — the path to giga-voxel resolutions.
+This tutorial demonstrates narrow-band topology optimization on implicit structured grids using FEAX's `StructuredGrid`, `NarrowBand`, and the matrix-free geometric multigrid solver `NarrowBandCMG` (in `feax.experimental`: usable, but its interface may still change). By solving only where material exists and never materializing the background domain, the memory peak scales with the **band** instead of the **domain** — the path to giga-voxel resolutions.
 
 ## Overview
 
@@ -161,14 +161,16 @@ Inactive-but-in-superset cells are simply low-stiffness in `traced_params`, so e
 
 ## Matrix-Free Geometric Multigrid: NarrowBandCMG
 
-For very large structured bands, even an assembled sparse matrix (and certainly a direct factorization with 3D fill) exhausts memory. `NarrowBandCMG` is a matrix-free, O(band) geometric multigrid preconditioned CG for **linear elasticity with per-cell SIMP scaling** $E = E_{\min} + \rho^p (E_0 - E_{\min})$ on a uniform HEX8 `StructuredGrid`:
+For very large structured bands, even an assembled sparse matrix (and certainly a direct factorization with 3D fill) exhausts memory. `NarrowBandCMG` is a matrix-free, O(band) geometric multigrid preconditioned CG for **linear, symmetric positive definite** problems on a uniform HEX8 `StructuredGrid`. The default material is isotropic linear elasticity with per-cell SIMP scaling $E = E_{\min} + \rho^p (E_0 - E_{\min})$:
 
 ```python
+from feax.experimental import NarrowBandCMG
+
 grid = fe.StructuredGrid((128, 64, 64))
 fixed_pred = lambda ni, nj, nk, nx, ny, nz: ni == 0     # clamp the x=0 face (grid indices)
 
-cmg = fe.NarrowBandCMG(grid, fixed_pred, nu=0.3, E0=1.0, Emin=1e-9, penal=3.0,
-                       cg_tol=1e-8, cg_maxit=200, bucket=512)
+cmg = NarrowBandCMG(grid, fixed_pred, nu=0.3, E0=1.0, Emin=1e-9, penal=3.0,
+                    cg_tol=1e-8, cg_maxit=200, bucket=512)
 levels = cmg.build(active_cells)                        # O(band) MG hierarchy
 
 load_node = grid.node_id(128, 32, 32)                   # must lie in the band
@@ -181,7 +183,9 @@ u = sol.field(0)                                        # (num_band_nodes, 3)
 
 The solver follows FEAX's `create_solver` convention: one callable `solver(rho_cells) -> u`, returning a `fe.Solution` by default (`return_solution=False` gives the raw flat band vector). It accepts the band design as a bare array or as `fe.TracedParams(volume_vars=(rho_cells,))` — e.g. straight from `SparseDesign.traced_params`.
 
-**Components:** 8-colour block (3×3 node) Gauss–Seidel smoother, trilinear prolongation / full-weighting restriction on the compact active set, and a coarsest-level solve selected by standard FEAX `solver_options`:
+`fixed_pred` may also return a `(n_nodes, vec)` boolean mask to fix individual components (e.g. a roller support).
+
+**Components:** 8-colour block (`vec`×`vec` node) Gauss–Seidel smoother, trilinear prolongation / full-weighting restriction on the compact active set, and a coarsest-level solve selected by standard FEAX `solver_options`:
 
 ```python
 # cuDSS direct factorization at the coarsest level (default; needs spineax)
@@ -191,6 +195,55 @@ solver = cmg.create_solver(levels, b, solver_options=fe.DirectSolverOptions())
 solver = cmg.create_solver(levels, b,
     solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-8, maxiter=400))
 ```
+
+### Materials and DOFs per node
+
+What cmg keeps fixed is the uniform HEX8 grid and the SPD operator. Everything else is a `Material`:
+
+- **`ScalarMaterial(KE, scale_fn)`** — the fast path: one reference element matrix times a per-cell scalar, one float of state per cell. `ScalarMaterial.isotropic_elastic(spacing, nu, scale_fn)` (`vec=3`) and `ScalarMaterial.isotropic_conduction(spacing, scale_fn)` (`vec=1`) build the reference matrix from the grid spacing; `simp(...)` / `ramp(...)` are the usual scale functions.
+- **`KernelMaterial(tensor_map, vec, spacing)`** — any *linear* feax `tensor_map` (`u_grad (vec,3) -> flux (vec,3)`), evaluated through the per-cell constitutive matrix $D = \partial\,\mathrm{flux}/\partial\,\nabla u$: anisotropic and orientation-dependent laws, multi-material, ... at $(3\,\mathrm{vec})^2$ floats per cell and roughly 5× the matvec cost. `KernelMaterial.from_problem(ProblemClass, grid, vec, additional_info=...)` takes the map straight out of an ordinary `fe.Problem` subclass, so cmg solves the same operator feax assembles (`sample_params=` verifies linearity and symmetry at construction).
+
+```python
+from feax.experimental import NarrowBandCMG, ScalarMaterial, KernelMaterial, simp
+
+# steady conduction with SIMP conductivity (one DOF per node)
+thermal = NarrowBandCMG(grid, fixed_pred, material=ScalarMaterial.isotropic_conduction(
+    grid.spacing, scale_fn=simp(1e-3, 1.0, 3.0)))
+
+# anisotropic elasticity from a feax Problem: tensor_map(u_grad, rho, theta)
+elastic = NarrowBandCMG(grid, fixed_pred, material=KernelMaterial.from_problem(
+    AnisotropicElasticity, grid, vec=3, sample_params=(0.5, 0.0)))
+u = elastic.create_solver(elastic.build(active), b)((rho_cells, theta_cells))
+```
+
+The design given to the solver is whatever the material expects — one array (`ScalarMaterial`, or a `KernelMaterial` with one parameter) or a tuple of per-cell arrays (`fe.TracedParams(volume_vars=...)` works for both).
+
+One-way coupled physics (temperature → thermal strain → displacement) is *not* one SPD system, so it is solved as two cmg instances that share the band geometry: `geo = build_geometry(grid, active)` once, then `thermal.build(geo)` and `elastic.build(geo)`.
+
+### From a box mesh Problem to cmg
+
+`StructuredGrid` uses exactly the node numbering, cell numbering and HEX8 corner order of `fe.mesh.box_mesh`, and `StructuredGrid.from_mesh(mesh)` recovers the grid of a box mesh. A full-grid cmg field therefore has the same layout as a feax solution on that mesh: response functions, filters and output code written for the feax Problem work on the cmg result unchanged. Loads and non-zero Dirichlet values have grid-side helpers, and the solver is differentiable in the right-hand side as well as the design:
+
+```python
+grid = fe.StructuredGrid.from_mesh(mesh)                  # the box mesh's grid
+mat = KernelMaterial.from_problem(problem, grid, sample_params=(0.5, 0.0))
+#   `problem` may be an instance (its tensor_map, or the gradient of its
+#   get_energy_density, is used as is) or a Problem subclass
+
+# uniform traction on the y = 0 face. feax adds a surface_map t to the residual
+# (it acts along -t), so a feax traction t is `traction=-t` here.
+b = cmg.face_load_vector(levels, axis=1, side=0, traction=(0.0, -1.0, 0.0))
+solver = cmg.create_solver(levels, b)
+u = solver(params)                                         # default rhs
+u = solver(params, b=other_rhs)                            # rhs at call time
+
+# non-zero Dirichlet values (T = 1 on the fixed top nodes): lift them
+T_p = jnp.where(levels[0]["nj"] == grid.ny, 1.0, 0.0)
+T = T_p + solver(params, b=cmg.dirichlet_rhs(levels, params, T_p))
+#   dirichlet_rhs depends on the design, and jax.grad through it is complete
+```
+
+`thermax/examples/thermal_isolation_3d_aniso_uncoupled.py` runs this way with `SOLVER = "cmg"`: anisotropic conduction (`vec=1`) and orientation-averaged elasticity (`vec=3`) from the same thermax Problems, sharing one band geometry, inside a jitted GCMMA driver.
 
 ### Differentiability
 
@@ -209,9 +262,15 @@ For the compliance/OC workflow there is an even cheaper analytic path — the pr
 ```python
 u = onp.asarray(solver(rho_cells))
 c, dc = cmg.compliance_and_dc(levels, rho_cells, u)
-# c  = Σ E_e uₑᵀ Kₑ uₑ
-# dc = -p ρ^(p-1) (E0 - Emin) uₑᵀ Kₑ uₑ   (per band cell)
+# c  = uᵀ K(ρ) u = Σ uₑᵀ Kₑ(ρₑ) uₑ
+# dc = -uₑᵀ (∂Kₑ/∂ρₑ) uₑ   (per band cell, any Material; tuple designs give a tuple)
 ```
+
+### Precision and hierarchy depth
+
+Consumer-class GPUs (a GB10 included) run float64 many times slower than float32, and the V-cycle is where cmg spends its time. `precision="mixed"` runs the multigrid *preconditioner* (smoother, transfers, coarse Krylov) in float32 while the outer CG, the level-0 matvec and the cuDSS coarse solve stay in float64, so the converged result is a float64 solution to `cg_tol` (results and gradients agree with `"double"` to 1e-12). On a 33³ anisotropic elasticity problem one solve drops from 2.7 s to 0.55 s.
+
+`auto_levels` keeps every level at least 16 cells wide by default and leaves the rest to the coarsest-level solver: deeper hierarchies cost more sequential work per V-cycle and converge worse for anisotropic or high-contrast materials (on the same problem, coarsening to 3³ took 71 PCG iterations, stopping at 17³ took 16). `solver.stats(params)` returns the iteration count and residual of one forward solve, the first thing to look at when a solve seems slow.
 
 ### Buckets and the jit schedule
 
@@ -219,16 +278,16 @@ c, dc = cmg.compliance_and_dc(levels, rho_cells, u)
 
 ## The Moving-Band OC Loop
 
-`feax.gene` provides the moving-band SIMP compliance loop for `NarrowBandCMG`. Each iteration:
+`feax.experimental.narrowband` provides the moving-band SIMP compliance loop for `NarrowBandCMG`. Each iteration:
 
 1. Re-extract the band from the design: `dilate(rho > threshold, margin) ∪ keep`
 2. If the band changed, rebuild the MG hierarchy and solver (eager — no recompile)
 3. One forward solve, then `compliance_and_dc` (self-adjoint — no adjoint solve)
-4. Filter the sensitivity with the O(band) narrow-band sensitivity filter (`gene.filters.create_sensitivity_filter(grid, rmin)`)
+4. Filter the sensitivity with the O(band) narrow-band sensitivity filter (`feax.experimental.create_sensitivity_filter(grid, rmin)`)
 5. Update the density with the Optimality Criteria bisection `oc_update`
 
 ```python
-from feax.gene import run_narrowband_oc
+from feax.experimental import run_narrowband_oc
 
 rho, history = run_narrowband_oc(
     grid, cmg, keep, volfrac=0.2, load_fn=load_fn,
@@ -242,14 +301,14 @@ rho, history = run_narrowband_oc(
 - **`grid_update_start`** — iterations of full-grid exploration before banding starts (`0` = band from the first iteration, for a seeded level)
 - **`jit_after`** — iteration from which cmg switches to `jit=True`; eager before. The band typically stops moving by then, so the jitted executable is reused across the tail.
 
-:::note Why OC and not MMA?
-The band's design vector changes size every iteration, and the full-grid density can reach $10^9$ cells — both rule out NLopt MMA (fixed dimension, host-memory heavy). `oc_update` is a pure-numpy O(n) bisection on the volume Lagrange multiplier and pairs naturally with the self-adjoint compliance sensitivity. For general objectives/constraints on a fixed mesh, use the MMA driver `feax.gene.optimizer.run()` instead (see [Adaptive Topology Optimization](adaptive_topology_optimization.md)).
+:::note Why OC?
+The band's design vector changes size every iteration, so the update rule must not carry state tied to the band's dimension. `oc_update` is a pure-numpy O(n) bisection on the volume Lagrange multiplier, needs no state, and pairs naturally with the self-adjoint compliance sensitivity — but it is valid only for compliance minimisation under a single volume constraint. For general objectives/constraints on a fixed mesh, use the MMA driver `feax.gene.optimizer.run()` (see [Adaptive Topology Optimization](adaptive_topology_optimization.md)). A band-aware MMA update built on the pure-JAX `feax.experimental.mma` (optimizer state kept on the full grid) is the planned generalisation of this loop.
 :::
 
 `oc_update` itself is general and mesh-agnostic — any 1-D `rho`/`dc` (band or full mesh), with `dv` as the per-element volume weight:
 
 ```python
-from feax.gene import oc_update
+from feax.experimental import oc_update
 rho_new = oc_update(rho, dc_filtered, volfrac, move=0.2, xmin=1e-3)
 ```
 
@@ -266,7 +325,7 @@ This moves the resolution ceiling from O(domain) to O(band) — the giga-voxel e
 ```python
 import numpy as onp
 import feax as fe
-from feax.gene import run_narrowband_multires
+from feax.experimental import NarrowBandCMG, run_narrowband_multires
 
 NELX, NELY, NELZ = 1200, 300, 300           # finest resolution
 VOLFRAC = 0.01
@@ -277,9 +336,9 @@ def build_fn(nx, ny, nz):
     same problem discretised differently."""
     grid = fe.StructuredGrid((nx, ny, nz))
     fixed_pred = lambda ni, nj, nk, gx, gy, gz: ni == 0        # clamp x=0 face
-    cmg = fe.NarrowBandCMG(grid, fixed_pred, nu=0.3, penal=3.0,
-                           Emin=1e-9, E0=1.0,
-                           cg_tol=1e-7, cg_maxit=300, bucket=256)
+    cmg = NarrowBandCMG(grid, fixed_pred, nu=0.3, penal=3.0,
+                        Emin=1e-9, E0=1.0,
+                        cg_tol=1e-7, cg_maxit=300, bucket=256)
     load_node = grid.node_id(nx, ny // 2, nz // 2)             # -z load at x=L centre
     keep = onp.zeros((nx, ny, nz), bool)
     keep[0, :, :] = True                                       # support face
@@ -318,13 +377,13 @@ rho = res["x"]              # (NELX, NELY, NELZ) final density grid
 - **`fe.SparseDesign`** — sparse per-cell design storage keyed by global cell id; `band_cells`, `traced_params`, `updated`
 - **`fe.NarrowBand`** — active-cell sub-mesh over a `Mesh` *or* `StructuredGrid`; gather/scatter for params and solutions; coordinate-based BCs transfer; works with any standard FEAX solver
 - **`fe.SupersetBand`** — fixed-superset manager that amortizes recompiles for moving bands
-- **`fe.NarrowBandCMG`** — matrix-free O(band) geometric-MG (MGPCG) solver for structured bands; differentiable (`custom_vjp`); coarse level via `DirectSolverOptions` (cuDSS) or `KrylovSolverOptions`
-- **`feax.gene.oc_update` / `run_narrowband_oc` / `run_narrowband_multires`** — moving-band SIMP loop with self-adjoint sensitivity (one forward solve per iteration) and the coarse-to-fine giga-voxel bootstrap
+- **`feax.experimental.NarrowBandCMG`** — matrix-free O(band) geometric-MG (MGPCG) solver for structured bands; any linear SPD `Material` (`ScalarMaterial`, `KernelMaterial`) and any `vec`; differentiable (`custom_vjp`); coarse level via `DirectSolverOptions` (cuDSS) or `KrylovSolverOptions`
+- **`feax.experimental.oc_update` / `run_narrowband_oc` / `run_narrowband_multires`** — moving-band SIMP loop with self-adjoint sensitivity (one forward solve per iteration) and the coarse-to-fine giga-voxel bootstrap
 
 **Workflow:**
 1. Define the domain as a `StructuredGrid` (or `fit` one around a geometry)
 2. Choose the active set (design threshold, voxelization, SDF, ...)
-3. Solve on the band — `NarrowBand` + any FEAX solver, or `NarrowBandCMG` for structured elasticity at scale
+3. Solve on the band — `NarrowBand` + any FEAX solver, or `NarrowBandCMG` for structured linear problems at scale
 4. For topology optimization, write `build_fn(nx, ny, nz)` and call `run_narrowband_multires`
 
 ## Further Reading
@@ -335,5 +394,5 @@ rho = res["x"]              # (NELX, NELY, NELZ) final density grid
 - `examples/advance/narrowband_lattice_homogenization.py` - Narrow band with periodic boundary conditions
 - [API: spgrid](../api/reference/feax/spgrid.md) - `StructuredGrid`, `SparseDesign`, `voxelize_mesh`
 - [API: narrowband](../api/reference/feax/narrowband.md) - `NarrowBand`, `SupersetBand`
-- [API: solvers.cmg](../api/reference/feax/solvers/cmg.md) - `NarrowBandCMG`
-- [API: gene.narrowband](../api/reference/feax/gene/narrowband.md) - `oc_update`, `run_narrowband_oc`, `run_narrowband_multires`
+- [API: experimental.cmg](../api/reference/feax/experimental/cmg.md) - `NarrowBandCMG`, `ScalarMaterial`, `KernelMaterial`, `build_geometry`
+- [API: experimental.narrowband](../api/reference/feax/experimental/narrowband.md) - `oc_update`, `run_narrowband_oc`, `run_narrowband_multires`, `create_sensitivity_filter`

@@ -86,11 +86,7 @@ ts = fe.TracedStructure.from_problem(feax_problem)
 # rebuilt only when the large torsional deformation makes it stale (adaptive
 # lag), so the AMG setup cost is amortized over the nonlinear iteration.
 # (Requires the optional `feax[amg]` extra: amjax + pyamg.)
-solver_options = fe.AMGSolverOptions(
-    near_nullspace="rigid_body",   # rigid body modes from mesh coords (auto for vec==dim)
-    solver="gmres",                # outer Krylov (robust for the changing tangent)
-    rebuild_every=None,            # adaptive lag: rebuild only when the precond goes stale
-)
+solver_options = fe.DirectSolverOptions()
 newton_options = fe.NewtonOptions(verbose=True)
 solver = fe.create_solver(
     feax_problem,

@@ -89,7 +89,8 @@ def test_sparse_design_traced_params_roundtrip():
 def test_cmg_solver_accepts_traced_params():
     grid = fe.StructuredGrid((8, 4, 4))
     fixed = lambda ni, nj, nk, nx, ny, nz: ni == 0
-    cmg = fe.NarrowBandCMG(grid, fixed, nu=0.3, penal=3.0, bucket=64)
+    from feax.experimental import NarrowBandCMG
+    cmg = NarrowBandCMG(grid, fixed, nu=0.3, penal=3.0, bucket=64)
     active = onp.arange(grid.num_cells, dtype=onp.int64)
     levels = cmg.build(active)
     tip = grid.nodes_where(lambda I, J, K: (I == 8) & (K == 0))

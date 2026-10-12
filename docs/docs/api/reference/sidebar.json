@@ -11,6 +11,15 @@
         },
         {
           "items": [
+            "reference/feax/experimental/cmg",
+            "reference/feax/experimental/mma",
+            "reference/feax/experimental/narrowband"
+          ],
+          "label": "feax.experimental",
+          "type": "category"
+        },
+        {
+          "items": [
             "reference/feax/flat/graph",
             "reference/feax/flat/pbc",
             "reference/feax/flat/solver",
@@ -26,7 +35,6 @@
             "reference/feax/gene/filters",
             "reference/feax/gene/mdmm",
             "reference/feax/gene/mesh_extraction",
-            "reference/feax/gene/narrowband",
             "reference/feax/gene/optimizer",
             "reference/feax/gene/responses"
           ],
@@ -58,7 +66,6 @@
               "type": "category"
             },
             "reference/feax/solvers/amg",
-            "reference/feax/solvers/cmg",
             "reference/feax/solvers/common",
             "reference/feax/solvers/eigen",
             "reference/feax/solvers/linear",

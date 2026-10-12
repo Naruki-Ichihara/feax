@@ -56,9 +56,6 @@ docs = [
     "sphinx",
     "sphinx-rtd-theme",
 ]
-jax = [
-    "jax[cuda13]",
-]
 sksparse = [
     "scikit-sparse",
 ]
@@ -68,6 +65,7 @@ matfree = [
 
 amg = [
     "amjax",
+    "pyamg",
 ]
 # Curved primitive meshing (sphere_mesh / cylinder_mesh) via PyVista + TetGen.
 mesh = [
@@ -78,8 +76,9 @@ mesh = [
 gmsh = [
     "gmsh",
 ]
+# CUDA runtime libraries only. JAX itself is not pinned by any extra: install
+# jax / jax[cuda12] / jax[cuda13] first (or use the NVCR container's JAX).
 cuda12 = [
-    "jax[cuda12]",
     "nvidia-cudss-cu12",
     "nvidia-cublas-cu12",
     "nvidia-cuda-runtime-cu12",
@@ -93,6 +92,7 @@ cuda12 = [
 cuda13 = [
     "nvidia-cudss-cu13",
     "nvidia-cublas",
+    "nvidia-cuda-cccl",
     "nvidia-cuda-runtime",
     "nvidia-cudnn-cu13",
     "nvidia-cuda-nvcc",

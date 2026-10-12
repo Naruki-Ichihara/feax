@@ -236,3 +236,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# thermax
+#  A separate project that lives here only for convenience while feax is
+#  developed alongside it. It has its own pyproject.toml and its own git
+#  history when it moves out, so feax never tracks it.
+thermax/

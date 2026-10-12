@@ -114,7 +114,8 @@ Solves: ρ̃ - r² ∇²ρ̃ = ρ_source
 ```python
 def create_density_filter(mesh,
                           radius: float,
-                          weight_type: str = "cone") -> Callable
+                          weight_type: str = "cone",
+                          points=None) -> Callable
 ```
 
 Create a standard density filter using distance-based weighted averaging.
@@ -134,6 +135,11 @@ where w_ij is a distance-based weight function.
   - &quot;cone&quot;: w = max(0, r - d) (default, most common)
   - &quot;gaussian&quot;: w = exp(-(d/r)^2)
   - &quot;constant&quot;: w = 1 if d &lt;= r, else 0
+- `points` - Optional (N, dim) array of filter sites, replacing the mesh
+  nodes. Pass element centroids to filter an ELEMENT-wise design
+  field; the returned function then maps (num_cells,) to
+  (num_cells,). Everything else is unchanged -- the filter only ever
+  needed coordinates.
 
 
 **Returns**:
@@ -276,28 +282,4 @@ Uses percentile-based approach to ensure exact volume fraction after Heaviside p
 >>> # Apply Heaviside projection
 >>> rho_projected = heaviside_projection(rho_normalized, beta=10.0, threshold=threshold)
 ```
-
-#### create\_sensitivity\_filter
-
-```python
-def create_sensitivity_filter(grid, rmin: float)
-```
-
-Narrow-band-native sensitivity filter (88-line ``ft=1``) for a StructuredGrid.
-
-Unlike the Helmholtz / density filters above (node-based, mesh-based, and not
-designed for a cell-based moving band), this one is CELL-based and O(band): for
-each active cell it averages the sensitivity over its in-radius ACTIVE
-neighbours using cone weights, addressing neighbours by grid arithmetic +
-``searchsorted`` into the active set — no full-grid array, so it follows the
-moving band. Intended for the analytic-sensitivity + OC workflow (it modifies
-the sensitivity heuristically; it is not a differentiable design transform —
-use Helmholtz/density for ``jax.grad`` design filtering).
-
-Returns ``filt(active_cells, rho_active, dc_active) -&gt; dc_filtered`` (all arrays
-over the active band cells), computing
-
-    dc_filt_e = Σ_n w_en ρ_n dc_n / ( Hs_e · max(1e-3, ρ_e) )
-
-with Hs_e summed over all IN-GRID neighbours (active or void).
 

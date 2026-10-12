@@ -167,3 +167,19 @@ def test_sparse_design_nbytes():
     sd = fe.SparseDesign.uniform(onp.arange(10), 1.0)
     assert sd.nbytes() == sd.ids.nbytes + sd.vals.nbytes
     assert sd.nbytes() == 10 * (4 + 8)  # int32 id + float64 value
+
+
+def test_grid_layout_is_box_mesh_layout():
+    # StructuredGrid numbering (nodes, cells, HEX8 corner order) == box_mesh
+    mesh = fe.mesh.box_mesh(size=(3.0, 2.0, 2.0), mesh_size=1.0, element_type="HEX8")
+    grid = fe.StructuredGrid.from_mesh(mesh)
+    assert (grid.nx, grid.ny, grid.nz) == (3, 2, 2)
+    assert onp.allclose(grid.spacing, 1.0) and onp.allclose(grid.origin, 0.0)
+    assert onp.array_equal(grid.cell_to_nodes(onp.arange(grid.num_cells)), onp.asarray(mesh.cells))
+    assert onp.allclose(grid.node_coords(onp.arange(grid.num_nodes)), onp.asarray(mesh.points))
+    band = fe.NarrowBand(grid, onp.arange(grid.num_cells))
+    assert onp.array_equal(onp.asarray(band.mesh.cells), onp.asarray(mesh.cells))
+    # a permuted mesh is not accepted
+    bad = fe.Mesh(onp.asarray(mesh.points)[::-1], onp.asarray(mesh.cells), ele_type="HEX8")
+    with pytest.raises(ValueError):
+        fe.StructuredGrid.from_mesh(bad)

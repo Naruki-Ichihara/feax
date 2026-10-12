@@ -16,7 +16,7 @@
 
 [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
-[![JAX](https://img.shields.io/badge/JAX-0.7%2B-green.svg)](https://github.com/google/jax) 
+[![JAX](https://img.shields.io/badge/JAX-0.11%2B-green.svg)](https://github.com/google/jax) 
 
 **FEAX** (Finite Element Analysis with JAX) is a **pure, statically-composed functional finite element engine**. The whole analysis — assembly, boundary conditions, linear/nonlinear solve, post-processing — is expressed as pure functions composed at trace time into a single static XLA program: no hidden state, no Python in the hot loop. That program is fully differentiable and composes with `jax.jit`, `jax.grad`, and `jax.vmap`, so a PDE solve becomes just another differentiable node in your JAX workflow.
 

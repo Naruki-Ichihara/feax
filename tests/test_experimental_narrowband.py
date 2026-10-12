@@ -1,9 +1,8 @@
-"""Tests for feax.gene.narrowband (OC update, moving-band SIMP loop, multires
-bootstrap) and the narrow-band sensitivity filter it uses by default.
+"""Tests for feax.experimental.narrowband (OC update, moving-band SIMP loop,
+multires bootstrap) and the narrow-band sensitivity filter it uses by default.
 
-The generic MMA pipeline driver stays in feax.gene.optimizer; run_oc was
-removed (MMA covers the generic case), so the OC machinery here is exercised
-only through the narrow-band path it exists for.
+The generic MMA pipeline driver stays in feax.gene.optimizer; the OC machinery
+lives only in the experimental narrow-band path it exists for.
 """
 
 import numpy as onp
@@ -11,18 +10,26 @@ import pytest
 
 import feax as fe
 import feax.gene as gene
-from feax.gene.narrowband import _res_ladder, _upsample, oc_update
+import feax.experimental as ex
+from feax.experimental import NarrowBandCMG
+from feax.experimental.narrowband import _res_ladder, _upsample, oc_update
 
 
 # ---------------------------------------------------------------------------
 # API surface
 # ---------------------------------------------------------------------------
 
-def test_gene_api_surface():
-    assert not hasattr(gene, "run_oc")          # removed: use optimizer.run (MMA)
-    assert gene.oc_update is gene.narrowband.oc_update
-    assert gene.run_narrowband_oc is gene.narrowband.run_narrowband_oc
-    assert gene.run_narrowband_multires is gene.narrowband.run_narrowband_multires
+def test_api_surface():
+    # the narrow-band OC path and cmg live in feax.experimental only
+    for name in ("run_oc", "narrowband", "oc_update", "run_narrowband_oc",
+                 "run_narrowband_multires", "create_sensitivity_filter"):
+        assert not hasattr(gene, name)
+    assert not hasattr(fe, "NarrowBandCMG") and not hasattr(fe.solvers, "NarrowBandCMG")
+    assert ex.oc_update is ex.narrowband.oc_update
+    assert ex.run_narrowband_oc is ex.narrowband.run_narrowband_oc
+    assert ex.run_narrowband_multires is ex.narrowband.run_narrowband_multires
+    assert ex.create_sensitivity_filter is ex.narrowband.create_sensitivity_filter
+    assert ex.NarrowBandCMG is ex.cmg.NarrowBandCMG
     from feax.gene.optimizer import Pipeline, constraint, run  # noqa: F401
 
 
@@ -96,7 +103,7 @@ def test_upsample_shape_and_range():
 
 def test_sensitivity_filter_uniform_invariant():
     grid = fe.StructuredGrid((8, 6, 6))
-    filt = gene.create_sensitivity_filter(grid, rmin=1.5)
+    filt = ex.create_sensitivity_filter(grid, rmin=1.5)
     active = onp.arange(grid.num_cells, dtype=onp.int64)
     rho = onp.full(active.size, 0.5)
     dc = onp.full(active.size, -2.0)
@@ -107,7 +114,7 @@ def test_sensitivity_filter_uniform_invariant():
 
 def test_sensitivity_filter_smooths_spike():
     grid = fe.StructuredGrid((8, 6, 6))
-    filt = gene.create_sensitivity_filter(grid, rmin=1.5)
+    filt = ex.create_sensitivity_filter(grid, rmin=1.5)
     active = onp.arange(grid.num_cells, dtype=onp.int64)
     rho = onp.full(active.size, 0.5)
     dc = onp.zeros(active.size)
@@ -131,9 +138,9 @@ def test_sensitivity_filter_smooths_spike():
 
 def _cantilever_build_fn(nx, ny, nz):
     grid = fe.StructuredGrid((nx, ny, nz))
-    cmg = fe.NarrowBandCMG(grid, lambda ni, nj, nk, gx, gy, gz: ni == 0,
-                           nu=0.3, penal=3.0, cg_tol=1e-7, cg_maxit=300,
-                           bucket=64)
+    cmg = NarrowBandCMG(grid, lambda ni, nj, nk, gx, gy, gz: ni == 0,
+                        nu=0.3, penal=3.0, cg_tol=1e-7, cg_maxit=300,
+                        bucket=64)
     load_node = grid.node_id(nx, ny // 2, nz // 2)
     keep = onp.zeros((nx, ny, nz), bool)
     keep[0, :, :] = True
@@ -149,7 +156,7 @@ _KRYLOV = fe.KrylovSolverOptions(solver="cg", tol=1e-9, maxiter=500)
 def test_run_narrowband_oc_smoke():
     parts = _cantilever_build_fn(12, 6, 6)
     volfrac = 0.3
-    rho, history = gene.run_narrowband_oc(
+    rho, history = ex.run_narrowband_oc(
         parts["grid"], parts["cmg"], parts["keep"], volfrac, parts["load_fn"],
         n_iter=6, grid_update_start=1, solver_options=_KRYLOV, verbose=False)
 
@@ -178,7 +185,7 @@ def test_band_extraction_follows_design():
     beam = (onp.abs(cy - 3) <= 1) & (onp.abs(cz - 3) <= 1)
     x_init = onp.where(beam, 0.6, 1e-3)
 
-    rho, history = gene.run_narrowband_oc(
+    rho, history = ex.run_narrowband_oc(
         parts["grid"], parts["cmg"], parts["keep"], 0.15, parts["load_fn"],
         n_iter=2, grid_update_start=0, margin=1, x_init=x_init,
         solver_options=_KRYLOV, verbose=False)
@@ -193,7 +200,7 @@ def test_band_extraction_follows_design():
 
 def test_run_narrowband_multires_smoke():
     volfrac = 0.15
-    res = gene.run_narrowband_multires(
+    res = ex.run_narrowband_multires(
         _cantilever_build_fn, (16, 8, 8), volfrac, n_levels=2, coarse_factor=2,
         floor=4, n_iter=3, coarse_iter=6, grid_update_start=1,
         solver_options=_KRYLOV, verbose=False)

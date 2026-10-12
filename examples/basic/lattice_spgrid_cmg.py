@@ -20,8 +20,8 @@ The solve is verified against a feax-assembled stiffness matrix on the
 recovered mesh: ``|| (K u - b)_free || / ||b||`` should be at the MGPCG
 tolerance.
 
-Note: cmg operates on the unit-spacing index grid, so the lattice below is
-defined directly in cell units (h = 1).
+The lattice below is defined directly in cell units (h = 1); cmg's element
+stiffness is built from the grid spacing, so any spacing works.
 """
 
 import os
@@ -31,6 +31,7 @@ import jax.numpy as np
 import trimesh
 
 import feax as fe
+from feax.experimental import NarrowBandCMG
 
 # ── 1. Lattice graph (non-grid-based) + real mesh ────────────────────────────
 # Twisted tower: square rings at several heights, each rotated by 18° w.r.t.
@@ -111,8 +112,8 @@ E0, NU, F_TOTAL = 70e3, 0.3, 500.0
 
 # Slender oblique struts are bending-dominated -> harder for the MG smoother:
 # use more smoothing sweeps and a higher PCG iteration cap than the defaults.
-cmg = fe.NarrowBandCMG(grid, fixed_pred, nu=NU, E0=E0, penal=3.0,
-                       pre=3, post=3, cg_tol=1e-9, cg_maxit=2000)
+cmg = NarrowBandCMG(grid, fixed_pred, nu=NU, E0=E0, penal=3.0,
+                    pre=3, post=3, cg_tol=1e-9, cg_maxit=2000)
 levels = cmg.build(active)
 print(f"cmg: {cmg.L} MG levels, band DOFs = {levels[0]['ndof']:,}")
 

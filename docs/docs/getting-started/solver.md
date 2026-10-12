@@ -40,7 +40,7 @@ FEAX has three solver-option classes for `create_solver`, plus a dedicated geome
 | `fe.DirectSolverOptions()` | Sparse direct factorization (cuDSS on GPU; cholmod / umfpack / spsolve on CPU) | Assembled CSR matrix | Default choice; robust and fast when memory permits |
 | `fe.KrylovSolverOptions()` | Krylov iterative (CG / BiCGSTAB / GMRES) | **Matrix-free** (residual JVP) | Memory-bound problems, periodic BCs with `P`, custom residual terms |
 | `fe.AMGSolverOptions()` | Krylov preconditioned by smoothed-aggregation **AMG** ([AMJax](https://github.com/vboussange/AMJax) + [PyAMG](https://github.com/pyamg/pyamg)) | Assembled CSR (for the AMG hierarchy) + matrix-free outer Krylov | Large scalar-elliptic problems (Poisson / thermal / diffusion); elasticity via a rigid-body near-null-space. Requires `feax[amg]` |
-| `fe.NarrowBandCMG` ([GMG](#geometric-multigrid-gmg--narrowbandcmg)) | CG preconditioned by **geometric multigrid** (grid-coarsening transfers, MGPCG) | **Matrix-free** on a `StructuredGrid` band (one shared element stiffness) | Very large voxel domains / moving narrow bands (giga-voxel topology optimization). Not a `create_solver` route — a dedicated solver class |
+| `feax.experimental.NarrowBandCMG` ([GMG](#geometric-multigrid-gmg--narrowbandcmg)) | CG preconditioned by **geometric multigrid** (grid-coarsening transfers, MGPCG) | **Matrix-free** on a `StructuredGrid` band (element matrices from a pluggable `Material`) | Very large voxel domains / moving narrow bands (giga-voxel topology optimization). Not a `create_solver` route — a dedicated (experimental) solver class |
 
 This page focuses on **configuring** the solvers and **choosing** between them. For how each one works under the hood — the cuDSS factorization phases, the AMG V-cycle, the matrix-free GMG operator — see [Solver Internals](../solver_internals.mdx).
 
@@ -169,12 +169,14 @@ AMG is never chosen by auto-selection — it must be requested explicitly with `
 
 ### Geometric Multigrid (GMG) — `NarrowBandCMG`
 
-For domains that live on a **structured voxel grid** (a [`StructuredGrid`](./data_storage.md#structuredgrid--the-implicit-voxel-grid)), feax provides a matrix-free geometric multigrid solver, `fe.NarrowBandCMG`. Unlike the options above it is not a `solver_options` route through `create_solver` — it is a dedicated solver class that exploits the grid structure directly: transfers and smoothers come from grid coarsening (no algebraic setup), every level is matrix-free (one shared element stiffness), and the cost and memory are **O(active band)**, not O(domain). It currently targets 3D SIMP-style elasticity (`vec=3`, HEX8 voxels).
+For domains that live on a **structured voxel grid** (a [`StructuredGrid`](./data_storage.md#structuredgrid--the-implicit-voxel-grid)), feax provides a matrix-free geometric multigrid solver, `feax.experimental.NarrowBandCMG`. Unlike the options above it is not a `solver_options` route through `create_solver` — it is a dedicated solver class that exploits the grid structure directly: transfers and smoothers come from grid coarsening (no algebraic setup), every level is matrix-free, and the cost and memory are **O(active band)**, not O(domain). It handles any *linear, symmetric positive definite* law on HEX8 voxels with any number of DOFs per node: the constitutive law is a `Material` — `ScalarMaterial` (one reference element matrix times a per-cell scalar, e.g. SIMP elasticity or conduction) or `KernelMaterial` (built from a feax `Problem`'s `tensor_map`, e.g. anisotropic elasticity).
 
 ```python
+from feax.experimental import NarrowBandCMG
+
 grid   = fe.StructuredGrid((128, 64, 64))
-cmg    = fe.NarrowBandCMG(grid, fixed_pred=lambda ni, nj, nk, nx, ny, nz: ni == 0,
-                          nu=0.3, penal=3.0)
+cmg    = NarrowBandCMG(grid, fixed_pred=lambda ni, nj, nk, nx, ny, nz: ni == 0,
+                       nu=0.3, penal=3.0)              # default: isotropic SIMP elasticity
 levels = cmg.build(active_cells)                    # cells carrying material
 b      = cmg.load_vector(levels, tip_nodes, comp=2, value=-1.0)
 solver = cmg.create_solver(levels, b)               # None -> cuDSS coarsest level
@@ -190,7 +192,7 @@ The MGPCG iteration is jittable and differentiable (implicit-diff `custom_vjp`),
 | Structured grid, moderate size | `Direct` (cuDSS) is usually simplest |
 | Structured grid, very large / moving active band (topology optimization) | `NarrowBandCMG` — see the [Narrow-Band & Giga-Voxel tutorial](../advanced/narrowband_topology_optimization.md) |
 
-See the [`solvers.cmg` API reference](../api/reference/feax/solvers/cmg.md) for `n_levels`, `bucket` (recompile amortization for moving bands), and the smoother knobs.
+See the [`experimental.cmg` API reference](../api/reference/feax/experimental/cmg.md) for the materials, `n_levels`, `bucket` (recompile amortization for moving bands), and the smoother knobs.
 
 ## Automatic Solver Selection
 
@@ -269,7 +271,7 @@ With `KrylovSolverOptions(solver="auto")`, the iterative method is chosen by mat
 | Large elasticity / structural problem | `AMGSolverOptions(near_nullspace="rigid_body")` |
 | Need a symmetric solver but using `symmetric_elimination=False` | `DirectSolverOptions(solver="spsolve")` or `"umfpack"` |
 | Periodic BCs with prolongation matrix `P` | `KrylovSolverOptions()` (matrix-free) or `DirectSolverOptions()` / `AMGSolverOptions()` (assembled `PᵀJP`) |
-| Structured voxel grid too large even for matrix-free Krylov / moving narrow band | [`fe.NarrowBandCMG`](#geometric-multigrid-gmg--narrowbandcmg) (GMG, O(band)) |
+| Structured voxel grid too large even for matrix-free Krylov / moving narrow band | [`feax.experimental.NarrowBandCMG`](#geometric-multigrid-gmg--narrowbandcmg) (GMG, O(band)) |
 | Extra residual term (e.g. cohesive interface) | `KrylovSolverOptions()` (hybrid matrix-free) or `DirectSolverOptions()` (assembled sparse tangent) with `extra_residual_fn` |
 | Extreme stiffness contrast (ill-conditioned Jacobian) | `DirectSolverOptions(solver="spsolve")` on CPU |
 

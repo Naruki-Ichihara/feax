@@ -50,8 +50,15 @@ Density-based topology optimization with adaptive remeshing:
 - **[feax.gene.adaptive](./reference/feax/gene/adaptive.md)** - Adaptive remeshing and field transfer
 - **[feax.gene.filters](./reference/feax/gene/filters.md)** - Density filters and Heaviside projection
 - **[feax.gene.responses](./reference/feax/gene/responses.md)** - Compliance and volume functions
-- **[feax.gene.narrowband](./reference/feax/gene/narrowband.md)** - Narrow-band OC drivers (`oc_update`, `run_narrowband_oc`, `run_narrowband_multires`)
 - **[feax.gene.mdmm](./reference/feax/gene/mdmm.md)** - Constrained optimization (MDMM)
+
+## Experimental
+
+APIs that are usable but may change without a deprecation cycle:
+
+- **[feax.experimental.cmg](./reference/feax/experimental/cmg.md)** - Matrix-free O(band) geometric multigrid on a `StructuredGrid` band (`NarrowBandCMG`, `ScalarMaterial`, `KernelMaterial`, `build_geometry`)
+- **[feax.experimental.narrowband](./reference/feax/experimental/narrowband.md)** - Moving-band OC loop and multires bootstrap (`oc_update`, `run_narrowband_oc`, `run_narrowband_multires`, `create_sensitivity_filter`)
+- **[feax.experimental.mma](./reference/feax/experimental/mma.md)** - Pure-JAX MMA / GCMMA (`MMA`, `GCMMA`)
 
 ## Flat Toolkit
 

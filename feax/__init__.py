@@ -176,7 +176,6 @@ from .solution import Solution
 from .mesh import Mesh
 from .spgrid import SparseDesign, StructuredGrid, voxelize_mesh
 from .narrowband import NarrowBand, SupersetBand
-from .solvers.cmg import NarrowBandCMG
 from .problem import MatrixView, Problem
 from .solver import (
     create_solver,

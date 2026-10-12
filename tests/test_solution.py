@@ -195,7 +195,8 @@ def test_solution_as_direct_coefficient_vector_and_errors():
 
 def test_cmg_return_solution():
     grid = fe.StructuredGrid((8, 4, 4))
-    cmg = fe.NarrowBandCMG(grid, lambda ni, nj, nk, nx, ny, nz: ni == 0,
+    from feax.experimental import NarrowBandCMG
+    cmg = NarrowBandCMG(grid, lambda ni, nj, nk, nx, ny, nz: ni == 0,
                            nu=0.3, penal=3.0, bucket=64)
     active = onp.arange(grid.num_cells, dtype=onp.int64)
     levels = cmg.build(active)

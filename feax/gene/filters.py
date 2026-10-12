@@ -262,7 +262,8 @@ def _compute_density_filter_weights_sparse(points, radius: float,
     return sparse_matrix, row_sums
 
 
-def create_density_filter(mesh, radius: float, weight_type: str = "cone") -> Callable:
+def create_density_filter(mesh, radius: float, weight_type: str = "cone",
+                          points=None) -> Callable:
     """Create a standard density filter using distance-based weighted averaging.
 
     This is the classic topology optimization filter that computes weighted
@@ -279,6 +280,11 @@ def create_density_filter(mesh, radius: float, weight_type: str = "cone") -> Cal
             - "cone": w = max(0, r - d) (default, most common)
             - "gaussian": w = exp(-(d/r)^2)
             - "constant": w = 1 if d <= r, else 0
+        points: Optional (N, dim) array of filter sites, replacing the mesh
+            nodes. Pass element centroids to filter an ELEMENT-wise design
+            field; the returned function then maps (num_cells,) to
+            (num_cells,). Everything else is unchanged -- the filter only ever
+            needed coordinates.
 
     Returns:
         filter_fn: A pure-JAX function (rho) -> rho_filtered; compose it
@@ -306,7 +312,8 @@ def create_density_filter(mesh, radius: float, weight_type: str = "cone") -> Cal
         - For large meshes, pre-computation of weights may require significant memory
         - The filter preserves the integral of the density field (mass conservation)
     """
-    points = mesh.points  # (num_nodes, dim)
+    if points is None:
+        points = mesh.points  # (num_nodes, dim)
 
     # Pre-compute sparse filter weight matrix (done once at filter creation)
     weight_matrix, row_sums = _compute_density_filter_weights_sparse(points, radius, weight_type)
@@ -416,57 +423,3 @@ def compute_volume_fraction_threshold(rho, target_volume_fraction):
     """
     percentile = (1.0 - target_volume_fraction) * 100.0
     return np.percentile(rho, percentile)
-
-
-def create_sensitivity_filter(grid, rmin: float):
-    """Narrow-band-native sensitivity filter (88-line ``ft=1``) for a StructuredGrid.
-
-    Unlike the Helmholtz / density filters above (node-based, mesh-based, and not
-    designed for a cell-based moving band), this one is CELL-based and O(band): for
-    each active cell it averages the sensitivity over its in-radius ACTIVE
-    neighbours using cone weights, addressing neighbours by grid arithmetic +
-    ``searchsorted`` into the active set — no full-grid array, so it follows the
-    moving band. Intended for the analytic-sensitivity + OC workflow (it modifies
-    the sensitivity heuristically; it is not a differentiable design transform —
-    use Helmholtz/density for ``jax.grad`` design filtering).
-
-    Returns ``filt(active_cells, rho_active, dc_active) -> dc_filtered`` (all arrays
-    over the active band cells), computing
-
-        dc_filt_e = Σ_n w_en ρ_n dc_n / ( Hs_e · max(1e-3, ρ_e) )
-
-    with Hs_e summed over all IN-GRID neighbours (active or void).
-    """
-    import numpy as onp
-
-    r = int(onp.ceil(rmin)) - 1
-    offs = [(di, dj, dk) for di in range(-r, r + 1)
-            for dj in range(-r, r + 1) for dk in range(-r, r + 1)]
-    w0 = onp.array([max(0.0, rmin - onp.sqrt(di * di + dj * dj + dk * dk))
-                    for di, dj, dk in offs])
-    nx, ny, nz = grid.nx, grid.ny, grid.nz
-
-    def filt(active_cells, rho_active, dc_active):
-        ac = onp.asarray(active_cells, onp.int64)
-        na = ac.size
-        ex, ey, ez = grid.cell_ijk(ac)
-        rho_pad = onp.concatenate([onp.asarray(rho_active, float), [0.0]])   # sink at na
-        dc_pad = onp.concatenate([onp.asarray(dc_active, float), [0.0]])
-        num = onp.zeros(na)
-        Hs = onp.zeros(na)
-        for (di, dj, dk), w in zip(offs, w0):
-            if w <= 0.0:
-                continue
-            jx, jy, jz = ex + di, ey + dj, ez + dk
-            inb = ((jx >= 0) & (jx < nx) & (jy >= 0) & (jy < ny)
-                   & (jz >= 0) & (jz < nz))
-            Hs += onp.where(inb, w, 0.0)
-            cell = grid.cell_id(onp.clip(jx, 0, nx - 1), onp.clip(jy, 0, ny - 1),
-                                onp.clip(jz, 0, nz - 1))
-            pos = onp.clip(onp.searchsorted(ac, cell), 0, na - 1)
-            hit = inb & (ac[pos] == cell)
-            idx = onp.where(hit, pos, na)                # miss -> sink (0)
-            num += w * rho_pad[idx] * dc_pad[idx]
-        return num / (Hs * onp.maximum(1e-3, onp.asarray(rho_active, float)) + 1e-30)
-
-    return filt

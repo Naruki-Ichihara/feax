@@ -17,7 +17,7 @@ Any mesh-defined space embeds into an enclosing grid: :meth:`StructuredGrid.fit`
 places a grid over the bounding box of arbitrary points, and
 :func:`voxelize_mesh` marks the grid cells an unstructured mesh occupies.
 The resulting active-cell set feeds :class:`feax.NarrowBand` (explicit O(band)
-sub-mesh for any feax solver) or :class:`feax.solvers.cmg.NarrowBandCMG`
+sub-mesh for any feax solver) or :class:`feax.experimental.NarrowBandCMG`
 (matrix-free geometric multigrid directly on the grid).
 
 ## StructuredGrid Objects
@@ -209,7 +209,7 @@ def traced_params(active_cells, *, default=0.0, extra_vars=())
 
 Gather the stored design onto ``active_cells`` as a
 :class:`feax.TracedParams` — the container every feax solver (including
-:class:`~feax.solvers.cmg.NarrowBandCMG`&#x27;s) accepts:
+:class:`~feax.experimental.NarrowBandCMG`&#x27;s) accepts:
 ``volume_vars = (design_on_band, *extra_vars)``.
 
 #### updated

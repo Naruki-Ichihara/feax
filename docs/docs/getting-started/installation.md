@@ -4,7 +4,7 @@ This guide provides detailed instructions for installing FEAX and its dependenci
 
 ## JAX
 
-FEAX requires JAX as its core dependency. JAX provides automatic differentiation and JIT compilation capabilities.
+FEAX requires JAX (**0.11 or later**, required by `asdex`) as its core dependency. JAX provides automatic differentiation and JIT compilation capabilities. FEAX does not install JAX for you — no extra pulls it in — so install the variant matching your hardware first.
 
 ### CPU-only Installation
 
@@ -78,11 +78,10 @@ FEAX provides optional dependency groups via `pyproject.toml`:
 
 | Extra | Contents | Usage |
 |---|---|---|
-| `.[cuda12]` | JAX (cuda12) + cuDSS for CUDA 12 | GPU acceleration (CUDA 12) |
+| `.[cuda12]` | cuDSS + cuBLAS + cuDNN for CUDA 12 | GPU acceleration (CUDA 12, without JAX) |
 | `.[cuda13]` | cuDSS + cuBLAS + cuDNN for CUDA 13 | GPU acceleration (CUDA 13, without JAX) |
-| `.[jax]` | `jax[cuda13]` | JAX for CUDA 13 (use with `cuda13`) |
 | `.[sksparse]` | `scikit-sparse` | CPU host-side direct solvers (`cholmod`, `umfpack`) |
-| `.[amg]` | `amjax` (+ `pyamg`) | Algebraic multigrid solver (`AMGSolverOptions`) |
+| `.[amg]` | `amjax` + `pyamg` | Algebraic multigrid solver (`AMGSolverOptions`) |
 | `.[matfree]` | `matfree` | Matrix-free eigensolver utilities (linear buckling) |
 | `.[dev]` | pytest, black, ruff, mypy | Development and testing |
 
@@ -98,10 +97,11 @@ apt-get install -y libsuitesparse-dev
 pip install feax[sksparse]
 ```
 
-For GPU use outside Docker, combine `cuda13` with `jax`:
+For GPU use outside Docker, install JAX first, then the CUDA extra:
 
 ```bash
-pip install "feax[cuda13,jax]"
+pip install -U "jax[cuda13]"
+pip install "feax[cuda13]"
 ```
 
 ### cuDSS Direct Solver
@@ -134,7 +134,9 @@ upgrades NumPy, which breaks any environment that must keep its existing JAX
 
 ## Docker
 
-FEAX provides a Dockerfile based on NVIDIA's JAX image (`nvcr.io/nvidia/jax:25.10-py3`), which includes JAX pre-compiled for CUDA 13. JAX is **not** reinstalled during the build.
+FEAX provides a Dockerfile based on NVIDIA's JAX image (`nvcr.io/nvidia/jax:26.08-py3`, JAX 0.11 / CUDA 13), which includes JAX pre-compiled for CUDA 13. JAX is **not** reinstalled during the build: the image's `jax` / `jaxlib` versions are pinned through `PIP_CONSTRAINT=/etc/pip-constraints-jax.txt`, which also stays active inside the container.
+
+> **Note:** Inside the container, a `pip install` whose dependencies require a different JAX fails with `ResolutionImpossible` instead of replacing the base JAX (a PyPI `jax`/`jaxlib` over the NVCR build breaks the CUDA plugin with `PJRT_FFI_UserData_Add_Args size` errors). Install such packages with `--no-deps`.
 
 ### Build Arguments
 
