@@ -47,6 +47,14 @@ from .options import (
     resolve_direct_solver,
     resolve_iterative_solver,
 )
+from .nullspace import (
+    NullspaceConstraint,
+    component_labels,
+    create_nullspace_ops,
+    mass_lumped_weights,
+    projected_operator,
+    validate_nullspace_constraint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +179,7 @@ def create_linear_solver(
     traced_params=None,
     symmetric_elimination: bool = True,
     traced_structure=None,
+    nullspace: Optional[NullspaceConstraint] = None,
 ) -> Callable[[Any, np.ndarray], np.ndarray]:
     """Create a differentiable solver for linear FE problems.
 
@@ -198,7 +207,11 @@ def create_linear_solver(
         Use symmetric Dirichlet elimination (zero BC rows *and* columns). Linear
         FE operators are symmetric after symmetric elimination, so the Krylov
         adjoint reuses the forward matvec (``Jᵀ = J``).
-
+    nullspace : NullspaceConstraint, optional
+        ``NullspaceConstraint.constant_mean_zero()`` enables the scalar
+        pure-Neumann quotient solve. It requires explicit CG, no Dirichlet
+        constraints, and one scalar FE mesh; disconnected components each
+        receive an independent constant-mode gauge.
     Returns
     -------
     differentiable_solve : callable
@@ -243,6 +256,14 @@ def create_linear_solver(
     # Linear FE problems are typically SPD after Dirichlet elimination.
     # Resolve "auto" eagerly so low-level factories never receive unresolved options.
     default_matrix_property = MatrixProperty.SPD
+
+    # A nullspace solve never selects a backend implicitly: v1 is explicitly
+    # matrix-free CG only.  Validate before filling the normal iterative default.
+    if nullspace is not None:
+        validate_nullspace_constraint(
+            nullspace, problem, bc, solver_options, adjoint_solver_options,
+            symmetric_elimination=symmetric_elimination,
+        )
 
     if solver_options is None:
         solver_options = KrylovSolverOptions()
@@ -336,6 +357,15 @@ def create_linear_solver(
         )
     x0_fn = solver_options.x0_fn if isinstance(solver_options, KrylovSolverOptions) else None
 
+    # Static FE geometry supplies the mass-lumped physical mean.  The actual
+    # projection maps contain JAX operations only and are safe under jit/vmap.
+    if nullspace is not None:
+        _null_project, _null_gauge, _null_gauge_transpose = create_nullspace_ops(
+            mass_lumped_weights(problem), component_labels(problem)
+        )
+    else:
+        _null_project = _null_gauge = _null_gauge_transpose = None
+
     # Pre-warm with the CSR Jacobian when a direct solver is used so the cuDSS
     # symbolic structure matches the canonical CSR fed at solve time. (FEM
     # patterns are structurally symmetric, so J and J^T share structure and the
@@ -404,17 +434,25 @@ def create_linear_solver(
                 bc_rows=effective_bc.bc_rows, bc_vals=effective_bc.bc_vals)
             x0 = _x0_fn(initial_guess)
 
-        delta_sol = linear_solve_fn(op, b, x0)
+        solve_op = projected_operator(op, _null_project) if nullspace is not None else op
+        if nullspace is not None:
+            # Do not project b: compatibility is the caller's responsibility.
+            # Projecting only the initial Krylov iterate selects a quotient
+            # representative without changing the supplied PDE.
+            x0 = _null_project(x0) if x0 is not None else np.zeros_like(b)
+
+        delta_sol = linear_solve_fn(solve_op, b, x0)
 
         if solver_options.check_convergence:
             delta_sol = check_convergence(
-                A=op, x=delta_sol, b=b,
+                A=solve_op, x=delta_sol, b=b,
                 solver_options=solver_options,
                 matrix_view=problem.matrix_view,
                 solver_label="Linear solver",
             )
 
-        return initial_guess + delta_sol
+        sol = initial_guess + delta_sol
+        return _null_gauge(sol) if nullspace is not None else sol
 
     def f_fwd(traced_params, initial_guess, effective_bc, ts):
         if _reuse_factor:
@@ -460,6 +498,12 @@ def create_linear_solver(
             _, _vjp = jax.vjp(
                 lambda s: res_bc_parametric(s, traced_params, effective_bc, ts), sol)
             J_adjoint = lambda w: _vjp(w)[0]
+        if nullspace is not None:
+            # The forward result is C(u), with C the mass-zero gauge map.
+            # Its cotangent is C^T(v); it lies in the constant-mode quotient.
+            J_adjoint = projected_operator(J_adjoint, _null_project)
+            v = _null_gauge_transpose(v)
+
         adjoint_vec = linear_solve_adjoint(
             J_adjoint, v, adjoint_solver_options, problem.matrix_view,
             effective_bc,
