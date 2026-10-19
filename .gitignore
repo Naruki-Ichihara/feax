@@ -245,3 +245,8 @@ thermax/
 
 # Tracked benchmark result sets (bench.csv itself stays local; *.csv above ignores it)
 !examples/benchmark/results/*.csv
+
+# slides
+#  open-slide deck workspace developed alongside feax. Separate project, never
+#  tracked here (same treatment as thermax/ above).
+slides/

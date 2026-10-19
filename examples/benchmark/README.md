@@ -1,5 +1,10 @@
 # feax benchmarks
 
+| Script | What it measures |
+|---|---|
+| `bench_linear_elasticity.py` | One linear solve (and its gradient) per call, across solvers and execution modes |
+| `bench_topopt_gcmma.py` | A whole topology optimization driven by the in-house GCMMA |
+
 ## `bench_linear_elasticity.py`
 
 Scaling benchmark for a linear-elasticity **cantilever** across a DOF sweep, in
@@ -117,3 +122,35 @@ adjoint, where `direct` reuses its factorization and `amg` its hierarchy; the
 `vmap-rhs` column models *"one matrix, many RHS,"* where `direct` amortizes its
 factorization and wins. Also note accuracy is not equalized: `direct` is exact to
 round-off while `amg`/`krylov` stop at `tol` (default `1e-8`).
+
+## `bench_topopt_gcmma.py`
+
+Isotropic version of `examples/advance/anisotropic_topology_optimization_3d.py`:
+the same 100 x 5 x 20 TET4 cantilever, clamp, load patch, Heaviside projection
+and volume constraint, with a SIMP isotropic material, one nodal density field,
+the lightweight distance-weighted density filter (cone weights, a sparse
+mat-vec) instead of the Helmholtz filter, and `feax.experimental.mma.GCMMA`
+instead of NLopt.
+
+```bash
+python bench_topopt_gcmma.py                                   # direct, h = 2, 1.5, 1, 30 iterations
+python bench_topopt_gcmma.py --solver amg --mesh-sizes 1.5 1 0.75 --iters 50
+python bench_topopt_gcmma.py --modes solve --save-dir out_topopt   # also write the final densities
+```
+
+| Mode | What runs |
+|---|---|
+| `run` | Host loop calling one compiled `GCMMA.step` `--iters` times, reading the inner-iteration count back each step |
+| `solve` | `GCMMA.solve_with_history` under `jax.jit`: the whole optimization is one XLA program |
+
+Both run a fixed number of outer iterations (no early stop), compile ahead of
+time (`compile_s` has no execution in it), and should end on the same design;
+the script prints the difference. Per row: `total_s` for the whole optimization,
+`per_iter_s`, `evals` (value-and-gradient evaluations, i.e. forward + adjoint
+solves, including GCMMA's inner re-evaluations), `mean_inner`, the final scaled
+objective, compliance, volume fraction and KKT norm, and `const_mb`, the closure
+constants still captured by the traced program. The TracedStructure (with the
+AMG hierarchy), the initial guess, the filter's sparse weight matrix and the
+nodal volume weights travel as one pytree jit argument, so `const_mb` should stay small and flat across
+mesh sizes; a growing value means something mesh-sized is being closed over.
+Rows append to `bench_topopt.csv` (git-ignored).
