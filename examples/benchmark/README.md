@@ -205,11 +205,17 @@ few are checked against a plain direct solve.
 
 ```bash
 python bench_shared_factor_pcg.py                         # 100k / 254k / 500k DOF, B = 10, sigma = 0.3
+python bench_shared_factor_pcg.py --dofs 500000 --batch 100 --case-chunk 10
 ```
 
-On A100 with `sigma = 0.3` CG needs ~27 iterations regardless of size and the
-cost per case is ~6.8x lower than solving each case directly (0.80 s vs 5.52 s
-at 500k DOF), with a relative error ~1e-12; only one factorization is ever held.
+`--case-chunk C` assembles and solves the cases in groups of `C`, one after
+another, all with the same factorization, so only one group of `K_i` is stored.
+
+On A100 with `sigma = 0.3` CG needs ~27 iterations regardless of size, with a
+relative error ~1e-12 against a direct solve; only one factorization is ever
+held. At 500k DOF the cost per case is 0.80 s for B = 10 (6.9x lower than a
+direct solve of each case, 5.5 s) and 0.29 s for B = 100 in groups of 10
+(19.5x), as the single factorization is shared by more cases.
 
 ## `bench_topopt_batched_shared.py`
 

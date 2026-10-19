@@ -30,6 +30,11 @@ relative error of the PCG solution). Rows append to ``bench_shared_factor.csv``.
 Run:
     python bench_shared_factor_pcg.py
     python bench_shared_factor_pcg.py --dofs 500000 --batch 50 --sigma 0.5
+    python bench_shared_factor_pcg.py --dofs 500000 --batch 100 --case-chunk 10
+
+With ``--case-chunk C`` the cases are assembled and solved in groups of C, one
+group after another, all with the same factorization: only one group of K_i is
+ever stored (B = 100 at 500k DOF would otherwise need 29 GB just for them).
 """
 import argparse
 import csv
@@ -57,6 +62,10 @@ def parse_args(argv=None):
                    help="Random Fourier features per field.")
     p.add_argument("--tol", type=float, default=1e-8, help="PCG relative residual tolerance.")
     p.add_argument("--maxiter", type=int, default=500, help="PCG iteration cap.")
+    p.add_argument("--case-chunk", type=int, default=0,
+                   help="Assemble and solve the cases in groups of this size, one group "
+                        "after another, all sharing the one factorization (0 = all at "
+                        "once). Bounds the memory of the stored K_i to one group.")
     p.add_argument("--ref-cases", type=int, default=3,
                    help="Cases also solved by a plain direct solve (timing + error).")
     p.add_argument("--seed", type=int, default=0)
@@ -157,9 +166,13 @@ def main(argv=None):
             kw, kp = jax.random.split(key)
             omega = jax.random.normal(kw, (args.batch, args.n_features, 3)) / args.corr_len
             phase = jax.random.uniform(kp, (args.batch, args.n_features), maxval=2 * jnp.pi)
-            g = jnp.sqrt(2.0 / args.n_features) * jnp.cos(
-                jnp.einsum("nd,bfd->bnf", pts, omega) + phase[:, None, :]).sum(-1)
-            Es = E0 * jnp.exp(args.sigma * g - 0.5 * args.sigma ** 2)      # (B, n_nodes)
+            # One field at a time: all B at once would hold a (B, n_nodes, features)
+            # temporary (8.5 GB for B = 100 at 500k DOF).
+            def field(wp):
+                w, ph = wp
+                g = jnp.sqrt(2.0 / args.n_features) * jnp.cos(pts @ w.T + ph).sum(-1)
+                return E0 * jnp.exp(args.sigma * g - 0.5 * args.sigma ** 2)
+            Es = jax.jit(lambda o, p: jax.lax.map(field, (o, p)))(omega, phase)  # (B, n_nodes)
             E_bar = Es.mean(0)
 
             J_fn = create_J_bc_csr_parametric(problem, symmetric=True)
@@ -170,16 +183,14 @@ def main(argv=None):
                               total_repeat_length=indices.shape[0])
             f = -jax.jit(res_fn)(u0, tp(E_bar), bc, ts)                    # load (E-free)
 
-            # 1) assemble the B matrices (one at a time: bounded memory)
-            assemble = jax.jit(lambda Es: jax.lax.map(
-                lambda E: J_fn(u0, tp(E), bc, ts).data, Es))
-            block(assemble(Es))                                             # compile + warm
-            t_asm, data = timed(assemble, Es)                               # (B, nnz)
-
-            # 2) ONE factorization: K_0 = K(E_bar), SPD, full storage
+            # 1) ONE factorization: K_0 = K(E_bar), SPD, full storage
             fact = jax.jit(lambda d: factorize(d, indptr, indices, mtype_id=3, mview_id=0))
             block(fact(J0.data))                                            # compile + warm
             t_fac, token = timed(fact, J0.data)
+
+            # 2) the K_i of one group of cases (assembled one at a time: bounded memory)
+            assemble = jax.jit(lambda Es: jax.lax.map(
+                lambda E: J_fn(u0, tp(E), bc, ts).data, Es))
 
             # 3) batched PCG, preconditioner = back-substitution with K_0's factors
             def spmv(d, x):
@@ -217,10 +228,28 @@ def main(argv=None):
                 X, R, _, _, done, its, _ = jax.lax.while_loop(cond, body, state)
                 return X, its, done
 
-            block(pcg(data, f, token))                                      # compile + warm
-            t_pcg, (X, its, done) = timed(pcg, data, f, token)
-            its = onp.asarray(its)
-            if not bool(jnp.all(done)):
+            # Groups of C cases, one after another; the last group is padded by
+            # repeating its final case (the padded results are dropped).
+            C = args.case_chunk if 0 < args.case_chunk < args.batch else args.batch
+            groups = []
+            for s0 in range(0, args.batch, C):
+                idx = onp.arange(s0, s0 + C).clip(max=args.batch - 1)
+                groups.append((idx, min(C, args.batch - s0)))
+            block(pcg(assemble(Es[groups[0][0]]), f, token))                # compile + warm
+            t_asm = t_pcg = 0.0
+            Xs, its_all, done_all = [], [], []
+            for idx, keep in groups:
+                t_a, data = timed(assemble, Es[idx])                        # (C, nnz)
+                t_p, (Xg, itg, dg) = timed(pcg, data, f, token)
+                del data
+                t_asm += t_a
+                t_pcg += t_p
+                Xs.append(Xg[:keep]); its_all.append(onp.asarray(itg)[:keep])
+                done_all.append(onp.asarray(dg)[:keep])
+            X = jnp.concatenate(Xs)
+            its = onp.concatenate(its_all)
+            done = onp.concatenate(done_all)
+            if not done.all():
                 print(f"  WARNING: {int((~done).sum())} case(s) hit --maxiter")
 
             # 4) reference: plain direct solve of the first few cases, one by one
@@ -243,7 +272,8 @@ def main(argv=None):
                        iters_max=int(its.max()), ref_per_case_s=ref_case,
                        speedup_vs_direct=ref_case / (total / args.batch),
                        max_rel_err=max(errs), note="")
-            print(f"  assemble {args.batch} K_i: {t_asm:7.3f}s   factor K_0 once: {t_fac:7.3f}s   "
+            print(f"  {args.batch} cases in {len(groups)} group(s) of {C}:  "
+                  f"assemble K_i: {t_asm:7.3f}s   factor K_0 once: {t_fac:7.3f}s   "
                   f"PCG: {t_pcg:7.3f}s  (iters mean {its.mean():.1f}, max {its.max()})")
             print(f"  shared factor: {total / args.batch:.4f}s/case   direct one by one: "
                   f"{ref_case:.4f}s/case   speed-up x{ref_case / (total / args.batch):.1f}   "
