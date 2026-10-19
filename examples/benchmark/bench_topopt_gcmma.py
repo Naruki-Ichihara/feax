@@ -1,19 +1,22 @@
 """Benchmark: isotropic 3-D topology optimization driven by the in-house GCMMA.
 
-Based on ``examples/advance/anisotropic_topology_optimization_3d.py`` with the
-anisotropy removed: the same cantilever box, boundary conditions, Heaviside
-projection and volume constraint, but a fully isotropic SIMP material, a single
-nodal density field, and the lightweight distance-weighted density filter (a
-sparse matrix-vector product, no PDE solve) instead of the Helmholtz filter.
-NLopt's LD_MMA is replaced by :class:`feax.experimental.mma.GCMMA`, the
-pure-JAX GCMMA whose loops are all traced.
+The structure is the cantilever of ``bench_linear_elasticity.py`` (same box,
+HEX8 structured grid, DOF sweep, clamp and tip traction), so the per-solve cost
+here can be read against that benchmark. Design follows
+``examples/advance/anisotropic_topology_optimization_3d.py`` with the anisotropy
+removed: SIMP, Heaviside projection and a volume constraint, a single nodal
+density field, and the lightweight distance-weighted density filter (a sparse
+matrix-vector product, no PDE solve) instead of the Helmholtz filter. NLopt's
+LD_MMA is replaced by :class:`feax.experimental.mma.GCMMA`, the pure-JAX GCMMA
+whose loops are all traced.
 
-Physical setup (same as the base example):
+Physical setup (= bench_linear_elasticity.py):
 
-    * Box ``[0, L] x [0, W] x [0, H]`` = ``100 x 5 x 20``, TET4 ``box_mesh``
+    * Box ``[0, L] x [0, W] x [0, H]`` = ``8 x 2 x 2``, HEX8 ``StructuredGrid``
+      refined to each ``--dofs`` target with ~cubic cells
     * Left face ``x = 0`` clamped
-    * Traction ``-z`` on the lower quarter of the right face (``x = L, z < H/4``)
-    * SIMP ``E(rho) = E0 * (eps + (1 - eps) * rho**p)``, ``nu`` constant
+    * Uniform traction ``(0, 0, 1e-3)`` on the whole right face ``x = L``
+    * SIMP ``E(rho) = E0 * (eps + (1 - eps) * rho**p)``, ``E0 = 70e3``, ``nu = 0.3``
 
 Optimization problem in Svanberg's form (scaled so the multiplier stays far
 below GCMMA's elastic penalty ``c = 1000``):
@@ -26,7 +29,9 @@ so every mode does the same work):
 
 * ``run``   -- host loop over a jitted ``GCMMA.step`` (one compiled step called
                ``--iters`` times; the inner-iteration count is read back every
-               step, as a logging driver would).
+               step, as a logging driver would). With ``--solver amg`` and
+               ``--amg-rebuild-every N`` the AMG hierarchy is rebuilt on the host
+               from the current design every N iterations (see below).
 * ``solve`` -- ``GCMMA.solve_with_history`` under ``jax.jit``: the whole
                optimization, init included, is ONE XLA program.
 
@@ -39,12 +44,35 @@ into the executables. ``const_mb`` reports what the traced program still
 captures, as a check that this holds (it should stay well under 1 MB and not
 grow with the mesh).
 
+The mesh is sized from ``--dofs`` targets (the same 50k..1M sweep and
+resolution rule as ``bench_linear_elasticity.py``). The filter radius
+defaults to ``--filter-radius-cells`` element sizes so every mesh keeps the same
+neighbourhood per node, and the filter weights are built with a KD-tree (the
+all-pairs builder in ``feax.gene`` does not scale to 1M DOF).
+
+AMG rebuild: the hierarchy built in ``create_solver`` comes from a uniform-density
+sample. As the design turns black-and-white (stiffness contrast ~1/SIMP_EPSILON)
+that fixed V-cycle degrades and CG iterations grow ~10x. ``--amg-rebuild-every N``
+reassembles the Jacobian at the current design every N outer iterations, rebuilds
+the hierarchy with PyAMG and swaps it into the TracedStructure. Because the
+hierarchy is a jit argument the step does not recompile unless its level shapes
+change. ``rebuild_s`` (assembly + PyAMG) and ``recompile_s`` are included in
+``total_s`` and also reported separately. ``solve`` mode cannot rebuild (the
+whole optimization is one XLA program), so it always uses the initial hierarchy.
+
 Results are appended to ``bench_topopt.csv`` next to this script (git-ignored).
 
 Run:
     python bench_topopt_gcmma.py
-    python bench_topopt_gcmma.py --mesh-sizes 2 1.5 1 --solver amg --iters 50
+    python bench_topopt_gcmma.py --dofs 50000 100000 --solver amg --iters 50
+    python bench_topopt_gcmma.py --solver amg --modes run --amg-rebuild-every 5
     python bench_topopt_gcmma.py --modes solve --iters 100 --save-dir out_topopt
+
+The final structure of every mesh size is written as VTU (default ``out_topopt/``
+next to this script; ``--no-save`` to skip): point fields ``density`` (projected),
+``density_filtered``, ``design`` (raw GCMMA variable) and ``displacement`` (the
+solution at the final design), plus the cell field ``density`` (mean of the
+projected nodal density) for thresholding in ParaView.
 """
 import argparse
 import csv
@@ -56,7 +84,7 @@ from time import perf_counter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from bench_linear_elasticity import device_info  # noqa: E402  (imports no jax at module level)
+from bench_linear_elasticity import device_info, resolution_for_dof  # noqa: E402  (no jax at import)
 
 
 # ---------------------------------------------------------------------------
@@ -65,8 +93,10 @@ from bench_linear_elasticity import device_info  # noqa: E402  (imports no jax a
 def parse_args(argv=None):
     p = argparse.ArgumentParser(
         description="Isotropic 3-D topology optimization with the in-house GCMMA.")
-    p.add_argument("--mesh-sizes", type=float, nargs="+", default=[2.0, 1.5, 1.0],
-                   help="TET4 box_mesh element sizes (smaller = more DOF).")
+    p.add_argument("--dofs", type=int, nargs="+",
+                   default=[50_000, 100_000, 250_000, 500_000, 1_000_000],
+                   help="Target DOF counts (same sweep as bench_linear_elasticity.py); "
+                        "the grid is refined to the closest achievable count.")
     p.add_argument("--solver", choices=["direct", "amg", "krylov"], default="direct")
     p.add_argument("--modes", nargs="+", choices=["run", "solve"], default=["run", "solve"])
     p.add_argument("--iters", type=int, default=30, help="Outer GCMMA iterations (fixed).")
@@ -74,13 +104,22 @@ def parse_args(argv=None):
     p.add_argument("--repeats", type=int, default=1, help="Timed repeats of a whole optimization.")
     p.add_argument("--vf", type=float, default=0.4, help="Target volume fraction.")
     p.add_argument("--penal", type=float, default=3.0, help="SIMP penalty p.")
-    p.add_argument("--filter-radius", type=float, default=3.0,
-                   help="Density filter radius (cone weights), in model units.")
+    p.add_argument("--filter-radius", type=float, default=None,
+                   help="Density filter radius (cone weights) in model units; "
+                        "default --filter-radius-cells x element size.")
+    p.add_argument("--filter-radius-cells", type=float, default=3.0,
+                   help="Filter radius in element sizes when --filter-radius is unset.")
     p.add_argument("--beta", type=float, default=4.0, help="Heaviside projection sharpness.")
     p.add_argument("--tol", type=float, default=1e-8, help="Krylov / AMG relative tol.")
     p.add_argument("--maxiter", type=int, default=2000, help="Krylov max iterations.")
-    p.add_argument("--save-dir", default=None,
-                   help="Write the final projected density of each run as VTU here.")
+    p.add_argument("--amg-rebuild-every", type=int, default=0,
+                   help="run mode + --solver amg: rebuild the AMG hierarchy from the "
+                        "current design every N outer iterations (0 = never).")
+    p.add_argument("--save-dir", default=os.path.join(HERE, "out_topopt"),
+                   help="Write the final structure (densities + displacement) of each "
+                        "mesh size as VTU here.")
+    p.add_argument("--no-save", dest="save_dir", action="store_const", const=None,
+                   help="Do not write VTU files.")
     p.add_argument("--output", default=None,
                    help="CSV path (default: bench_topopt.csv next to this script).")
     p.add_argument("--tag", default="", help="Free-form label written to every row.")
@@ -93,22 +132,45 @@ def parse_args(argv=None):
 
 
 # ---------------------------------------------------------------------------
-# Fixed physics (= anisotropic_topology_optimization_3d.py, isotropic material)
+# Fixed physics (= bench_linear_elasticity.py cantilever, SIMP material)
 # ---------------------------------------------------------------------------
-L, W, H = 100.0, 5.0, 20.0
+L, W, H = 8.0, 2.0, 2.0
 E0 = 70.0e3
 NU = 0.30
 SIMP_EPSILON = 1e-3
-TRACTION_MAG = 1.0
-TOL = 1e-3
+TRACTION_MAG = 1e-3
 
 CSV_COLUMNS = [
     "timestamp", "device", "platform", "dtype", "jax_version", "feax_version",
     "solver", "mode", "mesh_size", "n_nodes", "n_cells", "dof", "n_design",
     "iters", "repeats", "compile_s", "total_s", "std_s", "per_iter_s",
     "evals", "mean_inner", "objective", "compliance", "volume", "kkt_norm",
-    "const_mb", "tag", "note",
+    "const_mb", "filter_radius", "filter_nnz", "rebuild_every", "n_rebuilds",
+    "rebuild_s", "recompile_s", "tag", "note",
 ]
+
+
+def filter_weights(points, radius):
+    """Cone-weight density filter ``W_ij = max(0, r - |x_i - x_j|)`` as a BCOO plus
+    its row sums: the same weights as ``feax.gene``'s sparse builder, found with a
+    KD-tree instead of all pairs."""
+    import numpy as onp
+    import jax.numpy as jnp
+    from jax.experimental import sparse as jsparse
+    from scipy.spatial import cKDTree
+
+    pts = onp.asarray(points)
+    tree = cKDTree(pts)
+    D = tree.sparse_distance_matrix(tree, radius, output_type="coo_matrix")
+    off = D.row != D.col                       # the diagonal (d = 0) is added explicitly
+    n = pts.shape[0]
+    rows = onp.concatenate([D.row[off], onp.arange(n)])
+    cols = onp.concatenate([D.col[off], onp.arange(n)])
+    w = onp.concatenate([onp.maximum(0.0, radius - D.data[off]), onp.full(n, radius)])
+    Wm = jsparse.BCOO((jnp.asarray(w), jnp.asarray(onp.stack([rows, cols], 1), dtype=jnp.int32)),
+                      shape=(n, n))
+    rowsum = jnp.asarray(onp.bincount(rows, weights=w, minlength=n))
+    return Wm, rowsum
 
 
 def append_row(out_path, row):
@@ -118,6 +180,12 @@ def append_row(out_path, row):
     if d:
         os.makedirs(d, exist_ok=True)
     new_file = not os.path.exists(out_path) or os.path.getsize(out_path) == 0
+    if not new_file:
+        with open(out_path, newline="") as fh:
+            header = next(csv.reader(fh), [])
+        if header != CSV_COLUMNS:
+            raise ValueError(f"{out_path} has an older column layout; move it aside "
+                             "or pass --output.")
     with open(out_path, "a", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
         if new_file:
@@ -140,7 +208,8 @@ def main(argv=None):
     import feax as fe
     import feax.gene as gene
     from feax.experimental.mma import GCMMA
-    from feax.gene.filters import _compute_density_filter_weights_sparse
+    from feax.assembler import create_J_bc_csr_parametric
+    from feax.solvers.amg import build_amg_hierarchy
 
     try:
         from importlib.metadata import version as _pkg_version
@@ -153,8 +222,11 @@ def main(argv=None):
     out_path = args.output or os.path.join(HERE, "bench_topopt.csv")
     print(f"device={device} ({plat})  dtype={dtype}  solver={args.solver}  "
           f"jax={jax.__version__}  feax={feax_version}")
-    print(f"box={L:g}x{W:g}x{H:g}  vf={args.vf}  p={args.penal}  r={args.filter_radius}  "
-          f"beta={args.beta}  iters={args.iters}  modes={args.modes}  output={out_path}\n")
+    r_desc = (f"r={args.filter_radius}" if args.filter_radius is not None
+              else f"r={args.filter_radius_cells:g}h")
+    print(f"box={L:g}x{W:g}x{H:g}  vf={args.vf}  p={args.penal}  {r_desc}  "
+          f"beta={args.beta}  iters={args.iters}  modes={args.modes}  "
+          f"amg_rebuild_every={args.amg_rebuild_every}  output={out_path}\n")
 
     def block(x):
         return jax.block_until_ready(x)
@@ -190,30 +262,34 @@ def main(argv=None):
 
         def get_surface_maps(self):
             def traction(u, x, *a):
-                return jnp.array([0.0, 0.0, -TRACTION_MAG])
+                return jnp.array([0.0, 0.0, TRACTION_MAG])
             return [traction]
-
-    left_face = lambda pt: jnp.isclose(pt[0], 0.0, atol=TOL)
-    load_patch = lambda pt: jnp.isclose(pt[0], L, atol=TOL) & (pt[2] < H / 4.0)
 
     def const_mb(fn, *call_args):
         """Bytes of closure constants captured when tracing fn(*call_args)."""
         jaxpr = jax.make_jaxpr(fn)(*call_args)
         return sum(getattr(c, "nbytes", 0) for c in jaxpr.consts) / 1e6
 
-    def build(mesh_size):
-        mesh = fe.mesh.box_mesh((L, W, H), mesh_size=mesh_size, element_type="TET4")
-        problem = IsotropicSIMP(mesh=mesh, vec=3, dim=3, ele_type=mesh.ele_type,
-                                location_fns=(load_patch,))
+    def build(res):
+        # Same grid, clamp and load faces as bench_linear_elasticity.build().
+        nx, ny, nz = res
+        spacing = (L / nx, W / ny, H / nz)
+        mesh = fe.StructuredGrid((nx, ny, nz), spacing=spacing).to_mesh()
+        left = lambda pt: jnp.isclose(pt[0], 0.0, 1e-5)
+        right = lambda pt: jnp.isclose(pt[0], L, 1e-5 + 0.5 * spacing[0])
+        problem = IsotropicSIMP(mesh=mesh, vec=3, dim=3, ele_type="HEX8",
+                                location_fns=(right,))
         bc = fe.DirichletBCConfig([
-            fe.DirichletBCSpec(location=left_face, component="all", value=0.0),
+            fe.DirichletBCSpec(location=left, component="all", value=0.0),
         ]).create_bc(problem)
+        mesh_size = spacing[0]
         ts = fe.TracedStructure.from_problem(problem)
         n_nodes = mesh.points.shape[0]
         sample_tp = fe.TracedParams(
             volume_vars=(fe.TracedParams.create_node_var(problem, args.vf),),
             surface_vars=())
-        solver = fe.create_solver(problem, bc, solver_options=solver_options(),
+        opts = solver_options()
+        solver = fe.create_solver(problem, bc, solver_options=opts,
                                   linear=True, traced_params=sample_tp, traced_structure=ts)
         # AMG: carry the hierarchy in ts so it is a jit argument, not a constant.
         ts = ts.with_preconditioner(solver.preconditioner_state)
@@ -224,12 +300,13 @@ def main(argv=None):
         beta = float(args.beta)
 
         # Density filter rho_f = (W rho) / rowsum(W), cone weights within the radius.
-        # Built with the same routine as gene.create_density_filter, but the sparse W
-        # is kept as DATA (a BCOO pytree) so it can be a jit argument: the public
-        # filter_fn closes over W, which would bake ~nodes x neighbours entries into
-        # every executable.
-        filt_W, filt_rowsum = _compute_density_filter_weights_sparse(
-            mesh.points, args.filter_radius, "cone")
+        # Same weights as gene.create_density_filter, but the sparse W is kept as
+        # DATA (a BCOO pytree) so it can be a jit argument: the public filter_fn
+        # closes over W, which would bake ~nodes x neighbours entries into every
+        # executable.
+        radius = (args.filter_radius if args.filter_radius is not None
+                  else args.filter_radius_cells * mesh_size)
+        filt_W, filt_rowsum = filter_weights(mesh.points, radius)
 
         # Volume fraction of a nodal density is linear in it, V(rho) = w . rho, and
         # w is exactly the gradient of gene's volume_fn. Precompute w once and pass
@@ -251,6 +328,11 @@ def main(argv=None):
             tp = fe.TracedParams(volume_vars=(project(x, d),), surface_vars=())
             return compliance_fn(solver(tp, u_init, traced_structure=s))
 
+        def displacement(x, d):
+            s, u_init = d[0], d[1]
+            tp = fe.TracedParams(volume_vars=(project(x, d),), surface_vars=())
+            return jnp.asarray(solver(tp, u_init, traced_structure=s))
+
         def volume(x, d):
             # Constraint on the filtered, un-projected density (as in the base example).
             return jnp.dot(d[3], density_filter(x, d))
@@ -266,12 +348,30 @@ def main(argv=None):
 
         opt = GCMMA(value_and_grad, 0.0, 1.0, n_constraints=1, max_inner=args.max_inner)
         info = dict(mesh=mesh, n_nodes=n_nodes, n_cells=mesh.cells.shape[0],
-                    dof=int(u0.shape[0]), c0=c0, filter_nnz=int(filt_W.nse))
-        return opt, x0, data, project, info
+                    dof=int(u0.shape[0]), c0=c0, filter_nnz=int(filt_W.nse),
+                    filter_radius=radius)
+        fields = dict(filtered=density_filter, projected=project, displacement=displacement)
+
+        # AMG rebuild: assemble the BC-applied Jacobian at the current design and
+        # rebuild the hierarchy from it on the host, then swap it into ts. Every
+        # non-None slot of the (forward, adjoint) state gets the new hierarchy.
+        J_csr = create_J_bc_csr_parametric(problem, symmetric=True)
+        jacobian = jax.jit(lambda x, d: J_csr(
+            d[1], fe.TracedParams(volume_vars=(project(x, d),), surface_vars=()), bc, d[0]))
+
+        def rebuild_amg(x, d):
+            ml = build_amg_hierarchy(problem, bc, jacobian(x, d), opts)
+            state = tuple(None if m is None else ml for m in d[0].preconditioner)
+            return (d[0].with_preconditioner(state),) + tuple(d[1:])
+
+        info["rebuild"] = rebuild_amg if args.solver == "amg" else None
+
+        return opt, x0, data, fields, info
 
     def record(mode, mesh_size, info, compile_s, times, *, evals=float("nan"),
                mean_inner=float("nan"), objective=float("nan"), compliance=float("nan"),
-               volume=float("nan"), kkt=float("nan"), cmb=float("nan"), note=""):
+               volume=float("nan"), kkt=float("nan"), cmb=float("nan"),
+               rebuild_every=0, n_rebuilds=0, rebuild_s=0.0, recompile_s=0.0, note=""):
         mean = statistics.mean(times) if times else float("nan")
         std = statistics.stdev(times) if len(times) > 1 else 0.0
         row = dict(
@@ -283,26 +383,36 @@ def main(argv=None):
             repeats=len(times), compile_s=compile_s, total_s=mean, std_s=std,
             per_iter_s=mean / args.iters if times else float("nan"), evals=evals,
             mean_inner=mean_inner, objective=objective, compliance=compliance,
-            volume=volume, kkt_norm=kkt, const_mb=cmb, tag=args.tag, note=note)
+            volume=volume, kkt_norm=kkt, const_mb=cmb,
+            filter_radius=info.get("filter_radius", ""), filter_nnz=info.get("filter_nnz", ""),
+            rebuild_every=rebuild_every, n_rebuilds=n_rebuilds, rebuild_s=rebuild_s,
+            recompile_s=recompile_s, tag=args.tag, note=note)
         append_row(out_path, row)
         cs = f"{compile_s:7.2f}s" if compile_s == compile_s else "   -   "
-        print(f"  {mode:5s} dof={row['dof']:>9,} compile={cs}  total={mean:8.3f}s  "
+        dof_s = f"{row['dof']:>9,}" if row["dof"] != "" else f"{'-':>9}"
+        print(f"  {mode:5s} dof={dof_s} compile={cs}  total={mean:8.3f}s  "
               f"per-iter={row['per_iter_s']:7.4f}s  evals={evals:>5}  inner={mean_inner:5.2f}  "
-              f"obj={objective:.5f}  vol={volume:.4f}  const={cmb:6.2f}MB{'  (' + note + ')' if note else ''}")
+              f"obj={objective:.5f}  vol={volume:.4f}  const={cmb:6.2f}MB"
+              + (f"  rebuilds={n_rebuilds} ({rebuild_s:.1f}s, recompile {recompile_s:.1f}s)"
+                 if n_rebuilds else "")
+              + (f"  ({note})" if note else ""))
         return row
 
     finals = {}
-    for mesh_size in args.mesh_sizes:
-        print(f"mesh_size={mesh_size:g}")
+    for target in args.dofs:
+        nx, ny, nz, _ = resolution_for_dof(target, (L, W, H))
+        mesh_size = L / nx
+        print(f"target={target:,} -> nx={nx} ny={ny} nz={nz}  h={mesh_size:.4g}")
         try:
-            opt, x0, data, project, info = build(mesh_size)
+            opt, x0, data, fields, info = build((nx, ny, nz))
         except Exception as e:
             print(f"  build failed: {type(e).__name__}: {e}")
             record("build", mesh_size, {}, float("nan"), [], note=type(e).__name__)
             jax.clear_caches()
             continue
         print(f"  nodes={info['n_nodes']:,}  cells={info['n_cells']:,}  dof={info['dof']:,}  "
-              f"filter nnz={info['filter_nnz']:,}  c0={info['c0']:.4e}")
+              f"filter r={info['filter_radius']:.3g} nnz={info['filter_nnz']:,}  "
+              f"c0={info['c0']:.4e}")
 
         def summarize(state, inner_total):
             x = state.x
@@ -324,18 +434,40 @@ def main(argv=None):
                 state = block(init_c(x0, data))
                 c_step, step_c = aot(step_fn, state, data)
                 cmb = const_mb(opt.step, state, data)
+
+                # One executable per data layout: a rebuilt AMG hierarchy only forces
+                # a recompile when its level shapes change.
+                def layout(d):
+                    leaves, tdef = jax.tree_util.tree_flatten(d)
+                    return tdef, tuple((l.shape, l.dtype) for l in leaves)
+                step_execs = {layout(data): step_c}
+
+                every = args.amg_rebuild_every if info["rebuild"] is not None else 0
                 times = []
                 for _ in range(args.repeats):
                     t0 = perf_counter()
-                    state = init_c(x0, data)
+                    d = data
+                    state = init_c(x0, d)
                     inner_total = 0
-                    for _k in range(args.iters):
-                        state = step_c(state, data)
+                    n_rebuilds, rebuild_s, recompile_s = 0, 0.0, 0.0
+                    for k in range(args.iters):
+                        if every and k and k % every == 0:
+                            t1 = perf_counter()
+                            d = info["rebuild"](state.x, d)
+                            rebuild_s += perf_counter() - t1
+                            n_rebuilds += 1
+                            key = layout(d)
+                            if key not in step_execs:
+                                c, step_execs[key] = aot(step_fn, state, d)
+                                recompile_s += c
+                        state = step_execs[layout(d)](state, d)
                         inner_total += int(state.inner_iterations)   # host read-back each step
                     block(state.x)
                     times.append(perf_counter() - t0)
                 stats, x_final = summarize(state, inner_total)
-                record("run", mesh_size, info, c_init + c_step, times, cmb=cmb, **stats)
+                record("run", mesh_size, info, c_init + c_step, times, cmb=cmb,
+                       rebuild_every=every, n_rebuilds=n_rebuilds, rebuild_s=rebuild_s,
+                       recompile_s=recompile_s, **stats)
                 finals[(mesh_size, "run")] = (stats["objective"], x_final)
             except Exception as e:
                 record("run", mesh_size, info, float("nan"), [], note=type(e).__name__)
@@ -373,10 +505,21 @@ def main(argv=None):
             key = (mesh_size, "solve") if (mesh_size, "solve") in finals else (mesh_size, "run")
             if key in finals:
                 os.makedirs(args.save_dir, exist_ok=True)
-                path = os.path.join(args.save_dir, f"density_{args.solver}_h{mesh_size:g}.vtu")
-                rho_p = jax.device_get(project(finals[key][1], data))
-                fe.utils.save_sol(mesh=info["mesh"], sol_file=path,
-                                  point_infos=[("density", rho_p)])
+                rb = f"_rb{args.amg_rebuild_every}" if key[1] == "run" and \
+                    args.solver == "amg" and args.amg_rebuild_every else ""
+                path = os.path.join(args.save_dir,
+                                    f"topopt_{args.solver}_dof{info['dof']}_{key[1]}{rb}.vtu")
+                x_final = finals[key][1]
+                rho_f = jax.device_get(jax.jit(fields["filtered"])(x_final, data))
+                rho_p = jax.device_get(jax.jit(fields["projected"])(x_final, data))
+                u = jax.device_get(jax.jit(fields["displacement"])(x_final, data))
+                cells = info["mesh"].cells
+                fe.utils.save_sol(
+                    mesh=info["mesh"], sol_file=path,
+                    point_infos=[("density", rho_p), ("density_filtered", rho_f),
+                                 ("design", jax.device_get(x_final)),
+                                 ("displacement", u.reshape(info["n_nodes"], 3))],
+                    cell_infos=[("density", rho_p[cells].mean(axis=1))])
                 print(f"  wrote {path}")
 
         jax.clear_caches()

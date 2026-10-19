@@ -435,6 +435,7 @@ def main(argv=None):
             except Exception as e:
                 record(label, dof, res, args.batch, float("nan"), [],
                        note=type(e).__name__)
+                print(f"    {type(e).__name__}: {str(e).splitlines()[0][:300]}")
 
         jax.clear_caches()
         print()
