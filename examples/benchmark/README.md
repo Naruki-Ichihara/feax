@@ -4,6 +4,7 @@
 |---|---|
 | `bench_linear_elasticity.py` | One linear solve (and its gradient) per call, across solvers and execution modes |
 | `bench_topopt_gcmma.py` | A whole topology optimization driven by the in-house GCMMA |
+| `bench_topopt_multiload.py` | Topology optimization over many load cases, all solved per design with one factorization (direct, `vmap` over the load) |
 
 ## `bench_linear_elasticity.py`
 
@@ -125,18 +126,27 @@ round-off while `amg`/`krylov` stop at `tol` (default `1e-8`).
 
 ## `bench_topopt_gcmma.py`
 
-Isotropic version of `examples/advance/anisotropic_topology_optimization_3d.py`:
-the same 100 x 5 x 20 TET4 cantilever, clamp, load patch, Heaviside projection
-and volume constraint, with a SIMP isotropic material, one nodal density field,
-the lightweight distance-weighted density filter (cone weights, a sparse
-mat-vec) instead of the Helmholtz filter, and `feax.experimental.mma.GCMMA`
-instead of NLopt.
+Topology optimization of the `bench_linear_elasticity.py` cantilever (8 x 2 x 2
+HEX8 grid, clamp at x = 0, uniform traction on the tip face, same 50k..1M DOF
+sweep and grid rule): SIMP, Heaviside projection and a volume constraint, one
+nodal density field, the lightweight distance-weighted density filter (cone
+weights within `--filter-radius-cells` element sizes, built with a KD-tree), and
+`feax.experimental.mma.GCMMA`. The design setup follows
+`examples/advance/anisotropic_topology_optimization_3d.py` with the anisotropy
+removed.
 
 ```bash
-python bench_topopt_gcmma.py                                   # direct, h = 2, 1.5, 1, 30 iterations
-python bench_topopt_gcmma.py --solver amg --mesh-sizes 1.5 1 0.75 --iters 50
-python bench_topopt_gcmma.py --modes solve --save-dir out_topopt   # also write the final densities
+python bench_topopt_gcmma.py                                   # direct, 50k..1M DOF, 30 iterations
+python bench_topopt_gcmma.py --dofs 250000 --solver amg --modes run --amg-rebuild-every 5
+python bench_topopt_gcmma.py --no-save                         # skip the VTU output
 ```
+
+The final structure of each size is written as VTU to `out_topopt/` (projected
+and filtered density, raw design, displacement, and a cell density for
+thresholding). With `--solver amg`, `--amg-rebuild-every N` (run mode only)
+reassembles the Jacobian at the current design every N iterations and rebuilds
+the AMG hierarchy: a hierarchy built from the uniform starting design degrades
+badly (~10x CG iterations) on a black-and-white design.
 
 | Mode | What runs |
 |---|---|
@@ -154,3 +164,24 @@ AMG hierarchy), the initial guess, the filter's sparse weight matrix and the
 nodal volume weights travel as one pytree jit argument, so `const_mb` should stay small and flat across
 mesh sizes; a growing value means something mesh-sized is being closed over.
 Rows append to `bench_topopt.csv` (git-ignored).
+
+## `bench_topopt_multiload.py`
+
+Same cantilever and optimization, but the design has to carry `K` load cases:
+the objective is the mean compliance over the cases. Case `k` is a downward
+traction on a 0.2 x 0.2 patch of the top face at the free end (centred in y),
+rotated by `180 k / K` degrees in the y-z plane, with the same resultant for
+every case. The stiffness matrix depends on the design only, so the `K` solves
+run as `jax.vmap` over the load: the direct solver assembles and factorizes once
+per design and back-substitutes `K` right-hand sides, and the adjoint reuses the
+factorization (`reuse_factorization=True`). The cost per iteration should
+barely grow with `K`.
+
+```bash
+python bench_topopt_multiload.py                         # 500k DOF, K = 400, 20 iterations
+python bench_topopt_multiload.py --n-loads 1 4 16 64     # sweep K on the same structure
+```
+
+The final structure of each `K` goes to `out_topopt_multiload/` as VTU, with the
+displacement of up to `--vtu-cases` evenly spaced load cases; rows append to
+`bench_topopt_multiload.csv` (git-ignored).
