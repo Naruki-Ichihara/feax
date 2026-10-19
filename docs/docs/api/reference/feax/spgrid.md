@@ -32,8 +32,12 @@ Conventions (nx,ny,nz = cells per axis):
     cell  e(cx,cy,cz) = (cx*ny + cy)*nz + cz
     node  n(i,j,k)    = (i*(ny+1) + j)*(nz+1) + k,  i in [0,nx] ...
 
-Node ordering of :meth:`cell_to_nodes` matches feax&#x27;s box_mesh HEX8
-convention, so an extracted band is a valid feax ``Mesh``.
+Node numbering, cell numbering and the HEX8 corner order of
+:meth:`cell_to_nodes` are exactly those of :func:`feax.mesh.box_mesh`, so
+an extracted band is a valid feax ``Mesh`` and the band of ALL cells is the
+box mesh itself (same node ids, same cells): fields and solutions on a
+``box_mesh`` Problem and on this grid share one layout.
+:meth:`from_mesh` recovers the grid of a box mesh.
 
 #### fit
 
@@ -61,6 +65,17 @@ Give exactly one of:
 
 ``align`` rounds each dim UP to a multiple of ``align`` (e.g. 8) so
 geometric multigrid can coarsen; the extra cells are empty.
+
+#### from\_mesh
+
+```python
+@classmethod
+def from_mesh(cls, mesh, rtol=1e-6)
+```
+
+The grid whose node/cell numbering a :func:`feax.mesh.box_mesh`
+(HEX8) uses — spacing and origin are read off the points. Raises
+``ValueError`` if ``mesh`` is not such a box mesh.
 
 #### point\_cells
 

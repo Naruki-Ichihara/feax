@@ -41,6 +41,7 @@ dependencies = [
     "optax",
     "scikit-image",
     "pyvista",
+    "tetgen",
     "asdex",
 ]
 
@@ -67,14 +68,26 @@ amg = [
     "amjax",
     "pyamg",
 ]
-# Curved primitive meshing (sphere_mesh / cylinder_mesh) via PyVista + TetGen.
-mesh = [
-    "tetgen",
-]
+# Kept so `pip install feax[mesh]` goes on working: TetGen is a core
+# dependency now, because `sphere_mesh` and `cylinder_mesh` are part of the
+# meshing API rather than an add-on, and an ImportError from a documented
+# constructor is a worse answer than a 407 kB wheel. Unlike the Gmsh extra
+# below, TetGen ships manylinux/macOS/Windows wheels and pulls in nothing but
+# NumPy, which is already required.
+mesh = []
 # Optional Gmsh backend, only for feax.gene adaptive remeshing and
 # SDF/density -> volume-mesh extraction. Core meshing no longer needs it.
 gmsh = [
     "gmsh",
+]
+# Differentiable CAD front end, used as a PREPROCESSOR: the SDF grammar defines
+# the geometry and feax solves it on a fixed StructuredGrid, so shape parameters
+# carry sensitivity without the mesh ever moving. See
+# examples/experimental/sdf_shape_optimization.py. Not on PyPI; installed from
+# source. Only cadjoint's CAD layer is needed -- its own `fem` extra (jax-fem,
+# gmsh, petsc4py) is not, and is deliberately not pulled in here.
+cad = [
+    "cadjoint @ git+https://github.com/andrinr/cadjoint.git",
 ]
 # CUDA runtime libraries only. JAX itself is not pinned by any extra: install
 # jax / jax[cuda12] / jax[cuda13] first (or use the NVCR container's JAX).

@@ -14,11 +14,12 @@ giga-voxel scaling path.
 The density update is Optimality Criteria (:func:`oc_update`): a pure-numpy
 O(n) bisection that pairs with the self-adjoint compliance sensitivity (one
 forward solve, no adjoint) and needs no state across the moving band. It is
-valid for compliance minimisation under a single volume constraint only; for
-general objectives/constraints on a fixed mesh use the MMA driver
-(:func:`feax.gene.optimizer.run`). A band-aware MMA update
-(:mod:`feax.experimental.mma`, state kept on the full grid) is the planned
-generalisation of this loop.
+valid for compliance minimisation under a single volume constraint only.
+:func:`run_narrowband_mma` is the same moving-band loop driven by the pure-JAX
+MMA (:mod:`feax.experimental.mma`) with the optimizer state (design, previous
+iterates, asymptotes) kept on the FULL grid, so the band may change size freely;
+select it in :func:`run_narrowband_multires` with ``update=&quot;mma&quot;``. For general
+objectives/constraints on a fixed mesh use :func:`feax.gene.optimizer.run`.
 
 Usage (see ``examples/advance/high_reso_topopt.py``)::
 
@@ -113,6 +114,60 @@ Parameters
 - **jit_after** (*int or None      iteration index from which cmg switches to*): ``jit=True`` (eager before). The band typically                          stops moving by then, so the jitted executable is                          reused across the tail (pair with ``bucket&gt;1`` to                          absorb small size flicker). ``None`` (default)                          stays eager the whole level — safest for a band                          that keeps moving (no per-iter recompile).
 
 
+#### run\_narrowband\_mma
+
+```python
+def run_narrowband_mma(grid,
+                       cmg,
+                       keep,
+                       volfrac,
+                       load_fn,
+                       *,
+                       rmin=1.5,
+                       n_iter=40,
+                       grid_update_start=1,
+                       x_init=None,
+                       move=0.2,
+                       xmin=1e-3,
+                       penal=None,
+                       threshold=1e-2,
+                       margin=2,
+                       solver_options=None,
+                       jit_after=None,
+                       sensitivity_filter=None,
+                       verbose=True,
+                       label="",
+                       it_offset=0,
+                       mma_options=None)
+```
+
+Moving narrow-band SIMP compliance topopt via cmg + MMA.
+
+Same band extraction, solve and sensitivity as :func:`run_narrowband_oc`
+(``dilate(rho&gt;threshold, margin) | keep`` every iteration, one self-adjoint
+forward solve, the narrow-band sensitivity filter), but the density update
+is Svanberg&#x27;s MMA (:class:`feax.experimental.mma.MMA`, plain variant).
+
+The optimizer state lives on the FULL grid: the design ``x``, the two
+previous iterates and the asymptotes are ``(num_cells,)`` arrays, so the
+band can change size every iteration without any state remapping. Cells
+outside the band get a zero objective gradient and a positive volume
+gradient, so MMA drives them to ``xmin`` — the same behaviour as OC. The
+cost is a few full-grid vectors (about ``12 * 8 * num_cells`` bytes in
+float64; pass ``mma_options=dict(dtype=jnp.float32)`` to halve it) and
+O(num_cells) elementwise work per iteration, both on the JAX device; the
+solve stays O(band).
+
+Objective and constraint are scaled for MMA&#x27;s elastic penalty: ``f0 =
+c / c_first``, ``g = mean(x) / volfrac - 1``. ``n_iter`` counts solves, as
+in :func:`run_narrowband_oc` (``n_iter - 1`` MMA updates). ``move`` is the
+MMA move limit as a fraction of ``xmax - xmin``. Extra keyword arguments for
+:class:``7 (``asyinit``, ``c``, ``dtype``, ...) go
+in ``mma_options``.
+
+Returns ``(rho_flat, history)`` with the same layout as
+:func:`run_narrowband_oc`.
+
 #### run\_narrowband\_multires
 
 ```python
@@ -127,6 +182,7 @@ def run_narrowband_multires(build_fn,
                             coarse_iter=None,
                             grid_update_start=1,
                             floor=8,
+                            update="oc",
                             verbose=True,
                             **oc_kw)
 ```
@@ -146,6 +202,7 @@ Parameters
 - **dims** (*(nx, ny, nz)          finest resolution.*)
 - **n_levels** (*int               number of resolutions (2 = one coarse + fine).*)
 - **coarse_iter** (*int, optional  iters per non-final level (default max(10, n_iter//2)).*)
+- **update** (*&quot;oc&quot; | &quot;mma&quot;        density update per level: :func:``0*): or :func:``1 (MMA state is                          re-initialised at every level; only the density                          is carried across resolutions).
 
 
 #### create\_sensitivity\_filter

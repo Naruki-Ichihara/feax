@@ -15,15 +15,22 @@ freedom**, solved three ways and timed on several NVIDIA GPUs:
 - **AMG-CG** — algebraic-multigrid-preconditioned conjugate gradient (rigid-body near-null-space).
 - **Krylov CG** — fully matrix-free conjugate gradient (Jacobi-preconditioned).
 
-Each solver is measured in **eager**, **JIT**, and **batched (`vmap`)** execution. Use the
-controls to compare *by solver* on one device, or *by device* for a fixed solver, across
-solve time, throughput, and one-time compile cost.
+Each solver is measured in **eager**, **JIT**, **grad** (forward + adjoint solve), and
+**batched (`vmap`)** execution. Use the controls to compare *by solver* on one device, or
+*by device* for a fixed solver, across solve time, throughput, and one-time compile cost.
 
 <BenchmarkEmbed minHeight={680} />
 
 :::note How to read it
 - **Time per solve** is batch-amortized (a `vmap` batch of 10 is divided by 10); **throughput**
-  counts the whole batch; **compile** is the one-time JIT/XLA trace+compile (eager has none).
+  counts the whole batch; **compile** is the one-time trace + XLA compile, measured ahead of
+  time with `jit(f).lower(...).compile()` so it contains no execution (eager has none). Rows
+  tagged `legacy-dashboard` predate that change and include one execution in `compile`.
+- The `grad` mode times `jax.jit(jax.value_and_grad(objective))` with objective ½‖u‖² and the
+  nodal Young's modulus as design variable: one forward solve plus the adjoint solve through
+  the solver's `custom_vjp`. Read `grad / jit` at the same DOF as the adjoint overhead. The
+  direct solver reuses its forward factorization for the adjoint (`reuse_factorization=True`,
+  SPD matrix); AMG reuses its hierarchy; Krylov runs a second CG.
 - Colour encodes the compared dimension (solver *or* device); line dash encodes the execution
   mode. A table view (▤) and a light/dark toggle sit in the top-right.
 - The `vmap·rhs` mode batches the **load** — the right-hand side `b` varies with the operator
@@ -31,6 +38,9 @@ solve time, throughput, and one-time compile cost.
   left-hand-side matrix `A` (and its factorization) changes per case. See
   [Periodic Boundary Conditions](./advanced/periodic_boundary_conditions.md) and the
   `vmap` transform guide for where this matters.
+- All five modes apply to all three solvers. With `linear=True`, AMG is lowered inside
+  `create_solver` to a matrix-free Krylov solve with a fixed V-cycle preconditioner, so the
+  solve itself jits, vmaps, and differentiates like the others.
 :::
 
 ## Benchmark setup
@@ -166,5 +176,9 @@ u = solver(tp, fe.zero_like_initial_guess(problem, bc), traced_structure=ts)
 over a batch — the **material** for `vmap·lhs` (matrix `A` varies), or the **load** for
 `vmap·rhs` (`A` fixed, factor-once / solve-many).
 
-The underlying data lives in `examples/benchmark/bench.csv`; regenerate it with
-`examples/benchmark/bench_linear_elasticity.py` (see the script's `--help`).
+The rows are embedded in the dashboard itself (`docs/static/benchmarks/dashboard.html`)
+and kept as tracked CSVs under `examples/benchmark/results/`. New runs append to the
+local `examples/benchmark/bench.csv` (git-ignored): produce it with
+`examples/benchmark/bench_linear_elasticity.py` or the `run_guarded.sh` launcher (see
+`--help`), move the rows you want to keep into `results/`, then run
+`examples/benchmark/sync_docs_dashboard.py` to re-embed everything.

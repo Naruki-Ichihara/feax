@@ -7,7 +7,7 @@ CUDA-specific options.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Callable, Optional, Union
 from ..problem import MatrixView
@@ -612,11 +612,28 @@ class DirectSolverOptions(AbstractSolverOptions):
     sksparse_options : SKSPARSEOptions, optional
         Host-side direct solver configuration shared by ``spsolve``,
         ``umfpack``, and ``cholmod``.
+    prewarm : bool, default True
+        Whether ``create_solver`` factorizes a sample Jacobian before
+        returning, so the direct backend's first-call initialization happens
+        outside any JAX trace.
+
+        Leave it on wherever the solver is called from inside ``jit``, ``vmap``
+        or a gradient: that initialization captures closure state, and
+        capturing it from a traced call leaves tracers in it. Optimization and
+        Newton paths are in that position.
+
+        Turn it off for a PURE SOLVE -- one eager forward solve, no
+        differentiation -- where the first real call is untraced and can do
+        the initialization itself. The prewarm is not free: it assembles a
+        Jacobian and factorizes it, which the solve then does again.
+        Measured on a 746-cell elasticity problem with a cold compilation
+        cache, ``create_solver`` was 80.6 s with it.
     """
     solver: str = "auto"
     cudss_options: CUDSSOptions = None
     sksparse_options: SKSPARSEOptions = None
     reuse_factorization: bool = False
+    prewarm: bool = True
 
     def __post_init__(self):
         valid_solvers = ("auto", "cudss", "spsolve", "umfpack", "cholmod")
@@ -675,15 +692,12 @@ def resolve_direct_solver(
     """
     if options.solver != "auto":
         detect_available_solver_backends(options.solver)
-        return DirectSolverOptions(
-            solver=options.solver,
-            cudss_options=options.cudss_options,
-            sksparse_options=options.sksparse_options,
-            reuse_factorization=options.reuse_factorization,
-            check_convergence=options.check_convergence,
-            convergence_threshold=options.convergence_threshold,
-            verbose=options.verbose,
-        )
+        # `replace`, not a field-by-field rebuild. These three resolutions
+        # used to enumerate every field, so each one silently dropped any
+        # field added later -- `prewarm` arrived and `resolve_direct_solver`
+        # reset it to the default on its way through, which looked exactly
+        # like the flag not working.
+        return replace(options, solver=options.solver)
 
     available_solvers = set(detect_available_solver_backends("auto"))
     has_spsolve_backend = "spsolve" in available_solvers
@@ -711,14 +725,11 @@ def resolve_direct_solver(
             matrix_view=cudss_mview,
             device_id=options.cudss_options.device_id,
         )
-        resolved = DirectSolverOptions(
+        resolved = replace(
+            options,
             solver="cudss",
             cudss_options=cudss_opts,
             sksparse_options=sksparse_opts,
-            reuse_factorization=options.reuse_factorization,
-            check_convergence=options.check_convergence,
-            convergence_threshold=options.convergence_threshold,
-            verbose=options.verbose,
         )
         logger.info(
             f"DirectSolver auto: matrix_property={matrix_property.name} "
@@ -761,15 +772,7 @@ def resolve_direct_solver(
         lower=sksparse_lower,
     )
 
-    resolved = DirectSolverOptions(
-        solver=solver,
-        cudss_options=options.cudss_options,
-        sksparse_options=sksparse_opts,
-        reuse_factorization=options.reuse_factorization,
-        check_convergence=options.check_convergence,
-        convergence_threshold=options.convergence_threshold,
-        verbose=options.verbose,
-    )
+    resolved = replace(options, solver=solver, sksparse_options=sksparse_opts)
     logger.info(
         f"DirectSolver auto: matrix_property={matrix_property.name} -> {solver}"
     )

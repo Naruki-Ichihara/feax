@@ -242,3 +242,6 @@ __marimo__/
 #  developed alongside it. It has its own pyproject.toml and its own git
 #  history when it moves out, so feax never tracks it.
 thermax/
+
+# Tracked benchmark result sets (bench.csv itself stays local; *.csv above ignores it)
+!examples/benchmark/results/*.csv

@@ -5,27 +5,39 @@ The problem is a FIXED-geometry cantilever (a physical box of dimensions
 changes, so every DOF point is the SAME physical problem refined — the sweep is
 scale-invariant and the per-DOF numbers are directly comparable.
 
-For each target DOF the solver wall time is measured in three execution modes:
+For each target DOF the solver wall time is measured in five execution modes:
 
 * ``eager``    — op-by-op dispatch (no top-level jit)
-* ``jit``      — ``jax.jit`` (compile time reported separately from steady state)
+* ``jit``      — ``jax.jit`` of the solve
+* ``grad``     — ``jax.jit(jax.value_and_grad(objective))``: one forward solve plus
+                 the adjoint solve, differentiating ½‖u‖² w.r.t. the nodal Young's
+                 modulus field. Compare against ``jit`` to read the adjoint overhead.
 * ``vmap-lhs`` — ``jax.jit(jax.vmap(...))`` batching the MATERIAL: the left-hand-side
-                 matrix ``A`` varies per case (B factorizations)
+                 matrix ``A`` varies per case (B factorizations for ``direct``)
 * ``vmap-rhs`` — batching the LOAD: the right-hand side ``b`` varies with ``A`` fixed
-                 (factor-once / solve-many; direct solver only)
+                 (factor-once / solve-many for ``direct``; for the iterative solvers
+                 every RHS runs its own iterations, the mode is kept for parity)
+
+For the compiled modes the trace + XLA compile is done ahead of time
+(``jit(f).lower(...).compile()``) and reported as ``compile_s`` WITHOUT any
+execution in it; the timed repeats then call the compiled executable directly.
 
 Results (with the auto-detected device name) are appended to ``bench.csv``, so
-repeated runs on different machines / solvers accumulate in one file.
+repeated runs on different machines / solvers accumulate in one file. Tracked
+result sets live in ``results/*.csv``; ``sync_docs_dashboard.py`` merges both into
+the docs dashboard.
 
 Run:
     python bench_linear_elasticity.py --dofs 20000 100000 300000
-    python bench_linear_elasticity.py --solver direct --modes eager jit
+    python bench_linear_elasticity.py --solver direct --modes eager jit grad
     python bench_linear_elasticity.py --dofs 50000 --batch 16 --modes vmap-rhs
     python bench_linear_elasticity.py --no-x64 --output my_run.csv --tag laptop
 
 Solvers: ``krylov`` (matrix-free CG, scales in memory — default), ``direct``
-(cuDSS/host sparse), ``amg`` (rigid-body near-null-space; the ``vmap`` modes are
-skipped — its host setup cannot be vmapped).
+(cuDSS/host sparse), ``amg`` (rigid-body near-null-space). With ``linear=True``
+AMG is lowered at ``create_solver`` to a matrix-free Krylov solve preconditioned
+by a fixed V-cycle, so all five modes — ``vmap`` and ``grad`` included — apply to
+every solver.
 """
 import argparse
 import csv
@@ -53,9 +65,11 @@ def parse_args(argv=None):
                    help="Fixed physical cantilever dimensions (scale-invariant).")
     p.add_argument("--solver", choices=["krylov", "direct", "amg"], default="krylov")
     p.add_argument("--modes", nargs="+",
-                   choices=["eager", "jit", "vmap-lhs", "vmap-rhs"],
-                   default=["eager", "jit", "vmap-lhs", "vmap-rhs"],
-                   help="vmap-lhs: batch the material E (left-hand-side matrix A "
+                   choices=["eager", "jit", "grad", "vmap-lhs", "vmap-rhs"],
+                   default=["eager", "jit", "grad", "vmap-lhs", "vmap-rhs"],
+                   help="grad: jit(value_and_grad) of 0.5*|u|^2 w.r.t. the nodal E "
+                        "field (forward + adjoint solve). "
+                        "vmap-lhs: batch the material E (left-hand-side matrix A "
                         "varies -> B factorizations). vmap-rhs: batch the "
                         "load/traction (right-hand side b varies, A fixed -> "
                         "factor once, multi-RHS solve).")
@@ -230,8 +244,19 @@ def main(argv=None):
     print(f"dims={tuple(args.dims)} (fixed)  modes={args.modes}  "
           f"batch={args.batch}  output={out_path}\n")
 
-    def block(x):                                  # solvers return a flat array
+    def block(x):                                  # flat array, or a (value, grad) tuple
         return jax.block_until_ready(getattr(x, "dofs", x))
+
+    def aot(jitted, *call_args):
+        """Trace + compile ``jitted`` for ``call_args`` ahead of time.
+
+        Returns ``(compile_s, compiled)``. The wall time covers tracing and the
+        XLA compile only — no execution — and ``compiled`` is the executable
+        itself, so the timed repeats never pay a cache lookup or a re-trace.
+        """
+        t0 = perf_counter()
+        compiled = jitted.lower(*call_args).compile()
+        return perf_counter() - t0, compiled
 
     def solver_options():
         if args.solver == "direct":
@@ -239,6 +264,9 @@ def main(argv=None):
             # factor once and multi-RHS solve (factor-once / solve-many).
             return fe.DirectSolverOptions(reuse_factorization=True)
         if args.solver == "amg":
+            # linear=True lowers this at create_solver to a matrix-free Krylov
+            # solve with a fixed AMG V-cycle preconditioner (hierarchy built once
+            # from a sample Jacobian), so the solve itself jits / vmaps / grads.
             return fe.AMGSolverOptions(near_nullspace="rigid_body", verbose=False)
         return fe.KrylovSolverOptions(solver="cg", tol=args.tol,
                                       atol=args.tol * 1e-3, maxiter=args.maxiter,
@@ -328,12 +356,30 @@ def main(argv=None):
         if "jit" in args.modes:
             try:
                 jfn = jax.jit(lambda t, ig: solver(t, ig, traced_structure=ts))
-                t0 = perf_counter(); block(jfn(tp, initial))
-                compile_s = perf_counter() - t0
+                compile_s, jrun = aot(jfn, tp, initial)
                 record("jit", dof, res, 1, compile_s,
-                       timed(lambda: jfn(tp, initial), block, args.warmup, args.repeats))
+                       timed(lambda: jrun(tp, initial), block, args.warmup, args.repeats))
             except Exception as e:
                 record("jit", dof, res, 1, float("nan"), [], note=type(e).__name__)
+
+        # grad: forward solve + adjoint solve through the solver's custom_vjp.
+        # Objective 0.5*|u|^2, design variable = the nodal Young's modulus field.
+        # direct + reuse_factorization reuses the forward factors for the adjoint
+        # (SPD / symmetric matrix type); amg reuses its hierarchy; krylov runs a
+        # second CG. Read the adjoint overhead as grad / jit at the same DOF.
+        if "grad" in args.modes:
+            try:
+                def objective(E_field):
+                    tpi = fe.TracedParams(volume_vars=(E_field,), surface_vars=surf)
+                    u = solver(tpi, initial, traced_structure=ts)
+                    return 0.5 * jnp.dot(u, u)
+                gfn = jax.jit(jax.value_and_grad(objective))
+                compile_s, grun = aot(gfn, E)
+                record("grad", dof, res, 1, compile_s,
+                       timed(lambda: grun(E), block, args.warmup, args.repeats),
+                       note="value_and_grad of 0.5*|u|^2 wrt nodal E")
+            except Exception as e:
+                record("grad", dof, res, 1, float("nan"), [], note=type(e).__name__)
 
         # vmap-lhs: batch the material E (left-hand-side matrix A varies per
         #           element -> B distinct cuDSS factorizations). vmap-rhs: batch
@@ -346,11 +392,6 @@ def main(argv=None):
             vmap_kinds.append("rhs")
         for kind in vmap_kinds:
             label = f"vmap-{kind}"
-            if args.solver == "amg":
-                record(label, dof, res, args.batch, float("nan"), [],
-                       note="skipped: AMG host setup is not vmappable")
-                print(f"  {label} skipped (AMG host setup is not vmappable)")
-                continue
             try:
                 B = args.batch
                 scales = jnp.linspace(0.8, 1.2, B)
@@ -372,10 +413,9 @@ def main(argv=None):
                     batched_arg = tr_batch
 
                 vfn = jax.jit(jax.vmap(solve_one))
-                t0 = perf_counter(); block(vfn(batched_arg))
-                compile_s = perf_counter() - t0
+                compile_s, vrun = aot(vfn, batched_arg)
                 record(label, dof, res, B, compile_s,
-                       timed(lambda: vfn(batched_arg), block, args.warmup, args.repeats))
+                       timed(lambda: vrun(batched_arg), block, args.warmup, args.repeats))
             except Exception as e:
                 record(label, dof, res, args.batch, float("nan"), [],
                        note=type(e).__name__)

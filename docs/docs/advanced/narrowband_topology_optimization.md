@@ -243,8 +243,6 @@ T = T_p + solver(params, b=cmg.dirichlet_rhs(levels, params, T_p))
 #   dirichlet_rhs depends on the design, and jax.grad through it is complete
 ```
 
-`thermax/examples/thermal_isolation_3d_aniso_uncoupled.py` runs this way with `SOLVER = "cmg"`: anisotropic conduction (`vec=1`) and orientation-averaged elasticity (`vec=3`) from the same thermax Problems, sharing one band geometry, inside a jitted GCMMA driver.
-
 ### Differentiability
 
 The solver is differentiable via an implicit-diff `custom_vjp`: FEAX does **not** autodiff through the MGPCG iterations. Since $K(\rho)\,u = b$ with symmetric $K$, the adjoint is another MGPCG solve and the design gradient is $-\lambda^\top (\partial K/\partial \rho)\, u$ via a pure-JAX level-0 matvec:

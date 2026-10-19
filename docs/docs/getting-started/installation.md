@@ -48,13 +48,19 @@ pip install feax
 
 This will automatically install all required dependencies including:
 - `numpy`, `scipy` - Numerical computing
-- `meshio` - Mesh I/O operations
-- `gmsh` - Mesh generation
-- `fenics-basix` - Finite element basis functions
-- `matplotlib` - Visualization
 - `pandas` - Data handling
-- `equinox` - Neural networks / pytree utilities
-- `lineax` - Linear solvers
+- `fenics-basix` - Finite element basis functions
+- `tetgen` - Tetrahedralization behind `sphere_mesh` / `cylinder_mesh`
+- `pyvista` - Mesh I/O and visualization
+- `scikit-image` - Marching cubes for density / SDF surface extraction
+- `matplotlib` - Plotting
+- `equinox`, `optax` - Pytree utilities and optimizers
+- `asdex` - Sparse automatic differentiation (`feax.asd`)
+
+Gmsh is **not** a required dependency any more. Core meshing (`box_mesh`,
+`sphere_mesh`, `cylinder_mesh`, structured grids) works without it; only the
+`feax.gene` adaptive remeshing and SDF / density → volume-mesh extraction need
+it, via the `gmsh` extra below.
 
 ### Install from Source
 
@@ -83,6 +89,9 @@ FEAX provides optional dependency groups via `pyproject.toml`:
 | `.[sksparse]` | `scikit-sparse` | CPU host-side direct solvers (`cholmod`, `umfpack`) |
 | `.[amg]` | `amjax` + `pyamg` | Algebraic multigrid solver (`AMGSolverOptions`) |
 | `.[matfree]` | `matfree` | Matrix-free eigensolver utilities (linear buckling) |
+| `.[gmsh]` | `gmsh` | `feax.gene` adaptive remeshing and SDF / density → volume-mesh extraction |
+| `.[cad]` | `cadjoint` (installed from GitHub, not PyPI) | Differentiable CAD front end used as a preprocessor; see `examples/experimental/sdf_shape_optimization.py` |
+| `.[mesh]` | *(empty)* | Kept so `pip install feax[mesh]` keeps working; TetGen is a core dependency now |
 | `.[dev]` | pytest, black, ruff, mypy | Development and testing |
 
 ### scikit-sparse (Optional)

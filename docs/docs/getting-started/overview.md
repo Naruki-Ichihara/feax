@@ -30,14 +30,17 @@ bc = fe.DCboundary.DirichletBCConfig([
 # 4. Internal variables (parameters)
 traced_params = fe.TracedParams(volume_vars=(), surface_vars=[])
 
-# 5. Solver
+# 5. Traced structure (build first; keeps mesh-sized arrays out of jit constants)
+ts = fe.TracedStructure.from_problem(problem)
+
+# 6. Solver
 solver = fe.create_solver(problem, bc,
     solver_options=fe.DirectSolverOptions(),
-    linear=True, traced_params=traced_params)
+    linear=True, traced_params=traced_params, traced_structure=ts)
 initial = fe.zero_like_initial_guess(problem, bc)
 
-# 6. Solve
-sol = solver(traced_params, initial)
+# 7. Solve
+sol = solver(traced_params, initial, traced_structure=ts)
 ```
 
 ## Problem Definition
@@ -551,25 +554,28 @@ problem = MyProblem(mesh, vec=3, dim=3, matrix_view='UPPER')
 
 ## JAX Transformations
 
-FEAX solvers are compatible with JAX's functional transformations:
+FEAX solvers are compatible with JAX's functional transformations. Apply the
+transformation to the **call**, keep the varying data (`TracedParams`, boundary
+values, initial guess) as arguments, and pass the `TracedStructure` through:
 
 ```python
 import jax
 
 # JIT compilation — eliminates Python overhead
-fast_solver = jax.jit(solver)
-sol = fast_solver(traced_params, initial)
+solve = jax.jit(lambda tp, ts: solver(tp, initial, traced_structure=ts))
+sol = solve(traced_params, ts)
 
 # Differentiation — gradients through the entire solve
-grad_fn = jax.grad(lambda iv: np.sum(solver(iv, initial)**2))
+grad_fn = jax.grad(lambda tp: np.sum(solver(tp, initial, traced_structure=ts)**2))
 grads = grad_fn(traced_params)
 
 # Vectorization — batch parameter studies
-batched_solver = jax.vmap(solver, in_axes=(0, None))
-sols = batched_solver(batched_internal_vars, initial)
+batched_solve = jax.vmap(lambda tp: solver(tp, initial, traced_structure=ts))
+sols = batched_solve(batched_traced_params)
 ```
 
 **Notes:**
+- Build `fe.TracedStructure.from_problem(problem)` before `create_solver` and pass it to both. Without it, `jax.jit` bakes every mesh-sized array of the `Problem` into the executable as a constant, which inflates compile time and host memory and prevents reuse across problems of the same shape. See the [JIT Transform](../basic/jit_transform.md) tutorial.
 - `jax.grad` is supported (first-order). `jax.hessian` (second-order) is not, because solvers use `custom_vjp` internally.
 - `jax.vmap` works for all solver paths — linear, Newton, and reduced. Batching is over BC **values** and parameters; BC **locations** must be identical within a batch (see the [Solver Guide](./solver.md)).
 

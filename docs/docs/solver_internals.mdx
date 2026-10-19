@@ -105,8 +105,8 @@ direct factorization as the problem grows.
 
 ## 3. Geometric MG — grid-native and fully matrix-free (`NarrowBandCMG`)
 
-For domains on a structured voxel grid, `fe.NarrowBandCMG`
-([`solvers/cmg.py`](./api/reference/feax/solvers/cmg.md)) is a multigrid-preconditioned CG
+For domains on a structured voxel grid, `fe.experimental.NarrowBandCMG`
+([`experimental/cmg.py`](./api/reference/feax/experimental/cmg.md)) is a multigrid-preconditioned CG
 (MGPCG) that takes its transfers and smoothers **from the grid geometry itself** — no
 algebraic setup, and nothing is ever assembled.
 

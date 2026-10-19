@@ -10,6 +10,16 @@ JAX's `jax.jit` compiles functions to optimized machine code. For FEA solvers th
 - **One-time compilation overhead** on the first call
 - **Cached compiled code** for subsequent calls with the same structure
 
+The recommended pattern in FEAX has three parts:
+
+1. Build a `fe.TracedStructure` from the problem **first**, and pass it both to
+   `fe.create_solver` and to every solver call.
+2. Keep everything that varies — material parameters (`TracedParams`), boundary
+   values (`bc.replace_vals`), the initial guess — as **arguments** of the jitted
+   function, not as closure constants.
+3. Wrap the **call** to the solver in `jax.jit` (a small function or a lambda),
+   rather than `jax.jit`-ing the object returned by `create_solver`.
+
 ## Problem Setup
 
 We use the same cantilever beam problem from the [Linear Elasticity](./linear_elasticity.md) tutorial:
@@ -53,38 +63,91 @@ bc_config = fe.DCboundary.DirichletBCConfig([
 bc = bc_config.create_bc(problem)
 ```
 
-## Creating JIT and Non-JIT Solvers
+## Traced Structure
+
+`Problem` is a JAX pytree with **no dynamic leaves**: every mesh-sized array it
+holds (quadrature geometry, CSR slot maps, Dirichlet masks, scatter maps) is
+static structure. If a solver is traced under `jax.jit` straight from the
+`Problem`, all of those arrays are captured as closure constants and baked into
+the executable. XLA then constant-folds whole subgraphs of them at compile time,
+which spikes host memory (on unified-memory devices such as GB10 this can take
+the machine down), inflates compile time, and leaves one copy per mesh shape
+pinned in the compilation cache.
+
+`fe.TracedStructure` is the runtime-argument counterpart of `TracedParams`: it
+carries the same arrays as **pytree leaves**, so they enter the compiled program
+as traced inputs. Build it right after the problem and boundary conditions, and
+pass it to `create_solver` *and* to every call:
+
+```python
+ts = fe.TracedStructure.from_problem(problem)
+```
+
+Building it also releases the large host-side slot maps held by the `Problem`,
+so do it before creating the solver.
+
+## Creating the Solver
 
 ```python
 traction_array = fe.TracedParams.create_uniform_surface_var(problem, traction)
 traced_params  = fe.TracedParams(volume_vars=(), surface_vars=[(traction_array,)])
 
-solver_option = fe.DirectSolverOptions()
-
-solver_no_jit = fe.create_solver(problem, bc, solver_option, linear=True, traced_params=traced_params)
-solver_jit    = jax.jit(fe.create_solver(problem, bc, solver_option, linear=True, traced_params=traced_params))
+solver = fe.create_solver(
+    problem, bc,
+    solver_options=fe.DirectSolverOptions(),
+    linear=True,
+    traced_params=traced_params,
+    traced_structure=ts,
+)
 
 initial = fe.zero_like_initial_guess(problem, bc)
 ```
 
-`jax.jit` wraps the solver into a compiled function. Compilation happens on the first call and is cached for subsequent calls.
+`create_solver` returns a differentiable callable (a `custom_vjp`) that can be
+called eagerly or under `jax.jit`. There is no "jit solver" to construct; the
+transformation is applied where the solver is **called**:
+
+```python
+# Eager (op-by-op) call — no compilation
+sol_no_jit = solver(traced_params, initial, traced_structure=ts)
+
+# Jitted call — everything that may change is an argument
+@jax.jit
+def solve(tp, ts):
+    return solver(tp, initial, traced_structure=ts)
+
+sol_jit = solve(traced_params, ts)
+```
+
+Compilation happens on the first call to `solve` and is cached for subsequent
+calls with the same array shapes. Because `tp` and `ts` are arguments, a new
+material field or a different problem with the **same shapes** reuses the
+compiled executable instead of triggering a recompile.
+
+:::note Direct solvers and pre-warming
+With `DirectSolverOptions`, `create_solver` factorizes a sample Jacobian once
+outside any trace (`prewarm=True`, the default). Keep it on whenever the solver
+is called under `jit`, `vmap`, or `grad`: the direct backend's first-call
+initialization must not see tracers. Only a single eager forward solve that is
+never differentiated can set `prewarm=False` to skip that extra factorization.
+:::
 
 ## Benchmarking
 
 ```python
 # No JIT
 start = time.perf_counter()
-sol_no_jit = solver_no_jit(traced_params, initial).block_until_ready()
+sol_no_jit = solver(traced_params, initial, traced_structure=ts).block_until_ready()
 time_no_jit = time.perf_counter() - start
 
 # JIT — first call (includes compilation)
 start = time.perf_counter()
-sol_jit_first = solver_jit(traced_params, initial).block_until_ready()
+sol_jit_first = solve(traced_params, ts).block_until_ready()
 time_jit_with_compile = time.perf_counter() - start
 
 # JIT — second call (compiled, fast)
 start = time.perf_counter()
-sol_jit_second = solver_jit(traced_params, initial).block_until_ready()
+sol_jit_second = solve(traced_params, ts).block_until_ready()
 time_jit_compiled = time.perf_counter() - start
 
 compile_overhead = time_jit_with_compile - time_jit_compiled
@@ -152,13 +215,33 @@ fe.utils.save_sol(mesh=mesh, sol_file=os.path.join(data_dir, 'vtk/u_jit.vtu'),
                   point_infos=[("displacement", displacement)])
 ```
 
+## Composing with `jax.grad` and `jax.vmap`
+
+The same rule — jit the call, keep the varying data as arguments — extends to
+the other transformations. In optimization loops, jit the **whole** objective
+(filters, solve, response) rather than the solver alone:
+
+```python
+def compliance(tp, ts):
+    u = solver(tp, initial, traced_structure=ts)   # fe.Solution
+    return np.dot(u.dofs, u.dofs)
+
+obj_and_grad = jax.jit(jax.value_and_grad(compliance))
+c, dc = obj_and_grad(traced_params, ts)            # dc is a TracedParams
+
+# Batch over boundary values: BC locations stay fixed, only the values vary
+solve_batch = jax.jit(jax.vmap(
+    lambda v: solver(traced_params, initial, bc=bc.replace_vals(v), traced_structure=ts)))
+```
+
 ## Key Takeaways
 
-1. **Significant speedup** for repeated solver calls via XLA compilation
-2. **One-time compilation overhead** on the first call — quickly amortized
-3. **Essential for optimization and parameter studies**
-4. **Combine with `jax.vmap` and `jax.grad`** for differentiable physics workflows
-5. **Use `.block_until_ready()`** when benchmarking asynchronous JAX computations
+1. **Build `fe.TracedStructure` first** and pass it to `create_solver` and to every call — it keeps mesh-sized arrays out of the compiled executable
+2. **Jit the call, not `create_solver`**: `jax.jit(lambda tp, ts: solver(tp, initial, traced_structure=ts))`
+3. **Keep `prewarm=True`** on `DirectSolverOptions` whenever the solver runs under `jit` / `vmap` / `grad`
+4. **One-time compilation overhead** on the first call — quickly amortized, and reused across problems with the same shapes
+5. **Combine with `jax.vmap` and `jax.grad`** by jitting the whole objective or batch function
+6. **Use `.block_until_ready()`** when benchmarking asynchronous JAX computations
 
 ## Further Reading
 

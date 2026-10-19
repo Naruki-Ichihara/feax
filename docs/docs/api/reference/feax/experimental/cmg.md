@@ -34,8 +34,9 @@ Free (chosen through a :class:`Material`):
   the per-cell constitutive matrix ``D = d flux / d u_grad`` — anisotropic,
   orientation-dependent, multi-material, ... at ``(3*vec)**2`` floats per cell
   and roughly 5x the matvec cost. :meth:``9 pulls the
-  ``tensor_map`` out of an ordinary :class:``2 subclass, so the cmg
-  operator is generated from the same kernel feax assembles from.
+  ``tensor_map`` (or the gradient of the energy density) out of an ordinary
+  :class:``2, so the cmg operator is generated from the same kernel
+  feax assembles from.
 
 Conventions
 -----------
@@ -64,8 +65,16 @@ Usage::
 
     levels = cmg.build(active_cells)
     b      = cmg.load_vector(levels, node_ids, comp=2, value=-1.0)
+    b      = cmg.face_load_vector(levels, axis=1, side=0, traction=(0, -1.0, 0))
     solver = cmg.create_solver(levels, b)          # None -&gt; cuDSS coarsest
     u      = solver(params)                        # differentiable (implicit vjp)
+    u      = solver(params, b=other_rhs)           # ... in the design AND the rhs
+    # non-zero Dirichlet values: lift them (u_p holds the values on fixed DOFs)
+    u      = u_p + solver(params, b=cmg.dirichlet_rhs(levels, params, u_p))
+
+A grid built by :meth:`Material`2 from a ``box_mesh`` shares
+its node and cell numbering, so a full-grid cmg field and a feax Problem on the
+box mesh use one layout (no permutation).
 
 #### hex\_shape\_grads
 
@@ -231,19 +240,28 @@ what cmg relies on). Pass it whenever the law is not obviously linear.
 ```python
 @classmethod
 def from_problem(cls,
-                 problem_cls,
+                 problem,
                  grid,
-                 vec,
+                 vec=None,
                  *,
                  additional_info=(),
                  sample_params=None,
                  **problem_kw)
 ```
 
-Take the ``tensor_map`` of a :class:`feax.Problem` subclass. The
-Problem is instantiated on a one-cell mesh with the grid&#x27;s spacing
-(``problem_cls(mesh, vec=vec, dim=3, ele_type=&#x27;HEX8&#x27;,
+The material of a :class:`feax.Problem`.
+
+``problem`` is either an INSTANCE (its maps are used as they are; the
+mesh it lives on is irrelevant, ``vec`` is read from it) or a SUBCLASS,
+which is instantiated on a one-cell mesh with the grid&#x27;s spacing
+(``problem(mesh, vec=vec, dim=3, ele_type=&#x27;HEX8&#x27;,
 additional_info=additional_info, **problem_kw)``).
+
+The constitutive map is ``get_tensor_map()`` when the Problem defines
+it, else the gradient of ``get_energy_density()`` with respect to the
+field gradient (``flux = d psi / d u_grad``) — so energy-based Problems
+work unchanged. Either way it must be linear in the field
+(``sample_params`` checks that).
 
 #### check\_linear
 
@@ -257,11 +275,21 @@ with a symmetric ``D`` at ``params_cell``.
 #### auto\_levels
 
 ```python
-def auto_levels(dims, floor=4)
+def auto_levels(dims, floor=16)
 ```
 
 Geometric MG depth: ceil-halve each dim (works for arbitrary, incl. odd,
-grid sizes) until the smallest dim reaches ``floor``.
+grid sizes) while the smallest dim of the next level would still be
+``&gt;= floor``, so every level has at least ``floor`` cells per axis.
+
+The default ``floor=16`` stops coarsening while the coarsest level is still
+a few thousand cells per short dimension, and leaves the rest to the
+coarsest-level solver (cuDSS factors ~1e5 DOF in milliseconds). Deeper
+hierarchies cost more sequential V-cycle work per iteration AND converge
+worse for anisotropic / high-contrast materials, whose coarse operators
+(averaged material state) degrade with every level: on a 33^3 anisotropic
+RAMP elasticity problem, 5 levels (coarsest 3^3) took 71 PCG iterations and
+2 levels (coarsest 17^3) took 16, ten times faster overall.
 
 #### build\_geometry
 
@@ -289,10 +317,18 @@ Matrix-free O(band) geometric-MG (MGPCG) solver for a structured band.
 ``material``   : a :class:``3 (default: isotropic SIMP elasticity
                  built from ``nu``/``Emin``/``E0``/``penal`` and the grid
                  spacing). Sets ``vec``.
-``n_levels``   : MG levels (default from :func:`feax.StructuredGrid`6).
+``n_levels``   : MG levels (default from :func:`feax.StructuredGrid`6: coarsen while
+                 the smallest dim stays &gt;= 16; shallow is faster here).
 ``bucket``     : per-level padded capacities are rounded up to a multiple of
                  this, so a moving band reuses the compiled MGPCG while its
                  sizes stay in the same bucket.
+``precision``  : ``&quot;double&quot;`` runs everything in float64. ``&quot;mixed&quot;`` runs
+                 the multigrid PRECONDITIONER (smoother, transfers, coarse
+                 Krylov) in float32 and keeps the outer CG — residual,
+                 search direction, the level-0 matvec and the cuDSS coarse
+                 solve — in float64, so the converged solution is a float64
+                 solution to ``cg_tol``. On GPUs with slow float64 (consumer
+                 / GB10 class) this makes a V-cycle several times cheaper.
 
 Usage (feax create_solver convention — one differentiable solver)::
 
@@ -331,6 +367,38 @@ Nodal-load RHS on the compact band DOFs: set component ``comp`` (in
 one for a scalar field) to ``value`` at every global node in
 ``node_ids`` (must be in the band).
 
+#### face\_load\_vector
+
+```python
+def face_load_vector(levels, axis, side, traction)
+```
+
+Consistent nodal loads of a uniform traction on one boundary face of
+the grid (``axis`` 0/1/2, ``side`` 0 = the ``index == 0`` face, 1 = the
+``index == n`` face), restricted to the band&#x27;s cells on that face.
+``traction`` is the force per unit area, ``(vec,)``, applied in the
+POSITIVE coordinate directions. feax&#x27;s ``surface_map`` convention adds
+the map to the residual, so a feax traction ``t`` corresponds to
+``traction = -t`` here.
+
+For bilinear faces under uniform traction the consistent load is one
+quarter of ``traction * face_area`` at each of the face&#x27;s 4 nodes.
+
+#### dirichlet\_rhs
+
+```python
+def dirichlet_rhs(levels, params, prescribed)
+```
+
+Right-hand side of the lifting for NON-ZERO Dirichlet values.
+
+``prescribed`` is a band DOF vector holding the prescribed values on the
+fixed DOFs (anything on free DOFs is ignored). With ``u_0 = solver(params,
+b=dirichlet_rhs(...))`` the field is ``u = prescribed_on_fixed + u_0``:
+``K_ff u_0 = -K_fc u_c``. Differentiable in ``params`` (the RHS depends
+on the design), so ``jax.grad`` through ``solver(params, b=...)`` is
+complete.
+
 #### compliance\_and\_dc
 
 ```python
@@ -346,16 +414,19 @@ structure (numpy).
 
 ```python
 def create_solver(levels,
-                  b,
+                  b=None,
                   solver_options=None,
                   jit=True,
                   return_solution=True)
 ```
 
-Build the cmg solver for this band + load ``b`` (compact band DOF
-layout), matching feax&#x27;s ``create_solver`` convention: returns a single
-callable ``solver(params) -&gt; u`` that is differentiable (implicit-diff
-``custom_vjp``). Compliance sensitivity for the analytic/OC path is
+Build the cmg solver for this band, matching feax&#x27;s
+``create_solver`` convention: returns a single callable
+``solver(params, b=None) -&gt; u`` that is differentiable (implicit-diff
+``custom_vjp``) in the design AND in the right-hand side. ``b`` (compact
+band DOF layout) given here is the default load; a ``b`` passed to the
+call overrides it (e.g. a design-dependent :meth:``0).
+Compliance sensitivity for the analytic/OC path is
 ``compliance_and_dc(levels, params, solver(params))``.
 
 ``solver_options`` selects the coarsest-level solver: ``None`` /
@@ -369,7 +440,7 @@ executable is reused across bands whose padded (bucketed) shapes match.
 changes every iteration avoids the per-iteration recompile (pair with
 ``bucket=1`` for an exact-size band). Result and gradient are identical.
 
-The result is a :class:``6 (one field,
+The result is a :class:``9 (one field,
 ``(num_band_nodes, vec)``) by default; ``return_solution=False`` gives
 the raw flat band vector.
 

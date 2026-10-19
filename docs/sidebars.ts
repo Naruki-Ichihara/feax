@@ -134,7 +134,7 @@ const sidebars: SidebarsConfig = {
         'api/reference/feax/gene/filters',
         'api/reference/feax/gene/responses',
         'api/reference/feax/gene/mdmm',
-        'api/reference/feax/gene/sdf',
+        'api/reference/feax/gene/length_scale',
         'api/reference/feax/gene/mesh_extraction',
       ],
     },

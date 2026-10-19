@@ -43,18 +43,20 @@ conventions for each element type.
 
 ```python
 @staticmethod
-def from_gmsh(gmsh_mesh: meshio.Mesh,
+def from_gmsh(gmsh_mesh: 'object',
               element_type: Optional[str] = None) -> 'Mesh'
 ```
 
-Convert meshio.Mesh (from Gmsh) to FEAX Mesh.
+Convert a meshio-style mesh (e.g. from Gmsh) to a FEAX Mesh.
 
-This static method converts a meshio.Mesh object (typically from reading
-a Gmsh file or using meshio&#x27;s mesh generation) to a FEAX Mesh object.
+Accepts any object exposing meshio&#x27;s ``.points`` array and ``.cells``
+list of cell blocks (each with ``.type`` and ``.data``) — for example a
+``meshio.Mesh`` returned by ``meshio.read(...)``. ``meshio`` is not a
+FEAX dependency; install it separately if you need to read mesh files.
 
 Parameters
 ----------
-- **gmsh_mesh** (*meshio.Mesh*): Meshio mesh object containing points and cells
+- **gmsh_mesh** (*meshio.Mesh (or compatible)*): Mesh object containing points and cells
 - **element_type** (*str, optional*): FEAX element type to use. If None, automatically detects from gmsh_mesh. Supported: &#x27;TET4&#x27;, &#x27;TET10&#x27;, &#x27;HEX8&#x27;, &#x27;HEX20&#x27;, &#x27;HEX27&#x27;, &#x27;TRI3&#x27;, &#x27;TRI6&#x27;, &#x27;QUAD4&#x27;, &#x27;QUAD8&#x27;
 
 
@@ -184,18 +186,19 @@ def box_mesh(size: Union[float, Tuple[float, float, float]],
              recombine: bool = True) -> Mesh
 ```
 
-Generate structured or unstructured mesh for box domain using Gmsh.
+Generate a structured mesh for a box domain (pure numpy, no Gmsh).
 
-Creates high-quality meshes using Gmsh, supporting both hexahedral (HEX8)
-and tetrahedral (TET4) elements with structured or unstructured meshing.
+Creates a structured tensor-product grid of hexahedral (HEX8) elements, or
+a conforming tetrahedral (TET4) mesh obtained by splitting each hexahedron
+into 6 tetrahedra. No external mesh generator is required.
 
 Parameters
 ----------
 - **size** (*float or tuple of 3 floats*): If float: creates cube with side length = size If tuple: (length_x, length_y, length_z) for rectangular box
 - **origin** (*tuple of 3 floats, optional*): Origin point (x0, y0, z0) of the box. Default is (0, 0, 0)
-- **mesh_size** (*float, optional*): Target element size. Smaller values create finer meshes. Default is 0.1
-- **element_type** (*str, optional*): &#x27;HEX8&#x27; for hexahedral elements (default) or &#x27;TET4&#x27; for tetrahedral
-- **recombine** (*bool, optional*): If True and element_type=&#x27;HEX8&#x27;, use structured recombination algorithm. Default is True for better quality hexahedral meshes.
+- **mesh_size** (*float, optional*): Target element size. Smaller values create finer meshes. Default is 0.1. The number of elements along an edge of length L is ``int(L / mesh_size)`` (at least one).
+- **element_type** (*str, optional*): &#x27;HEX8&#x27; (default) or &#x27;HEX20&#x27; for hexahedral elements, or &#x27;TET4&#x27; for tetrahedral.
+- **recombine** (*bool, optional*): Deprecated / no-op. Kept for backward compatibility; the box mesh is always a structured grid now.
 
 
 Returns
@@ -205,8 +208,6 @@ Returns
 
 Raises
 ------
-ImportError
-    If gmsh is not installed
 ValueError
     If element_type is not &#x27;HEX8&#x27; or &#x27;TET4&#x27;
 
@@ -214,19 +215,18 @@ Examples
 --------
 Create structured HEX8 mesh:
 ```python
->>> mesh = box_mesh_gmsh(1.0, mesh_size=0.1, element_type=&#x27;HEX8&#x27;)
+>>> mesh = box_mesh(1.0, mesh_size=0.1, element_type=&#x27;HEX8&#x27;)
 ```
-Create unstructured TET4 mesh:
+Create TET4 mesh:
 ```python
->>> mesh = box_mesh_gmsh((2.0, 1.0, 0.5), mesh_size=0.05, element_type=&#x27;TET4&#x27;)
+>>> mesh = box_mesh((2.0, 1.0, 0.5), mesh_size=0.05, element_type=&#x27;TET4&#x27;)
 ```
 
 Notes
 -----
-- Gmsh provides superior mesh quality compared to simple structured meshes
-- HEX8 meshes are preferred for most applications (better accuracy per DOF)
-- TET4 meshes are more flexible for complex geometries
-- For simple boxes with uniform elements, use box_mesh() for speed
+- HEX8 nodes/cells follow the meshio/VTK hexahedron ordering.
+- TET4 uses a Freudenthal (6-tet) split of each hexahedron; the result is
+  conforming because every cell of the structured grid is a pure translate.
 
 #### rectangle\_mesh
 
@@ -268,41 +268,38 @@ def sphere_mesh(radius: float,
                 element_type: str = 'TET4') -> Mesh
 ```
 
-Generate mesh for sphere using Gmsh.
+Generate a tetrahedral mesh for a sphere (PyVista surface + TetGen).
 
-Creates a tetrahedral or hexahedral mesh for a spherical domain.
-Note: Hexahedral meshing of spheres is challenging and may produce
-lower quality elements.
+A triangulated sphere surface is generated with PyVista and filled with
+TET4 elements by TetGen. No Gmsh dependency.
 
 Parameters
 ----------
-- **radius** (*float*)
-- **center** (*tuple of 3 floats, optional*)
-- **mesh_size** (*float, optional*)
-- **element_type** (*str, optional*)
+- **radius** (*float*): Radius of the sphere
+- **center** (*tuple of 3 floats, optional*): Center point (x, y, z) of the sphere. Default is (0, 0, 0)
+- **mesh_size** (*float, optional*): Target element size. Default is 0.1
+- **element_type** (*str, optional*): Only &#x27;TET4&#x27; is supported.
 
 
 Returns
 -------
-- **mesh** (*Mesh*)
+- **mesh** (*Mesh*): Mesh with TET4 elements
 
 
 Raises
 ------
 ImportError
-If gmsh is not installed
+    If &#x27;tetgen&#x27; cannot be imported, which means a broken install: it is
+    a required dependency of feax, not an optional one
+ValueError
+    If element_type is not &#x27;TET4&#x27;
 
 Examples
 --------
 Create TET4 sphere mesh:
 ```python
->>> mesh = sphere_mesh_gmsh(1.0, mesh_size=0.1)
+>>> mesh = sphere_mesh(1.0, mesh_size=0.1)
 ```
-
-Notes
------
-- TET4 is strongly recommended for spheres (better quality)
-- HEX8 meshes for spheres may have distorted elements
 
 #### cylinder\_mesh
 
@@ -315,9 +312,10 @@ def cylinder_mesh(radius: float,
                   element_type: str = 'TET4') -> Mesh
 ```
 
-Generate mesh for cylinder using Gmsh.
+Generate a tetrahedral mesh for a cylinder (PyVista surface + TetGen).
 
-Creates a tetrahedral or hexahedral mesh for a cylindrical domain.
+A closed cylinder surface is generated with PyVista and filled with TET4
+elements by TetGen. No Gmsh dependency.
 
 Parameters
 ----------
@@ -326,28 +324,27 @@ Parameters
 - **center** (*tuple of 3 floats, optional*): Center point (x, y, z) of the cylinder base. Default is (0, 0, 0)
 - **axis** (*tuple of 3 floats, optional*): Direction vector of cylinder axis. Default is (0, 0, 1) (z-axis)
 - **mesh_size** (*float, optional*): Target element size. Default is 0.1
-- **element_type** (*str, optional*): &#x27;TET4&#x27; for tetrahedral (default) or &#x27;HEX8&#x27; for hexahedral
+- **element_type** (*str, optional*): Only &#x27;TET4&#x27; is supported.
 
 
 Returns
 -------
-- **mesh** (*Mesh*): Mesh with TET4 or HEX8 elements
+- **mesh** (*Mesh*): Mesh with TET4 elements
 
 
 Raises
 ------
 ImportError
-    If gmsh is not installed
+    If &#x27;tetgen&#x27; cannot be imported, which means a broken install: it is
+    a required dependency of feax, not an optional one
+ValueError
+    If element_type is not &#x27;TET4&#x27;
 
 Examples
 --------
 Create TET4 cylinder mesh:
 ```python
->>> mesh = cylinder_mesh_gmsh(0.5, 2.0, mesh_size=0.1)
-```
-Create HEX8 cylinder mesh:
-```python
->>> mesh = cylinder_mesh_gmsh(0.5, 2.0, mesh_size=0.1, element_type=&#x27;HEX8&#x27;)
+>>> mesh = cylinder_mesh(0.5, 2.0, mesh_size=0.1)
 ```
 
 #### refine\_mesh
@@ -356,23 +353,24 @@ Create HEX8 cylinder mesh:
 def refine_mesh(mesh: Mesh, levels: int = 1) -> Mesh
 ```
 
-Uniformly refine a mesh by edge subdivision via Gmsh.
+Uniformly refine a mesh by edge subdivision (pure numpy, no Gmsh).
 
 Each refinement level subdivides every cell into smaller cells of
-the *same type* (Gmsh ``mesh.refine``):
+the *same type*:
 
-* ``QUAD4`` → 4 sub-quads        (1 mesh-edge midpoint per edge + cell centre)
+* ``QUAD4`` → 4 sub-quads        (4 edge midpoints + cell centre)
 * ``TRI3``  → 4 sub-triangles    (3 edge midpoints)
-* ``HEX8``  → 8 sub-hexes        (Bey-style refinement)
-* ``TET4``  → 8 sub-tets         (Bey-style refinement)
+* ``HEX8``  → 8 sub-hexes        (trilinear 2x2x2 subdivision)
+* ``TET4``  → 8 sub-tets         (Bey subdivision)
 
-Edge midpoints are shared between adjacent cells, so node counts
-grow as ``≈ 4ⁿ`` (2-D) / ``≈ 8ⁿ`` (3-D) per level — call multiple
-times only if you really need it (memory grows quickly).
+Edge midpoints (and quad-face centres) are shared between adjacent
+cells, so the result is conforming. Node counts grow as ``≈ 4ⁿ``
+(2-D) / ``≈ 8ⁿ`` (3-D) per level — call multiple times only if you
+really need it (memory grows quickly).
 
-Works on *any* mesh — structured or unstructured, generated by
-:func:``4, :func:``5, :func:``6,
-or read from an external file.
+Works on *any* mesh of a supported type — structured or unstructured,
+generated by :func:``2, :func:``3,
+:func:``4, or read from an external file.
 
 Parameters
 ----------
@@ -396,11 +394,7 @@ Examples
 
 Notes
 -----
-* Internally feeds the mesh to Gmsh as a discrete entity, calls
-  ``gmsh.model.mesh.refine()`` ``levels`` times, then reads it back.
-* Higher-order elements (``TRI6``/``QUAD8``/``QUAD9``/``TET10``/
-  ``HEX20``/``HEX27``) are accepted but Gmsh refines them as their
-  first-order counterpart and re-promotes; node ordering of the
-  newly inserted mid-edge / centre nodes follows Gmsh&#x27;s convention,
-  which matches meshio.
+* Only the linear element types ``TRI3``, ``QUAD4``, ``TET4`` and
+  ``HEX8`` are supported. Refine the linear mesh first, then promote
+  to a higher order if needed.
 

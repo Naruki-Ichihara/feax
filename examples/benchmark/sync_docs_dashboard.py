@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
-"""Sync bench.csv into the docs benchmark dashboard.
+"""Sync benchmark CSVs into the docs benchmark dashboard.
 
-Reads ``bench.csv`` next to this script, converts it to the compact JSON the
-interactive dashboard embeds, and rewrites the ``const DATA = [...]`` literal in
-``docs/static/benchmarks/dashboard.html``. Run this after appending new
-benchmark rows (e.g. via ``run_cudss_guarded.sh`` / ``run_krylov_guarded.sh``),
-then rebuild the docs (``cd docs && npx docusaurus build``) or let the dev
-server pick it up.
+Reads every result file — the local, git-ignored ``bench.csv`` next to this
+script plus the tracked ``results/*.csv`` — converts the rows to the compact
+JSON the interactive dashboard embeds, and rewrites two literals in
+``docs/static/benchmarks/dashboard.html``:
+
+* ``const DATA = [...]``  — the rows;
+* ``const MODES = [...]`` — the execution modes present in the data, in the
+  canonical order below, so a new mode shows up in the controls without
+  editing the HTML by hand (its label / dash / marker fall back to defaults
+  unless ``MODE_LABEL`` etc. in the dashboard know it).
+
+Run this after appending benchmark rows (e.g. via ``run_guarded.sh``), then
+rebuild the docs (``cd docs && npm run build``) or let the dev server pick it up.
 
     python examples/benchmark/sync_docs_dashboard.py
 """
 import csv
+import glob
 import json
 import os
 import re
@@ -19,6 +27,8 @@ from collections import Counter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CSV = os.path.join(HERE, "bench.csv")
+RESULTS = sorted(glob.glob(os.path.join(HERE, "results", "*.csv")))
+MODE_ORDER = ["eager", "jit", "grad", "vmap-lhs", "vmap-rhs"]
 DASH = os.path.normpath(os.path.join(HERE, "..", "..", "docs", "static",
                                      "benchmarks", "dashboard.html"))
 
@@ -28,6 +38,7 @@ DEVICE_SHORT = {
     "NVIDIA GB10": "GB10",
     "NVIDIA H100 80GB HBM3": "H100",
     "NVIDIA H100 PCIe": "H100",
+    "NVIDIA A100-SXM4-40GB": "A100",
     "NVIDIA RTX PRO 4500 Blackwell": "RTX 4500",
 }
 
@@ -57,13 +68,19 @@ def load_rows(path):
 
 
 def main():
-    if not os.path.exists(CSV):
-        sys.exit(f"bench.csv not found at {CSV}")
+    sources = ([CSV] if os.path.exists(CSV) else []) + RESULTS
+    if not sources:
+        sys.exit(f"no result CSVs: neither {CSV} nor results/*.csv exist")
     if not os.path.exists(DASH):
         sys.exit(f"dashboard not found at {DASH}")
 
-    rows = load_rows(CSV)
+    rows = []
+    for src in sources:
+        rows.extend(load_rows(src))
     data_js = json.dumps(rows, separators=(",", ":"))
+    modes = sorted({r["mode"] for r in rows},
+                   key=lambda m: (MODE_ORDER.index(m) if m in MODE_ORDER else 99, m))
+    modes_js = json.dumps(modes)
 
     html = open(DASH).read()
     new_html, n = re.subn(r"const DATA = \[.*?\];",
@@ -71,7 +88,13 @@ def main():
                           count=1, flags=re.S)
     if n != 1:
         sys.exit("could not find `const DATA = [...]` in the dashboard")
+    new_html, n = re.subn(r"const MODES = \[[^\]]*\];",
+                          "const MODES = " + modes_js + ";", new_html, count=1)
+    if n != 1:
+        sys.exit("could not find `const MODES = [...]` in the dashboard")
     open(DASH, "w").write(new_html)
+    print("sources:", ", ".join(os.path.relpath(s, HERE) for s in sources))
+    print("modes:", modes)
 
     dev = Counter(r["dev"] for r in rows)
     combo = Counter(r["solver"] + "/" + r["mode"] for r in rows)

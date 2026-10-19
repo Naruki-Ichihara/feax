@@ -323,10 +323,15 @@ def prewarm_direct_solvers(
     def _is_direct_solver(opts):
         return isinstance(opts, DirectSolverOptions)
 
+    def _wants_prewarm(opts):
+        # `prewarm=False` is a pure solve saying it will do the
+        # initialization itself on its own untraced first call.
+        return _is_direct_solver(opts) and getattr(opts, "prewarm", True)
+
     if traced_params is None:
         return
 
-    if not (_is_direct_solver(forward_options) or _is_direct_solver(adjoint_options)):
+    if not (_wants_prewarm(forward_options) or _wants_prewarm(adjoint_options)):
         return
 
     from ..utils import zero_like_initial_guess
@@ -338,11 +343,11 @@ def prewarm_direct_solvers(
         sample_J = J_bc_func(initial_tmp, traced_params)
     b_tmp = np.zeros(sample_J.shape[0])
 
-    if _is_direct_solver(forward_options):
+    if _wants_prewarm(forward_options):
         print("[feax] Pre-warming direct solver (forward) with sample Jacobian...")
         forward_solve_fn(sample_J, b_tmp, b_tmp)
         print("[feax] direct solver (forward) initialized.")
-    if _is_direct_solver(adjoint_options) and adjoint_solve_fn is not forward_solve_fn:
+    if _wants_prewarm(adjoint_options) and adjoint_solve_fn is not forward_solve_fn:
         print("[feax] Pre-warming direct solver (adjoint) with sample Jacobian...")
         adjoint_solve_fn(sample_J, b_tmp, b_tmp)
         print("[feax] direct solver (adjoint) initialized.")

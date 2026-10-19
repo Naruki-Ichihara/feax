@@ -404,6 +404,7 @@ Parameters
 - **solver** (*str, default &quot;auto&quot;*): Direct solver algorithm: - &quot;auto&quot;: Automatically selected based on backend and matrix property   (CUDA -&gt; cudss, CPU SPD -&gt; cholmod, otherwise umfpack).   Resolved at create_solver time. - &quot;cudss&quot;: NVIDIA cuDSS direct solver (GPU only) - &quot;spsolve&quot;: sparse direct solve via SciPy callback (CPU host) - &quot;umfpack&quot;: sparse direct solve via scikit-sparse UMFPACK (CPU host) - &quot;cholmod&quot;: CHOLMOD sparse Cholesky via scikit-sparse (SPD)
 - **cudss_options** (*CUDSSOptions, optional*): cuDSS-specific configuration. Only used when solver=&quot;cudss&quot;. Auto-configured when solver=&quot;auto&quot; and backend is CUDA.
 - **sksparse_options** (*SKSPARSEOptions, optional*): Host-side direct solver configuration shared by ``spsolve``, ``umfpack``, and ``cholmod``.
+- **prewarm** (*bool, default True*): Whether ``create_solver`` factorizes a sample Jacobian before returning, so the direct backend&#x27;s first-call initialization happens outside any JAX trace.
 
 
 #### uses\_x0

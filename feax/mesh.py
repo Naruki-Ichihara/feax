@@ -301,12 +301,18 @@ def _tetrahedralize_surface(surface, mesh_size: float) -> Tuple[onp.ndarray, onp
     points : np.ndarray, shape (n_nodes, 3)
     cells : np.ndarray, shape (n_cells, 4), int32
     """
+    # Imported here rather than at module scope, the way `pyvista` is a few
+    # functions below: both are required dependencies, and both cost more to
+    # import than every caller of this module should pay. TetGen being absent
+    # now means a broken install rather than a missing option, so the message
+    # says reinstall rather than "pip install tetgen".
     try:
         import tetgen
     except ImportError as exc:  # pragma: no cover - environment dependent
         raise ImportError(
-            "sphere_mesh/cylinder_mesh require the 'tetgen' package. "
-            "Install it with `pip install tetgen`."
+            "'tetgen' is missing, but feax requires it: sphere_mesh and "
+            "cylinder_mesh are built on it. Reinstall feax, or install the "
+            "package directly with `pip install tetgen`."
         ) from exc
 
     tet = tetgen.TetGen(surface.triangulate())
@@ -704,7 +710,8 @@ def sphere_mesh(
     Raises
     ------
     ImportError
-        If the 'tetgen' package is not installed
+        If 'tetgen' cannot be imported, which means a broken install: it is
+        a required dependency of feax, not an optional one
     ValueError
         If element_type is not 'TET4'
 
@@ -768,7 +775,8 @@ def cylinder_mesh(
     Raises
     ------
     ImportError
-        If the 'tetgen' package is not installed
+        If 'tetgen' cannot be imported, which means a broken install: it is
+        a required dependency of feax, not an optional one
     ValueError
         If element_type is not 'TET4'
 
