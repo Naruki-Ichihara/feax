@@ -7,6 +7,7 @@
 | `bench_topopt_multiload.py` | Topology optimization over many load cases, all solved per design with one factorization (direct, `vmap` over the load) |
 | `bench_shared_factor_pcg.py` | Many *different* stiffness matrices solved with one shared factorization (batched CG preconditioned by the factors of the mean matrix) |
 | `bench_topopt_batched_shared.py` | B independent topology optimizations (one design per load case) with one shared factorization per evaluation |
+| `bench_topopt_batched_oc.py` | The same at scale (100 designs at 500k DOF): grouped solves, shared factorizations, OC updates, timing CSVs |
 
 ## `bench_linear_elasticity.py`
 
@@ -238,3 +239,26 @@ The preconditioner degrades as the designs diverge into different
 black-and-white topologies: at 100k DOF, B = 10, CG grows from tens to ~540
 iterations per solve by iteration 20, yet the shared mode still ran at 4.7 s
 per evaluation of all 10 cases.
+
+## `bench_topopt_batched_oc.py`
+
+The batched independent topology optimization scaled to B = 100 designs at 500k
+DOF. Cases are solved in groups of `--case-chunk` (only one group's `K_i` is
+stored); `--k0 group` factorizes the mean matrix of each group (neighbouring
+load angles give similar designs, so CG needs far fewer iterations than with one
+global `K_0`); designs are updated with optimality criteria, vectorized over the
+B designs (GCMMA on one stacked vector would need a dense 13 GB constraint
+Jacobian). Per-iteration timing goes to `bench_topopt_batched_oc_iters.csv`, a
+summary row to `bench_topopt_batched_oc.csv`, the B designs to one VTU.
+
+```bash
+python bench_topopt_batched_oc.py                 # 500k DOF, B = 100, 10 iterations, group K0, tol 1e-6
+```
+
+On A100: 100 designs in 10 iterations took 1970 s (+118 s setup and compile),
+i.e. ~21 s per design; CG grew to ~210 (mean) / ~420 (max) iterations as the
+designs separated, and the mean compliance fell to 4.9 % of the initial value.
+
+`bench_shared_factor_pcg.py --precond jacobi|none` runs the same batched CG with
+a per-case diagonal or no preconditioner (no factorization): competitive at 20k
+DOF (~510-590 iterations) but far slower than the shared factorization at 500k.

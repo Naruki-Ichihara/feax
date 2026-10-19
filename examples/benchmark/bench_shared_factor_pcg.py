@@ -62,6 +62,9 @@ def parse_args(argv=None):
                    help="Random Fourier features per field.")
     p.add_argument("--tol", type=float, default=1e-8, help="PCG relative residual tolerance.")
     p.add_argument("--maxiter", type=int, default=500, help="PCG iteration cap.")
+    p.add_argument("--precond", choices=["shared", "jacobi", "none"], default="shared",
+                   help="CG preconditioner: the shared K_0 factorization (default), the "
+                        "per-case diagonal (Jacobi), or none. jacobi/none factorize nothing.")
     p.add_argument("--case-chunk", type=int, default=0,
                    help="Assemble and solve the cases in groups of this size, one group "
                         "after another, all sharing the one factorization (0 = all at "
@@ -85,7 +88,7 @@ CSV_COLUMNS = [
     "timestamp", "device", "jax_version", "dof", "batch", "sigma", "corr_len",
     "assemble_s", "factor_s", "pcg_s", "total_s", "per_case_s",
     "iters_mean", "iters_max", "ref_per_case_s", "speedup_vs_direct",
-    "max_rel_err", "tag", "note",
+    "max_rel_err", "precond", "tag", "note",
 ]
 
 
@@ -183,10 +186,14 @@ def main(argv=None):
                               total_repeat_length=indices.shape[0])
             f = -jax.jit(res_fn)(u0, tp(E_bar), bc, ts)                    # load (E-free)
 
-            # 1) ONE factorization: K_0 = K(E_bar), SPD, full storage
-            fact = jax.jit(lambda d: factorize(d, indptr, indices, mtype_id=3, mview_id=0))
-            block(fact(J0.data))                                            # compile + warm
-            t_fac, token = timed(fact, J0.data)
+            # 1) ONE factorization: K_0 = K(E_bar), SPD, full storage (shared only)
+            if args.precond == "shared":
+                fact = jax.jit(lambda d: factorize(d, indptr, indices, mtype_id=3, mview_id=0))
+                block(fact(J0.data))                                        # compile + warm
+                t_fac, token = timed(fact, J0.data)
+            else:
+                t_fac, token = 0.0, None
+            is_diag = rows == indices
 
             # 2) the K_i of one group of cases (assembled one at a time: bounded memory)
             assemble = jax.jit(lambda Es: jax.lax.map(
@@ -200,7 +207,14 @@ def main(argv=None):
             def pcg(data, f, token):
                 B = data.shape[0]
                 Ax = jax.vmap(spmv)
-                M = jax.vmap(lambda r: solve_with(token, r))
+                if args.precond == "shared":
+                    M = jax.vmap(lambda r: solve_with(token, r))
+                elif args.precond == "jacobi":
+                    diag = jax.vmap(lambda d: jax.ops.segment_sum(
+                        jnp.where(is_diag, d, 0.0), rows, num_segments=n))(data)
+                    M = lambda R: R / diag
+                else:
+                    M = lambda R: R
                 bnorm = jnp.linalg.norm(f)
                 X = jnp.zeros((B, n))
                 R = jnp.broadcast_to(f, (B, n))
@@ -271,11 +285,11 @@ def main(argv=None):
                        per_case_s=total / args.batch, iters_mean=float(its.mean()),
                        iters_max=int(its.max()), ref_per_case_s=ref_case,
                        speedup_vs_direct=ref_case / (total / args.batch),
-                       max_rel_err=max(errs), note="")
-            print(f"  {args.batch} cases in {len(groups)} group(s) of {C}:  "
+                       max_rel_err=max(errs), precond=args.precond, note="")
+            print(f"  [{args.precond}] {args.batch} cases in {len(groups)} group(s) of {C}:  "
                   f"assemble K_i: {t_asm:7.3f}s   factor K_0 once: {t_fac:7.3f}s   "
                   f"PCG: {t_pcg:7.3f}s  (iters mean {its.mean():.1f}, max {its.max()})")
-            print(f"  shared factor: {total / args.batch:.4f}s/case   direct one by one: "
+            print(f"  {args.precond}: {total / args.batch:.4f}s/case   direct one by one: "
                   f"{ref_case:.4f}s/case   speed-up x{ref_case / (total / args.batch):.1f}   "
                   f"max rel.err vs direct = {max(errs):.1e}")
         except Exception as e:
