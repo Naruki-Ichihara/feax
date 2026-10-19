@@ -243,6 +243,7 @@ def create_solver(
             kwargs = {k: (v.dofs if isinstance(v, Solution) else v)
                       for k, v in kwargs.items()}
             return Solution(solver_fn(*args, **kwargs), _layout)
+        wrapped.preconditioner_state = getattr(solver_fn, "preconditioner_state", None)
         return wrapped
 
     linear_options = solver_options

@@ -65,7 +65,7 @@ def parse_args(argv=None):
                    help="Fixed physical cantilever dimensions (scale-invariant).")
     p.add_argument("--solver", choices=["krylov", "direct", "amg"], default="krylov")
     p.add_argument("--modes", nargs="+",
-                   choices=["eager", "jit", "grad", "vmap-lhs", "vmap-rhs"],
+                   choices=["eager", "jit", "grad", "grad-eager", "vmap-lhs", "vmap-rhs"],
                    default=["eager", "jit", "grad", "vmap-lhs", "vmap-rhs"],
                    help="grad: jit(value_and_grad) of 0.5*|u|^2 w.r.t. the nodal E "
                         "field (forward + adjoint solve). "
@@ -307,6 +307,9 @@ def main(argv=None):
         solver = fe.create_solver(problem, bc, solver_options=solver_options(),
                                   linear=True, traced_params=tp,
                                   traced_structure=ts, return_solution=False)
+        # AMG: carry the hierarchy in ts so the compiled modes take it as an
+        # argument instead of baking it in as constants (None for other solvers).
+        ts = ts.with_preconditioner(solver.preconditioner_state)
         initial = fe.zero_like_initial_guess(problem, bc)
         return solver, tp, initial, ts, E, surf
 
@@ -329,7 +332,7 @@ def main(argv=None):
         append_row(out_path, row)          # persist immediately (survives SIGKILL)
         tag = f"  ({note})" if note else ""
         cs = f"compile={compile_s:7.3f}s" if compile_s == compile_s else "compile=   -   "
-        print(f"  {mode:5s} dof={dof:>9,} nx={res[0]:>4} b={batch:>2}  "
+        print(f"  {mode:10s} dof={dof:>9,} nx={res[0]:>4} b={batch:>2}  "
               f"{cs}  mean={mean:8.4f}s  min={mn:8.4f}s  "
               f"{thru/1e6:7.2f} MDOF/s{tag}")
 
@@ -355,10 +358,12 @@ def main(argv=None):
 
         if "jit" in args.modes:
             try:
-                jfn = jax.jit(lambda t, ig: solver(t, ig, traced_structure=ts))
-                compile_s, jrun = aot(jfn, tp, initial)
+                # ts is a jit ARGUMENT, not a closure: closing over it bakes every
+                # mesh-sized structural array into the executable as a constant.
+                jfn = jax.jit(lambda t, ig, s: solver(t, ig, traced_structure=s))
+                compile_s, jrun = aot(jfn, tp, initial, ts)
                 record("jit", dof, res, 1, compile_s,
-                       timed(lambda: jrun(tp, initial), block, args.warmup, args.repeats))
+                       timed(lambda: jrun(tp, initial, ts), block, args.warmup, args.repeats))
             except Exception as e:
                 record("jit", dof, res, 1, float("nan"), [], note=type(e).__name__)
 
@@ -367,19 +372,30 @@ def main(argv=None):
         # direct + reuse_factorization reuses the forward factors for the adjoint
         # (SPD / symmetric matrix type); amg reuses its hierarchy; krylov runs a
         # second CG. Read the adjoint overhead as grad / jit at the same DOF.
+        def objective(E_field, s):
+            tpi = fe.TracedParams(volume_vars=(E_field,), surface_vars=surf)
+            u = solver(tpi, initial, traced_structure=s)
+            return 0.5 * jnp.dot(u, u)
+
         if "grad" in args.modes:
             try:
-                def objective(E_field):
-                    tpi = fe.TracedParams(volume_vars=(E_field,), surface_vars=surf)
-                    u = solver(tpi, initial, traced_structure=ts)
-                    return 0.5 * jnp.dot(u, u)
                 gfn = jax.jit(jax.value_and_grad(objective))
-                compile_s, grun = aot(gfn, E)
+                compile_s, grun = aot(gfn, E, ts)
                 record("grad", dof, res, 1, compile_s,
-                       timed(lambda: grun(E), block, args.warmup, args.repeats),
+                       timed(lambda: grun(E, ts), block, args.warmup, args.repeats),
                        note="value_and_grad of 0.5*|u|^2 wrt nodal E")
             except Exception as e:
                 record("grad", dof, res, 1, float("nan"), [], note=type(e).__name__)
+
+        # grad-eager: the same value_and_grad without a top-level jit (op-by-op).
+        if "grad-eager" in args.modes:
+            try:
+                gefn = jax.value_and_grad(objective)
+                record("grad-eager", dof, res, 1, float("nan"),
+                       timed(lambda: gefn(E, ts), block, args.warmup, args.repeats),
+                       note="value_and_grad of 0.5*|u|^2 wrt nodal E")
+            except Exception as e:
+                record("grad-eager", dof, res, 1, float("nan"), [], note=type(e).__name__)
 
         # vmap-lhs: batch the material E (left-hand-side matrix A varies per
         #           element -> B distinct cuDSS factorizations). vmap-rhs: batch
@@ -398,24 +414,24 @@ def main(argv=None):
                 if kind == "lhs":
                     E_batch = E[None, :] * scales[:, None]         # (B, num_nodes)
 
-                    def solve_one(E_field):
+                    def solve_one(E_field, s):
                         tpi = fe.TracedParams(volume_vars=(E_field,), surface_vars=surf)
-                        return solver(tpi, initial, traced_structure=ts)
+                        return solver(tpi, initial, traced_structure=s)
                     batched_arg = E_batch
                 else:                                              # kind == "rhs"
                     traction = surf[0][0]                          # the load leaf
                     tr_batch = traction[None] * scales.reshape((B,) + (1,) * traction.ndim)
 
-                    def solve_one(tr_field):
+                    def solve_one(tr_field, s):
                         tpi = fe.TracedParams(volume_vars=(E,),
                                               surface_vars=[(tr_field,)])
-                        return solver(tpi, initial, traced_structure=ts)
+                        return solver(tpi, initial, traced_structure=s)
                     batched_arg = tr_batch
 
-                vfn = jax.jit(jax.vmap(solve_one))
-                compile_s, vrun = aot(vfn, batched_arg)
+                vfn = jax.jit(jax.vmap(solve_one, in_axes=(0, None)))
+                compile_s, vrun = aot(vfn, batched_arg, ts)
                 record(label, dof, res, B, compile_s,
-                       timed(lambda: vrun(batched_arg), block, args.warmup, args.repeats))
+                       timed(lambda: vrun(batched_arg, ts), block, args.warmup, args.repeats))
             except Exception as e:
                 record(label, dof, res, args.batch, float("nan"), [],
                        note=type(e).__name__)

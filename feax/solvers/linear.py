@@ -15,6 +15,7 @@ Key Features:
 
 import logging
 import os
+from dataclasses import replace
 from typing import Any, Callable, Optional
 
 import jax
@@ -33,6 +34,7 @@ from ..problem import MatrixView, Problem
 from .common import (
     _safe_negate,
     check_convergence,
+    create_iterative_solve_fn,
     create_linear_solve_fn,
     prewarm_direct_solvers,
     create_x0,
@@ -269,13 +271,26 @@ def create_linear_solver(
 
     # AMGSolverOptions lowers to a matrix-free Krylov solve preconditioned by a
     # once-built AMG V-cycle (rigid-body near-null-space for vector problems).
+    # The hierarchies are also exposed as ``solver.preconditioner_state`` so a
+    # jitted caller can pass them in through ``traced_structure`` (see
+    # ``_solve_fns``) rather than baking every level in as a constant.
     from .amg import amg_to_krylov_options
+    fwd_amg = adj_amg = None
     if isinstance(solver_options, AMGSolverOptions):
-        solver_options = amg_to_krylov_options(
-            solver_options, problem, bc, traced_params, traced_structure, symmetric_elimination)
+        fwd_cycle = solver_options.cycle
+        solver_options, fwd_amg = amg_to_krylov_options(
+            solver_options, problem, bc, traced_params, traced_structure,
+            symmetric_elimination, return_hierarchy=True)
     if isinstance(adjoint_solver_options, AMGSolverOptions):
-        adjoint_solver_options = solver_options if shared_opts else amg_to_krylov_options(
-            adjoint_solver_options, problem, bc, traced_params, traced_structure, symmetric_elimination)
+        if shared_opts:
+            adjoint_solver_options = solver_options
+        else:
+            adj_cycle = adjoint_solver_options.cycle
+            adjoint_solver_options, adj_amg = amg_to_krylov_options(
+                adjoint_solver_options, problem, bc, traced_params, traced_structure,
+                symmetric_elimination, return_hierarchy=True)
+    preconditioner_state = (
+        None if fwd_amg is None and adj_amg is None else (fwd_amg, adj_amg))
 
     if isinstance(solver_options, KrylovSolverOptions):
         solver_options = resolve_iterative_solver(solver_options, default_matrix_property)
@@ -335,6 +350,24 @@ def create_linear_solver(
             cache_namespace="adjoint",
         )
     x0_fn = solver_options.x0_fn if isinstance(solver_options, KrylovSolverOptions) else None
+
+    def _solve_fns(ts):
+        """(forward, adjoint) solve fns, rebuilt around the AMG hierarchies that
+        ``ts.preconditioner`` carries as traced leaves; the closure-constant
+        defaults when it carries none."""
+        state = getattr(ts, "preconditioner", None)
+        if state is None:
+            return linear_solve_fn, adjoint_linear_solve_fn
+        fwd_ml, adj_ml = state
+        fwd_fn = linear_solve_fn if fwd_ml is None else create_iterative_solve_fn(
+            replace(solver_options,
+                    preconditioner=fwd_ml.aspreconditioner(cycle=fwd_cycle)))
+        if adjoint_solver_options is solver_options:
+            return fwd_fn, fwd_fn
+        adj_fn = adjoint_linear_solve_fn if adj_ml is None else create_iterative_solve_fn(
+            replace(adjoint_solver_options,
+                    preconditioner=adj_ml.aspreconditioner(cycle=adj_cycle)))
+        return fwd_fn, adj_fn
 
     # Pre-warm with the CSR Jacobian when a direct solver is used so the cuDSS
     # symbolic structure matches the canonical CSR fed at solve time. (FEM
@@ -404,7 +437,7 @@ def create_linear_solver(
                 bc_rows=effective_bc.bc_rows, bc_vals=effective_bc.bc_vals)
             x0 = _x0_fn(initial_guess)
 
-        delta_sol = linear_solve_fn(op, b, x0)
+        delta_sol = _solve_fns(ts)[0](op, b, x0)
 
         if solver_options.check_convergence:
             delta_sol = check_convergence(
@@ -463,7 +496,7 @@ def create_linear_solver(
         adjoint_vec = linear_solve_adjoint(
             J_adjoint, v, adjoint_solver_options, problem.matrix_view,
             effective_bc,
-            linear_solve_fn=adjoint_linear_solve_fn
+            linear_solve_fn=_solve_fns(ts)[1]
         )
 
         # VJP of residual w.r.t. traced_params and bc
@@ -496,4 +529,5 @@ def create_linear_solver(
             ig = default_initial_guess
         return differentiable_solve(traced_params, ig, effective_bc, traced_structure)
 
+    solver_wrapper.preconditioner_state = preconditioner_state
     return solver_wrapper
