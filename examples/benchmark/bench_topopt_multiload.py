@@ -21,9 +21,12 @@ covers every direction.)
 Why it is cheap: the stiffness matrix depends on the design only, not on the
 load. The K forward solves run as ``jax.vmap`` over the load (vmap-rhs), so the
 direct solver assembles and factorizes ONCE per design and back-substitutes K
-right-hand sides; ``reuse_factorization=True`` makes the K adjoint solves of the
-gradient reuse that same factorization. The cost per optimization iteration
-should therefore barely grow with K -- ``--n-loads`` sweeps K to measure it.
+right-hand sides. Compliance is self-adjoint, so the gradient needs no adjoint
+solves: ``dc_k/drho = -u_k^T (dK/drho) u_k``, summed over the cases in chunks of
+``--grad-chunk`` (autodiff through the solver would instead batch that
+element-level product over all K cases at once: 65 GB for K = 400 at 500k DOF).
+The cost per optimization iteration therefore grows only mildly with K
+(500k DOF on A100: 5.6 s per evaluation at K = 1, 7.6 s at K = 400).
 
 Compliance of case k is ``F_k . u_k``. The load vector is linear in the traction,
 so ``F_k = sum_j t_kj F_j`` with the three unit-traction load vectors ``F_j``
@@ -75,6 +78,8 @@ def parse_args(argv=None):
                    help="Write the final structure of each K as VTU here.")
     p.add_argument("--no-save", dest="save_dir", action="store_const", const=None,
                    help="Do not write VTU files.")
+    p.add_argument("--grad-chunk", type=int, default=25,
+                   help="Load cases per chunk in the sensitivity sum (bounds its memory).")
     p.add_argument("--vtu-cases", type=int, default=8,
                    help="Write the displacement of at most this many (evenly spaced) cases.")
     p.add_argument("--output", default=None,
@@ -191,7 +196,8 @@ def main(argv=None):
     # Load vectors F_j = -residual(u = 0) for the surface-map value e_j (rows of
     # Dirichlet DOFs are 0 there), i.e. for the applied traction -e_j. The load
     # does not depend on the design.
-    res_fn = jax.jit(create_res_bc_parametric(problem))
+    res_bc = create_res_bc_parametric(problem)
+    res_fn = jax.jit(res_bc)
     F_unit = jnp.stack([
         -res_fn(u0, tparams(rho_vf, *(unit * float(j == k) for k in range(3))), bc, ts)
         for j in range(3)])                                                # (3, ndof)
@@ -216,18 +222,57 @@ def main(argv=None):
     def project(x, d):
         return gene.heaviside_projection(density_filter(x, d), beta=beta)
 
-    def solve_cases(x, d):
+    def solve_rho(rho, d):
         """Displacements of all K load cases, (K, ndof): ONE vmap over the load,
         so the direct solver factorizes once and back-substitutes K RHS."""
-        rho = project(x, d)
         tx, ty, tz = d["loads"]
         one = lambda a, b, c: solver(tparams(rho, a, b, c), d["u0"], traced_structure=d["ts"])
         return jax.vmap(one)(tx, ty, tz)
 
-    def compliances(x, d):
-        U = solve_cases(x, d)
+    def solve_cases(x, d):
+        return solve_rho(project(x, d), d)
+
+    def compliances_rho(rho, d):
+        U = solve_rho(rho, d)
         F = d["dirs"] @ d["F_unit"]                                       # (K, ndof)
-        return jnp.sum(F * U, axis=1)                                     # c_k = F_k . u_k
+        return jnp.sum(F * U, axis=1), U                                  # c_k = F_k . u_k
+
+    def compliances(x, d):
+        return compliances_rho(project(x, d), d)[0]
+
+    # Mean compliance with a hand-written sensitivity. Compliance is self-adjoint,
+    # so dc_k/drho = -u_k^T (dK/drho) u_k = -d/drho [u_k . res(u_k; rho)] at fixed
+    # u_k: no adjoint solves at all. Autodiff through the solver would instead
+    # evaluate that element-level product for all K cases in one batch (~160 MB
+    # per case at 500k DOF -> 65 GB for K = 400); here the K cases are summed in
+    # chunks of --grad-chunk with lax.map, so memory is bounded by one chunk.
+    chunk = max(1, args.grad_chunk)
+
+    @jax.custom_vjp
+    def mean_compliance(rho, d):
+        return jnp.mean(compliances_rho(rho, d)[0])
+
+    def mean_compliance_fwd(rho, d):
+        c, U = compliances_rho(rho, d)
+        return jnp.mean(c), (rho, U, d)
+
+    def mean_compliance_bwd(res, g):
+        rho, U, d = res
+        n = U.shape[0]
+        pad = (-n) % chunk                       # zero displacements add nothing
+        Uc = jnp.pad(U, ((0, pad), (0, 0))).reshape(-1, chunk, U.shape[1])
+        zero = jnp.zeros_like(d["loads"][0][0])  # traction does not depend on rho
+
+        def energy(r, u):                        # u . res(u; r) = u^T K(r) u (minus a rho-free term)
+            return jnp.dot(u, res_bc(u, tparams(r, zero, zero, zero), bc, d["ts"]))
+
+        def chunk_grad(Uk):
+            return jax.vmap(jax.grad(energy), in_axes=(None, 0))(rho, Uk).sum(0)
+
+        drho = jax.lax.map(chunk_grad, Uc).sum(0)
+        return -g * drho / n, None                # d is data, not a design variable
+
+    mean_compliance.defvjp(mean_compliance_fwd, mean_compliance_bwd)
 
     def volume(x, d):
         return jnp.dot(d["vol_w"], density_filter(x, d))
@@ -259,7 +304,7 @@ def main(argv=None):
             c0 = float(jnp.mean(c_init))                                  # scaling, untimed
 
             def value_and_grad(x, d):
-                f, df = jax.value_and_grad(lambda y: jnp.mean(compliances(y, d)) / c0)(x)
+                f, df = jax.value_and_grad(lambda y: mean_compliance(project(y, d), d) / c0)(x)
                 v, dv = jax.value_and_grad(volume)(x, d)
                 return f, df, jnp.reshape(v / vf - 1.0, (1,)), jnp.reshape(dv / vf, (1, -1))
 
