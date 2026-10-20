@@ -75,6 +75,7 @@
             "reference/feax/solvers/linear",
             "reference/feax/solvers/newton",
             "reference/feax/solvers/options",
+            "reference/feax/solvers/preconditioners",
             "reference/feax/solvers/reduced",
             "reference/feax/solvers/time_solver"
           ],

@@ -421,11 +421,11 @@ from feax.flat.pbc import PeriodicPairing, prolongation_matrix
 pairings = [PeriodicPairing(location_master=left, location_slave=right,
                             mapping=mapping_x, vec=0)]
 P = prolongation_matrix(pairings, mesh, vec=1)
-solver = fe.create_solver(problem, bc, P=P,
+solver = fe.create_solver(problem, bc, projection=P,
     solver_options=fe.KrylovSolverOptions())
 ```
 
-With `KrylovSolverOptions` the reduced system is solved matrix-free (matvec via `P^T K P`); with `DirectSolverOptions` or `AMGSolverOptions` the reduced operator `PᵀJP` is assembled sparsely and factorized (or used to build the AMG hierarchy).
+With `KrylovSolverOptions` the reduced system is solved matrix-free (matvec via `P^T K P`); with `DirectSolverOptions` the reduced operator `PᵀJP` is assembled sparsely and factorized. An AMG preconditioner for the reduced Krylov solve is built from the same reduced operator with `fe.amg(problem, bc, tp, projection=P)`.
 
 See [Periodic Boundary Conditions](../advanced/periodic_boundary_conditions.md) for details.
 
@@ -490,13 +490,18 @@ grads = grad_fn(traced_params)
 
 ### Solver Options
 
-FEAX has three solver-option classes for `fe.create_solver`. When `solver_options` is omitted, a direct solver is selected automatically (cuDSS on GPU, cholmod/umfpack/spsolve on CPU). See the [Solver Guide](./solver.md) for the full selection logic.
+FEAX has two solver-option classes for `fe.create_solver`, and the Krylov one takes its preconditioner as one callable (`preconditioner=`). When `solver_options` is omitted, a direct solver is selected automatically (cuDSS on GPU, cholmod/umfpack/spsolve on CPU). See the [Solver Guide](./solver.md) for the full selection logic.
 
 | Solver Options | Method | Operator | Best for |
 |---|---|---|---|
 | `fe.DirectSolverOptions()` | Sparse direct (cuDSS on GPU, cholmod/umfpack/spsolve on CPU) | Assembled CSR | Default; robust when memory permits |
 | `fe.KrylovSolverOptions()` | Iterative (CG/BiCGSTAB/GMRES) | Matrix-free (residual JVP) | Large/memory-bound problems, periodic BCs |
-| `fe.AMGSolverOptions()` | Krylov preconditioned by smoothed-aggregation AMG | Assembled CSR (hierarchy) + matrix-free Krylov | Large scalar-elliptic problems; elasticity via `near_nullspace="rigid_body"`. Requires `feax[amg]` |
+
+| Preconditioner (`create_solver(preconditioner=...)`) | What it does | Best for |
+|---|---|---|
+| `fe.jacobi()` | Diagonal scaling from each solve's assembled diagonal | Cheap default for Krylov; SIMP / multi-field scaling |
+| `fe.amg(problem, bc, tp, fe.AMGOptions(...))` | Smoothed-aggregation AMG V-cycle, hierarchy built once from a sample operator | Large scalar-elliptic problems; elasticity via `near_nullspace="rigid_body"`. Requires `feax[amg]` |
+| `preconditioner(op) -> M` (your own) | Any callable returning the action `M(r) -> z` | Custom / problem-specific preconditioning |
 
 ### `linear` Flag
 

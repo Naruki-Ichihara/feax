@@ -55,7 +55,7 @@ Key arguments (`--help` for the full list):
 |---|---|
 | `--dofs N ...` | Target DOF counts; the mesh is refined to the closest achievable count. Default `20000 60000 150000 300000`; `run_guarded.sh` passes its own sweep. |
 | `--dims LX LY LZ` | Fixed physical cantilever dimensions (scale-invariant). |
-| `--solver` | `krylov` (matrix-free CG, memory-lean — default), `direct` (cuDSS / host sparse), `amg` (rigid-body near-null-space). |
+| `--solver` | `krylov` (matrix-free CG with `fe.jacobi()`, memory-lean — default), `direct` (cuDSS / host sparse), `amg` (CG preconditioned by `fe.amg(...)` with the rigid-body near-null-space). |
 | `--modes` | Subset of `eager jit grad vmap-lhs vmap-rhs` (default: all). |
 | `--batch` | `vmap` batch size (independent cases). |
 | `--repeats` / `--warmup` | Timed repeats / untimed warmups per point. |
@@ -74,10 +74,13 @@ Key arguments (`--help` for the full list):
 | `vmap-lhs` | `jax.jit(jax.vmap(...))` over the **material** `E` | `A` varies per case → `direct` factorizes `B` times |
 | `vmap-rhs` | the same over the **load** (traction) | `A` fixed → `direct` factors once and multi-RHS solves (`reuse_factorization=True`); iterative solvers run per-RHS iterations, kept for parity |
 
-All five modes apply to all three solvers. With `linear=True`, `AMGSolverOptions`
-is lowered inside `create_solver` to a matrix-free Krylov solve preconditioned by a
-fixed V-cycle (the hierarchy is built once from a sample Jacobian), so the solve
-itself jits, vmaps and differentiates like the others.
+All five modes apply to all three solvers. `amg` is a matrix-free Krylov solve
+(`KrylovSolverOptions(solver="cg")`) preconditioned by a fixed V-cycle: the
+hierarchy is built once from a sample Jacobian by `fe.amg(problem, bc, tp, ...)`
+and is a pytree (`fe.AMGPreconditioner`), so the script passes it to every
+compiled solve as a jit argument (`solver(..., preconditioner=P)`) rather than a
+closure constant, and the solve itself jits, vmaps and differentiates like the
+others.
 
 ### What is measured
 
@@ -162,10 +165,12 @@ the script prints the difference. Per row: `total_s` for the whole optimization,
 `per_iter_s`, `evals` (value-and-gradient evaluations, i.e. forward + adjoint
 solves, including GCMMA's inner re-evaluations), `mean_inner`, the final scaled
 objective, compliance, volume fraction and KKT norm, and `const_mb`, the closure
-constants still captured by the traced program. The TracedStructure (with the
-AMG hierarchy), the initial guess, the filter's sparse weight matrix and the
-nodal volume weights travel as one pytree jit argument, so `const_mb` should stay small and flat across
-mesh sizes; a growing value means something mesh-sized is being closed over.
+constants still captured by the traced program. The TracedStructure, the initial
+guess, the filter's sparse weight matrix, the nodal volume weights and (for
+`--solver amg`) the AMG preconditioner `P` travel as one pytree jit argument, so
+`const_mb` should stay small and flat across mesh sizes; a growing value means
+something mesh-sized is being closed over. An AMG rebuild is `P = P.rebuild(J)`
+on the host, and the new `P` replaces the old one in that data pytree.
 Rows append to `bench_topopt.csv` (git-ignored).
 
 ## `bench_topopt_multiload.py`

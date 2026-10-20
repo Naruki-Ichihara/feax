@@ -104,10 +104,17 @@ traced_params = fe.TracedParams(volume_vars=(theta_array,), surface_vars=())
 
 ```python
 solver_options = fe.KrylovSolverOptions(solver="cg", tol=1e-8)
-solver = fe.create_solver(problem, bc, solver_options, linear=True, P=P)
+solver = fe.create_solver(problem, bc, solver_options, linear=True, projection=P)
 ```
 
-Pass prolongation matrix `P` to `create_solver()`. With `KrylovSolverOptions` the reduced system $\mathbf{P}^T \mathbf{J} \mathbf{P}$ is solved matrix-free; alternatively, `DirectSolverOptions` or `AMGSolverOptions` assemble the reduced operator sparsely and factorize it (or build an AMG hierarchy from it).
+Pass prolongation matrix `P` to `create_solver()` as `projection=P`. With `KrylovSolverOptions` the reduced system $\mathbf{P}^T \mathbf{J} \mathbf{P}$ is solved matrix-free; alternatively, `DirectSolverOptions` assembles the reduced operator sparsely and factorizes it. To precondition the reduced Krylov solve with AMG, build the hierarchy from the same reduced operator and pass it alongside:
+
+```python
+P_amg = fe.amg(problem, bc, traced_params, fe.AMGOptions(near_nullspace="rigid_body"),
+               projection=P)
+solver = fe.create_solver(problem, bc, solver_options, linear=True, projection=P,
+                          preconditioner=P_amg)
+```
 
 :::caution Dirichlet BCs must respect the periodic pairing
 A Dirichlet BC that constrains only *part* of a periodic equivalence class (e.g. pinning one node of a tied pair) is contradictory, and `create_solver` raises a `ValueError` at build time. Constrain interior (non-paired) nodes, or the entire class — here the top/bottom Dirichlet rows pin both partners of each left–right corner pair, which is valid. For RVE homogenization, do **not** pin any node: leave the `DirichletBC` empty (see [Lattice Homogenization](./lattice_homogenization.md)).
@@ -215,7 +222,7 @@ traced_params = fe.TracedParams(volume_vars=(theta_array,), surface_vars=())
 
 # Solver
 solver_options = fe.KrylovSolverOptions(solver="cg", tol=1e-8)
-solver = fe.create_solver(problem, bc, solver_options=solver_options, linear=True, P=P)
+solver = fe.create_solver(problem, bc, solver_options=solver_options, linear=True, projection=P)
 
 # Solve
 initial_guess = np.zeros(problem.num_total_dofs_all_vars)

@@ -226,9 +226,9 @@ history = {'delta_max': np.zeros(interface.n_nodes)}
 solver = fe.create_solver(
     problem, bc0,
     solver_options=fe.KrylovSolverOptions(
-        solver='cg', atol=1e-8, maxiter=200,
-        use_jacobi_preconditioner=True, verbose=True,
+        solver='cg', atol=1e-8, maxiter=200, verbose=True,
     ),
+    preconditioner=fe.jacobi(),
     newton_options=fe.NewtonOptions(tol=1e-8, max_iter=200),
     extra_residual_fn=lambda u: cohesive_residual(u, history['delta_max']),
     linear=False,

@@ -365,9 +365,6 @@ Parameters
 - **rel_tol** (*float, default 1e-8*): Relative tolerance for residual vector (l2 norm)
 - **max_iter** (*int, default 100*): Maximum number of Newton iterations
 - **linear_solver** (*str, optional*): Linear solver type. If not specified, automatically selects based on backend: - GPU backend: &quot;cudss&quot; (cuDSS direct solver, requires CUDA) - CPU backend: &quot;cg&quot; (Conjugate Gradient, JAX-native) Manual options: &quot;cg&quot;, &quot;bicgstab&quot;, &quot;gmres&quot;, &quot;spsolve&quot;, &quot;cudss&quot;
-- **preconditioner** (*callable, optional*): Preconditioner function for linear solver
-- **use_jacobi_preconditioner** (*bool, default False*): Whether to use Jacobi (diagonal) preconditioner automatically
-- **jacobi_shift** (*float, default 1e-12*): Regularization parameter for Jacobi preconditioner
 - **linear_solver_tol** (*float, default 1e-10*): Tolerance for linear solver
 - **linear_solver_atol** (*float, default 1e-10*): Absolute tolerance for linear solver
 - **linear_solver_maxiter** (*int, default 10000*): Maximum iterations for linear solver
@@ -469,12 +466,15 @@ Parameters
 - **tol** (*float, default 1e-10*): Relative tolerance for the iterative solver.
 - **atol** (*float, default 1e-10*): Absolute tolerance for the iterative solver.
 - **maxiter** (*int, default 10000*): Maximum number of iterations.
-- **preconditioner** (*callable, optional*): Custom preconditioner function M(x) -&gt; y.
-- **use_jacobi_preconditioner** (*bool, default False*): Whether to auto-create Jacobi (diagonal) preconditioner.
-- **jacobi_shift** (*float, default 1e-12*): Regularization parameter for Jacobi preconditioner.
 - **restart** (*int, optional*): Restart parameter for GMRES. Only used when solver=&#x27;gmres&#x27;. If None, defaults to min(200, n) where n is the system size.
 - **x0_fn** (*callable, optional*): Custom function to compute initial guess: f(current_sol) -&gt; x0.
 
+
+Notes
+-----
+The preconditioner is not an option: pass it to :func:`feax.create_solver`
+as ``preconditioner=`` (e.g. :func:`feax.jacobi`, :func:`feax.amg`, or any
+``preconditioner(op) -&gt; M`` callable); see :mod:`feax.solvers.preconditioners`.
 
 #### uses\_x0
 
@@ -515,47 +515,16 @@ KrylovSolverOptions
 ## AMGSolverOptions Objects
 
 ```python
-@dataclass(frozen=True)
-class AMGSolverOptions(AbstractSolverOptions)
+class AMGSolverOptions()
 ```
 
-Matrix-free outer Krylov preconditioned by smoothed-aggregation AMG.
+Removed. AMG is a preconditioner, not a solver option.
 
-A third linear-solver family alongside :class:`DirectSolverOptions` and
-:class:`KrylovSolverOptions`. At solver-build time a *sample* Jacobian is
-assembled once and a smoothed-aggregation AMG hierarchy is built on the host
-(PyAMG) — with a **rigid-body near-null-space auto-generated from the mesh**
-for vector problems (elasticity/structural), which is what makes AMG
-effective there. The hierarchy is converted to a JAX-native
-``amjax.MultilevelSolver`` and one V-cycle is used as the preconditioner
-``M`` for a matrix-free outer Krylov solve (cg/gmres/bicgstab). The hierarchy
-is fixed; the outer Krylov applies the current operator matrix-free, so it
-stays robust as the operator changes between solves (Newton / sweeps).
+Build it with :func:`feax.amg` (configured by :class:`feax.AMGOptions`) and
+pass it to :func:`feax.create_solver` together with the outer Krylov
+settings::
 
-Requires the optional ``feax[amg]`` dependency (``amjax`` + ``pyamg``). The
-import is deferred to solver construction.
-
-Parameters
-----------
-- **solver** (*str, default &quot;auto&quot;*): Outer Krylov method: &quot;auto&quot; (cg for SPD, else gmres), &quot;cg&quot;, &quot;gmres&quot;, or &quot;bicgstab&quot;.
-- **maxiter** (*int, default 500*): Maximum outer Krylov iterations.
-- **restart** (*int, optional*): GMRES restart length.
-- **near_nullspace** (*array, str, or None, default None*): The AMG near-null-space ``B`` — the low-energy modes the coarse grid must represent. Accepts three kinds of input:
-- **num_nullspace** (*int, optional*): Number of candidate vectors for ``near_nullspace=&quot;adaptive_sa&quot;``. Defaults to the rigid-body count (6 in 3D / 3 in 2D for vector problems, else 1).
-- **cycle** (*str, default &quot;V&quot;*): Multigrid cycle type for the preconditioner (&quot;V&quot;, &quot;W&quot;, &quot;F&quot;).
-- **smoother_omega** (*float, default 0.67*): Damped-Jacobi relaxation factor (undamped Jacobi diverges on elasticity).
-- **smoother_sweeps** (*int, default 2*): Jacobi sweeps per pre/post smoothing.
-- **coarse_solver** (*str, default &quot;pinv&quot;*): AMJax coarse-grid solver (&quot;pinv&quot;, &quot;lu&quot;, &quot;qr&quot;, &quot;jacobi&quot;).
-- **strength** (*float, optional*): SA strength-of-connection threshold (PyAMG default when None).
-- **rebuild_every** (*int or None, default None*): Newton-only: how often to rebuild the AMG hierarchy from the *current* tangent during a nonlinear solve (the near-null-space is always reused).
-- **lag_tol** (*float, default 1e-3*): Adaptive-lag trigger (``rebuild_every=None``): rebuild the hierarchy when the per-step linear solve&#x27;s relative residual exceeds this, i.e. the current (lagged) preconditioner can no longer solve the tangent to this accuracy within ``maxiter``.
-
-
-#### uses\_x0
-
-```python
-def uses_x0() -> bool
-```
-
-The outer Krylov consumes an initial iterate.
+    P = fe.amg(problem, bc, tp, fe.AMGOptions(near_nullspace=&quot;rigid_body&quot;))
+    solver = fe.create_solver(problem, bc, fe.KrylovSolverOptions(solver=&quot;cg&quot;, tol=1e-8),
+                              preconditioner=P, ...)
 

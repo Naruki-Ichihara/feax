@@ -72,11 +72,18 @@ traced_params = fe.TracedParams(volume_vars=(E_nodes,),
 ts = fe.TracedStructure.from_problem(problem)
 
 # ── Solver ───────────────────────────────────────────────────────────────────
-# AMG (near-null-space = rigid body modes) is the memory-lean choice for large
-# elasticity; swap in fe.DirectSolverOptions() for small/medium problems.
+# CG preconditioned by AMG (near-null-space = rigid body modes) is the
+# memory-lean choice for large elasticity; swap in fe.DirectSolverOptions()
+# (and drop the preconditioner) for small/medium problems. The hierarchy is
+# built once, on the host, from the operator at `traced_params`; the outer CG
+# applies the current operator matrix-free.
+P = fe.amg(problem, bc, traced_params, fe.AMGOptions(near_nullspace='rigid_body'),
+           traced_structure=ts)
 solver = fe.create_solver(
     problem, bc,
-    solver_options=fe.AMGSolverOptions(near_nullspace='rigid_body', verbose=True),
+    solver_options=fe.KrylovSolverOptions(solver='cg', tol=1e-8, atol=1e-10,
+                                          maxiter=500, verbose=True),
+    preconditioner=P,
     linear=True,
     traced_params=traced_params,
     traced_structure=ts,

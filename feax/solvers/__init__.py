@@ -8,18 +8,18 @@ from .common import (
     check_convergence,
     create_direct_solve_fn,
     create_iterative_solve_fn,
-    create_jacobi_preconditioner,
     create_linear_solve_fn,
     create_x0,
 )
-from .amg import build_amg_preconditioner, rigid_body_modes
+from .amg import rigid_body_modes
+from .preconditioners import AMGOptions, AMGPreconditioner, LinearOperator, amg, jacobi
 from .linear import create_linear_solver, linear_solve
 from .newton import (
     create_newton_solver,
 )
 from .options import (
     AbstractSolverOptions,
-    AMGSolverOptions,
+    AMGSolverOptions,  # removed: a migration stub that raises
     CUDSSMatrixType,
     CUDSSMatrixView,
     CUDSSOptions,
@@ -57,7 +57,11 @@ from .eigen import (
 
 __all__ = [
     "AbstractSolverOptions",
-    "AMGSolverOptions",
+    "AMGOptions",
+    "AMGPreconditioner",
+    "LinearOperator",
+    "amg",
+    "jacobi",
     "CUDSSMatrixType",
     "CUDSSMatrixView",
     "CUDSSOptions",
@@ -71,11 +75,9 @@ __all__ = [
     "resolve_direct_solver",
     "resolve_iterative_solver",
     "check_convergence",
-    "build_amg_preconditioner",
     "rigid_body_modes",
     "create_direct_solve_fn",
     "create_iterative_solve_fn",
-    "create_jacobi_preconditioner",
     "create_linear_solve_fn",
     "create_x0",
     "create_linear_solver",

@@ -118,7 +118,7 @@ P_identity = BCOO.fromdense(np.eye(n_dofs))
 solver_reduced = fe.create_solver(
     problem, bc,
     solver_options=fe.KrylovSolverOptions(solver='cg'),
-    linear=True, P=P_identity,
+    linear=True, projection=P_identity,
 )
 
 s1_red = solver_reduced(tp, bc=bc1)

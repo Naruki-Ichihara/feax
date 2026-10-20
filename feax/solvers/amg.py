@@ -1,9 +1,10 @@
-"""Algebraic multigrid preconditioner backend (PyAMG hierarchy -> AMJax/JAX).
+"""Algebraic multigrid hierarchy builder (PyAMG hierarchy -> AMJax/JAX).
 
-This builds a smoothed-aggregation AMG hierarchy *once* on the host (PyAMG, from
-a sample assembled CSR Jacobian), converts it to a JAX-native
-``amjax.MultilevelSolver``, and returns one multigrid V-cycle as a preconditioner
-callable ``M(x) -> y`` for a matrix-free outer Krylov solve.
+Builds a smoothed-aggregation AMG hierarchy on the host (PyAMG, from an
+assembled CSR operator) and converts it to a JAX-native
+``amjax.MultilevelSolver``. The user-facing preconditioner built on it is
+:func:`feax.solvers.preconditioners.amg` (:class:`AMGPreconditioner`), which
+applies one multigrid cycle as ``M`` for a matrix-free outer Krylov solve.
 
 Why this shape:
 - AMG for vector elasticity/structural problems needs the **near-null-space**
@@ -128,18 +129,6 @@ def _resolve_near_nullspace(near_nullspace, problem, bc):
     return onp.asarray(ns), False
 
 
-def build_amg_preconditioner(problem, bc, sample_csr, options):
-    """Build an AMG V-cycle preconditioner ``M(x) -> y`` from a sample Jacobian.
-
-    Thin wrapper over :func:`build_amg_hierarchy`; see it for the parameters.
-    The returned callable closes over the hierarchy, so under ``jax.jit`` every
-    level is captured as a constant — pass the hierarchy itself as an argument
-    (``TracedStructure.with_preconditioner``) to avoid that.
-    """
-    return build_amg_hierarchy(problem, bc, sample_csr, options).aspreconditioner(
-        cycle=options.cycle)
-
-
 def build_amg_hierarchy(problem, bc, sample_csr, options):
     """Build the AMG hierarchy (an ``amjax.MultilevelSolver`` pytree).
 
@@ -155,7 +144,7 @@ def build_amg_hierarchy(problem, bc, sample_csr, options):
     sample_csr : feax.csr.CSRMatrix
         A representative assembled (BC-applied) Jacobian; the SA-AMG hierarchy is
         built from its values + pattern on the host.
-    options : AMGSolverOptions
+    options : AMGOptions
         Hierarchy / smoother / near-null-space configuration.
 
     Returns
@@ -202,89 +191,3 @@ def build_amg_hierarchy(problem, bc, sample_csr, options):
         coarse_solver=options.coarse_solver,
         dtype=jnp.float64,
     )
-
-
-def make_self_preconditioned_amg_solve(problem, bc, options):
-    """Return a ``solve(A, b, x0) -> x`` that rebuilds the AMG V-cycle from ``A``.
-
-    Each call builds a fresh AMG preconditioner from the *given* operator ``A``
-    (a feax ``CSRMatrix`` or its transpose) and runs the outer Krylov method on
-    it. This is what makes the Newton ``rebuild_every`` path and the adjoint solve
-    use a preconditioner matched to the current/converged tangent rather than a
-    stale one built from the initial state. Runs eagerly (a host PyAMG build per
-    call), so it is not meant for a jitted while-loop.
-    """
-    import jax.numpy as _jnp
-    import jax.scipy.sparse.linalg as _jsla
-
-    solver = options.solver if options.solver != "auto" else "gmres"
-    krylov = getattr(_jsla, solver)
-
-    def solve(A, b, x0=None):
-        M = build_amg_preconditioner(problem, bc, A, options)
-        kw = dict(M=M, tol=options.tol, atol=options.atol, maxiter=options.maxiter)
-        if solver == "gmres":
-            kw["restart"] = options.restart or 50
-        x0 = _jnp.zeros_like(b) if x0 is None else x0
-        x, _ = krylov(lambda v: A @ v, b, x0=x0, **kw)
-        return x
-
-    return solve
-
-
-def amg_to_krylov_options(
-    amg_options,
-    problem,
-    bc,
-    traced_params,
-    traced_structure=None,
-    symmetric_elimination: bool = True,
-    return_hierarchy: bool = False,
-):
-    """Lower an :class:`AMGSolverOptions` to a matrix-free Krylov solve + AMG ``M``.
-
-    Assembles one sample Jacobian (so the AMG hierarchy + rigid-body near-null-space
-    can be built on the host), then returns a :class:`KrylovSolverOptions` whose
-    ``preconditioner`` is the AMG V-cycle. The outer solver is the requested
-    Krylov method (``"auto"`` -> cg for an SPD sample, else gmres). The rest of the
-    solver stack then treats it as an ordinary matrix-free Krylov solve. With
-    ``return_hierarchy=True`` returns ``(options, hierarchy)``.
-    """
-    from ..assembler import create_J_bc_csr_parametric
-    from ..utils import zero_like_initial_guess
-    from .options import (
-        KrylovSolverOptions,
-        MatrixProperty,
-        detect_matrix_property,
-    )
-
-    if traced_params is None:
-        raise ValueError(
-            "AMGSolverOptions requires traced_params: a sample Jacobian is "
-            "assembled once to build the AMG hierarchy."
-        )
-
-    initial = zero_like_initial_guess(problem, bc)
-    J_csr = create_J_bc_csr_parametric(problem, symmetric=symmetric_elimination)
-    sample = J_csr(initial, traced_params, bc, traced_structure)
-
-    hierarchy = build_amg_hierarchy(problem, bc, sample, amg_options)
-    M = hierarchy.aspreconditioner(cycle=amg_options.cycle)
-
-    solver = amg_options.solver
-    if solver == "auto":
-        mp = detect_matrix_property(sample, matrix_view=problem.matrix_view)
-        solver = "cg" if mp == MatrixProperty.SPD else "gmres"
-
-    krylov_options = KrylovSolverOptions(
-        solver=solver,
-        tol=amg_options.tol,
-        atol=amg_options.atol,
-        maxiter=amg_options.maxiter,
-        preconditioner=M,
-        restart=amg_options.restart,
-        check_convergence=amg_options.check_convergence,
-        convergence_threshold=amg_options.convergence_threshold,
-        verbose=amg_options.verbose,
-    )
-    return (krylov_options, hierarchy) if return_hierarchy else krylov_options

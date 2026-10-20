@@ -37,10 +37,11 @@ so every mode does the same work):
 
 Both modes compile ahead of time (``jit(f).lower(...).compile()``), so
 ``compile_s`` contains no execution. Everything mesh-sized the optimization
-needs at run time -- the TracedStructure (with the AMG hierarchy for
-``--solver amg``), the initial guess, the filter's sparse weight matrix and the
-nodal volume weights -- travels as ONE pytree jit ARGUMENT, never as a closure, so none of it is baked
-into the executables. ``const_mb`` reports what the traced program still
+needs at run time -- the TracedStructure, the initial guess, the filter's sparse
+weight matrix, the nodal volume weights and (for ``--solver amg``) the AMG
+preconditioner ``P`` (an ``fe.AMGPreconditioner`` pytree, handed to every solve
+as ``preconditioner=P``) -- travels as ONE pytree jit ARGUMENT, never as a
+closure, so none of it is baked into the executables. ``const_mb`` reports what the traced program still
 captures, as a check that this holds (it should stay well under 1 MB and not
 grow with the mesh).
 
@@ -50,13 +51,13 @@ defaults to ``--filter-radius-cells`` element sizes so every mesh keeps the same
 neighbourhood per node, and the filter weights are built with a KD-tree (the
 all-pairs builder in ``feax.gene`` does not scale to 1M DOF).
 
-AMG rebuild: the hierarchy built in ``create_solver`` comes from a uniform-density
+AMG rebuild: the hierarchy built by ``fe.amg`` comes from a uniform-density
 sample. As the design turns black-and-white (stiffness contrast ~1/SIMP_EPSILON)
 that fixed V-cycle degrades and CG iterations grow ~10x. ``--amg-rebuild-every N``
 reassembles the Jacobian at the current design every N outer iterations, rebuilds
-the hierarchy with PyAMG and swaps it into the TracedStructure. Because the
-hierarchy is a jit argument the step does not recompile unless its level shapes
-change. ``rebuild_s`` (assembly + PyAMG) and ``recompile_s`` are included in
+the hierarchy with PyAMG (``P = P.rebuild(J)``) and swaps the new preconditioner
+into the data pytree. Because the hierarchy is a jit argument the step does not
+recompile unless its level shapes change. ``rebuild_s`` (assembly + PyAMG) and ``recompile_s`` are included in
 ``total_s`` and also reported separately. ``solve`` mode cannot rebuild (the
 whole optimization is one XLA program), so it always uses the initial hierarchy.
 
@@ -209,7 +210,6 @@ def main(argv=None):
     import feax.gene as gene
     from feax.experimental.mma import GCMMA
     from feax.assembler import create_J_bc_csr_parametric
-    from feax.solvers.amg import build_amg_hierarchy
 
     try:
         from importlib.metadata import version as _pkg_version
@@ -242,9 +242,11 @@ def main(argv=None):
             # reuse_factorization: the adjoint reuses the forward factors (SPD).
             return fe.DirectSolverOptions(reuse_factorization=True)
         if args.solver == "amg":
-            return fe.AMGSolverOptions(near_nullspace="rigid_body", tol=args.tol)
+            # Outer CG of the AMG-preconditioned solve (the hierarchy itself is
+            # built by fe.amg in build()).
+            return fe.KrylovSolverOptions(solver="cg", tol=args.tol, atol=1e-10, maxiter=500)
         return fe.KrylovSolverOptions(solver="cg", tol=args.tol, atol=args.tol * 1e-3,
-                                      maxiter=args.maxiter, use_jacobi_preconditioner=True)
+                                      maxiter=args.maxiter)
 
     penal = float(args.penal)
 
@@ -289,10 +291,18 @@ def main(argv=None):
             volume_vars=(fe.TracedParams.create_node_var(problem, args.vf),),
             surface_vars=())
         opts = solver_options()
-        solver = fe.create_solver(problem, bc, solver_options=opts,
+        # AMG: the hierarchy P (built once from the uniform-density sample) is a
+        # pytree carried in the run-time data below, so it is a jit argument, not
+        # a constant. None for the other solvers (krylov uses fe.jacobi()).
+        if args.solver == "amg":
+            P = fe.amg(problem, bc, sample_tp, fe.AMGOptions(near_nullspace="rigid_body"),
+                       traced_structure=ts)
+            pre = P
+        else:
+            P = None
+            pre = fe.jacobi() if args.solver == "krylov" else None
+        solver = fe.create_solver(problem, bc, solver_options=opts, preconditioner=pre,
                                   linear=True, traced_params=sample_tp, traced_structure=ts)
-        # AMG: carry the hierarchy in ts so it is a jit argument, not a constant.
-        ts = ts.with_preconditioner(solver.preconditioner_state)
         u0 = fe.zero_like_initial_guess(problem, bc)
 
         compliance_fn = gene.create_compliance_fn(problem)
@@ -314,7 +324,8 @@ def main(argv=None):
         vol_w = jax.grad(volume_fn)(jnp.zeros((n_nodes,)))
 
         # Run-time data, passed as one pytree jit argument everywhere below.
-        data = (ts, u0, (filt_W, filt_rowsum), vol_w)
+        # d[4] is the AMG preconditioner (None unless --solver amg).
+        data = (ts, u0, (filt_W, filt_rowsum), vol_w, P)
 
         def density_filter(x, d):
             Wm, rs = d[2]
@@ -324,14 +335,14 @@ def main(argv=None):
             return gene.heaviside_projection(density_filter(x, d), beta=beta)
 
         def compliance(x, d):
-            s, u_init = d[0], d[1]
+            s, u_init, pre_d = d[0], d[1], d[4]
             tp = fe.TracedParams(volume_vars=(project(x, d),), surface_vars=())
-            return compliance_fn(solver(tp, u_init, traced_structure=s))
+            return compliance_fn(solver(tp, u_init, traced_structure=s, preconditioner=pre_d))
 
         def displacement(x, d):
-            s, u_init = d[0], d[1]
+            s, u_init, pre_d = d[0], d[1], d[4]
             tp = fe.TracedParams(volume_vars=(project(x, d),), surface_vars=())
-            return jnp.asarray(solver(tp, u_init, traced_structure=s))
+            return jnp.asarray(solver(tp, u_init, traced_structure=s, preconditioner=pre_d))
 
         def volume(x, d):
             # Constraint on the filtered, un-projected density (as in the base example).
@@ -353,16 +364,16 @@ def main(argv=None):
         fields = dict(filtered=density_filter, projected=project, displacement=displacement)
 
         # AMG rebuild: assemble the BC-applied Jacobian at the current design and
-        # rebuild the hierarchy from it on the host, then swap it into ts. Every
-        # non-None slot of the (forward, adjoint) state gets the new hierarchy.
+        # rebuild the hierarchy from it on the host (P.rebuild), then swap the new
+        # preconditioner into the data pytree. The forward and adjoint solves
+        # share one preconditioner, so both pick up the new hierarchy.
         J_csr = create_J_bc_csr_parametric(problem, symmetric=True)
         jacobian = jax.jit(lambda x, d: J_csr(
             d[1], fe.TracedParams(volume_vars=(project(x, d),), surface_vars=()), bc, d[0]))
 
         def rebuild_amg(x, d):
-            ml = build_amg_hierarchy(problem, bc, jacobian(x, d), opts)
-            state = tuple(None if m is None else ml for m in d[0].preconditioner)
-            return (d[0].with_preconditioner(state),) + tuple(d[1:])
+            P_new = d[4].rebuild(jacobian(x, d))
+            return tuple(d[:4]) + (P_new,)
 
         info["rebuild"] = rebuild_amg if args.solver == "amg" else None
 

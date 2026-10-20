@@ -26,14 +26,6 @@ Create BC-aware initial guess function that takes bc as an explicit argument.
 Unlike :func:`create_x0` which captures ``bc_rows``/``bc_vals`` in a closure,
 this version accepts a :class:`DirichletBC` so it can be traced under ``jax.vmap``.
 
-#### create\_jacobi\_preconditioner
-
-```python
-def create_jacobi_preconditioner(A: BCOO, shift: float = 1e-12)
-```
-
-Create Jacobi (diagonal) preconditioner from sparse matrix.
-
 #### create\_direct\_solve\_fn
 
 ```python
@@ -47,18 +39,31 @@ Create a direct linear solve function.
 #### create\_iterative\_solve\_fn
 
 ```python
-def create_iterative_solve_fn(options: KrylovSolverOptions)
+def create_iterative_solve_fn(options: KrylovSolverOptions,
+                              preconditioner=None)
 ```
 
-Create an iterative linear solve function.
+Create an iterative linear solve function ``solve(A, b, x0, preconditioner=None)``.
+
+``A`` may be an assembled ``CSRMatrix``, a matvec callable, or a
+:class:`feax.solvers.preconditioners.LinearOperator`. The preconditioner
+(the one bound here, or the per-call override) is called with the
+operator of the solve, ``preconditioner(op) -&gt; M``, so it is rebuilt from
+the current operator every time.
 
 #### create\_linear\_solve\_fn
 
 ```python
-def create_linear_solve_fn(solver_options, *, cache_namespace: str = "global")
+def create_linear_solve_fn(solver_options,
+                           *,
+                           preconditioner=None,
+                           cache_namespace: str = "global")
 ```
 
-Create a linear solve function based on solver options.
+Create a linear solve function ``solve(A, b, x0, preconditioner=None)``.
+
+``preconditioner`` (``preconditioner(op) -&gt; M``) is bound as the default of
+a Krylov solve; direct solves have none (passing one is an error).
 
 #### prewarm\_direct\_solvers
 

@@ -104,7 +104,6 @@ class CahnHilliardPipeline(ImplicitPipeline):
             tol=1e-10,
             atol=1e-10,
             maxiter=10000,
-            use_jacobi_preconditioner=True,
             verbose=True,
         )
         newton_opts = fe.NewtonOptions(
@@ -115,6 +114,7 @@ class CahnHilliardPipeline(ImplicitPipeline):
         _solver = fe.create_solver(
             self.problem, bc,
             solver_options=solver_opts,
+            preconditioner=fe.jacobi(),
             newton_options=newton_opts,
             traced_params=fe.TracedParams(volume_vars=(self._c0[:, 0],)),
             traced_structure=ts,

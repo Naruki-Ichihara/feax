@@ -163,8 +163,8 @@ def test_hessian_solver_converges():
         problem, bc,
         solver_options=fe.KrylovSolverOptions(
             solver='cg', maxiter=5000, tol=1e-10,
-            use_jacobi_preconditioner=True,
         ),
+        preconditioner=fe.jacobi(),
         linear=True,
         traced_params=tp,
     )
@@ -209,8 +209,8 @@ def test_hessian_vanishes_with_zero_epsilon():
         std_problem, std_bc,
         solver_options=fe.KrylovSolverOptions(
             solver='cg', maxiter=5000, tol=1e-10,
-            use_jacobi_preconditioner=True,
         ),
+        preconditioner=fe.jacobi(),
         linear=True, traced_params=std_iv,
     )
     std_sol = std_solver(std_iv, fe.zero_like_initial_guess(std_problem, std_bc))
@@ -223,8 +223,8 @@ def test_hessian_vanishes_with_zero_epsilon():
         problem, bc,
         solver_options=fe.KrylovSolverOptions(
             solver='cg', maxiter=5000, tol=1e-10,
-            use_jacobi_preconditioner=True,
         ),
+        preconditioner=fe.jacobi(),
         linear=True, traced_params=tp,
     )
     sol = solver(tp, fe.zero_like_initial_guess(problem, bc))

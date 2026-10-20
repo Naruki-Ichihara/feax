@@ -38,9 +38,10 @@ Each solver is measured in **eager**, **JIT**, **grad** (forward + adjoint solve
   left-hand-side matrix `A` (and its factorization) changes per case. See
   [Periodic Boundary Conditions](./advanced/periodic_boundary_conditions.md) and the
   `vmap` transform guide for where this matters.
-- All five modes apply to all three solvers. With `linear=True`, AMG is lowered inside
-  `create_solver` to a matrix-free Krylov solve with a fixed V-cycle preconditioner, so the
-  solve itself jits, vmaps, and differentiates like the others.
+- All five modes apply to all three solvers. AMG-CG is a matrix-free CG solve whose
+  preconditioner, `fe.amg(...)`, is a fixed V-cycle built once from a sample Jacobian; it
+  is a pytree passed to the solve as a jit argument (`preconditioner=P`), so the solve
+  itself jits, vmaps, and differentiates like the others.
 :::
 
 ## Benchmark setup
@@ -80,8 +81,8 @@ traction $\mathbf{t}=(0,0,t_z)$ at $x=L_x$, traction-free elsewhere.
 | Label | Method | Key settings |
 | --- | --- | --- |
 | **cuDSS direct** | GPU sparse Cholesky / LDLᵀ factorization | `reuse_factorization=True` |
-| **AMG-CG** | algebraic-multigrid-preconditioned CG | `near_nullspace="rigid_body"` |
-| **Krylov CG** | matrix-free CG | Jacobi preconditioner, `tol=1e-8`, `maxiter=2000` |
+| **AMG-CG** | matrix-free CG preconditioned by `fe.amg(...)` | `AMGOptions(near_nullspace="rigid_body")`, `tol=1e-8`, `maxiter=500` |
+| **Krylov CG** | matrix-free CG preconditioned by `fe.jacobi()` | `tol=1e-8`, `maxiter=2000` |
 
 ### Reading the comparison fairly
 
@@ -90,11 +91,11 @@ region does not measure identical numerical work — for two reasons worth keepi
 mind when reading the plots.
 
 **Setup is hoisted out of the timing — symmetrically.** Whatever each solver can
-precompute *before* seeing the matrix values is built once inside `create_solver`
-(outside the timed loop), and the rest is timed per solve. The catch is that the two
+precompute *before* seeing the matrix values is built once at setup (`create_solver`,
+or `fe.amg` for the hierarchy — outside the timed loop), and the rest is timed per solve. The catch is that the two
 methods have a different "precomputable" boundary:
 
-| | Built once in `create_solver` (untimed) | Per solve (timed) |
+| | Built once at setup (untimed) | Per solve (timed) |
 | --- | --- | --- |
 | **AMG-CG** | the whole multigrid hierarchy — aggregation, Galerkin coarse operators $A_c = RAP$, rigid-body near-null-space (its main cost) | matrix-free $A\mathbf{v}$ + apply the **fixed** V-cycle `M` |
 | **cuDSS direct** | symbolic analysis / fill-reducing ordering only | numeric factorization (its main cost) **+** triangular solves |
@@ -161,14 +162,20 @@ traction = fe.TracedParams.create_uniform_surface_var(problem, 1e-3)
 tp = fe.TracedParams(volume_vars=(E,), surface_vars=[(traction,)])
 ts = fe.TracedStructure.from_problem(problem)
 
-# three interchangeable solver backends
+# three interchangeable solver setups: options (+ preconditioner for Krylov)
 direct = fe.DirectSolverOptions(reuse_factorization=True)             # cuDSS
-amg    = fe.AMGSolverOptions(near_nullspace="rigid_body")             # AMG-CG
-krylov = fe.KrylovSolverOptions(solver="cg", tol=1e-8, atol=1e-11,
-                                maxiter=2000, use_jacobi_preconditioner=True)
+krylov = fe.KrylovSolverOptions(solver="cg", tol=1e-8, atol=1e-11,    # Krylov CG
+                                maxiter=2000)                         #   + fe.jacobi()
+amg_cg = fe.KrylovSolverOptions(solver="cg", tol=1e-8, atol=1e-10,    # AMG-CG
+                                maxiter=500)                          #   + fe.amg(...)
+P = fe.amg(problem, bc, tp, fe.AMGOptions(near_nullspace="rigid_body"),
+           traced_structure=ts)                                       # hierarchy, built once
 
 solver = fe.create_solver(problem, bc, solver_options=direct, linear=True,
                           traced_params=tp, traced_structure=ts)
+# Krylov CG: solver_options=krylov, preconditioner=fe.jacobi()
+# AMG-CG:    solver_options=amg_cg, preconditioner=P  (and preconditioner=P per call
+#            inside jit, so the hierarchy is a jit argument, not a constant)
 u = solver(tp, fe.zero_like_initial_guess(problem, bc), traced_structure=ts)
 ```
 

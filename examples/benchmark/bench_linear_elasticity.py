@@ -33,11 +33,13 @@ Run:
     python bench_linear_elasticity.py --dofs 50000 --batch 16 --modes vmap-rhs
     python bench_linear_elasticity.py --no-x64 --output my_run.csv --tag laptop
 
-Solvers: ``krylov`` (matrix-free CG, scales in memory — default), ``direct``
-(cuDSS/host sparse), ``amg`` (rigid-body near-null-space). With ``linear=True``
-AMG is lowered at ``create_solver`` to a matrix-free Krylov solve preconditioned
-by a fixed V-cycle, so all five modes — ``vmap`` and ``grad`` included — apply to
-every solver.
+Solvers: ``krylov`` (matrix-free CG with ``fe.jacobi()``, scales in memory —
+default), ``direct`` (cuDSS/host sparse), ``amg`` (matrix-free CG preconditioned
+by a fixed smoothed-aggregation V-cycle, ``fe.amg(...)`` with the rigid-body
+near-null-space). The AMG hierarchy is built once from a sample Jacobian and is
+a pytree, so it is passed to every compiled solve as a jit ARGUMENT
+(``preconditioner=P``) rather than baked in as constants; all five modes —
+``vmap`` and ``grad`` included — apply to every solver.
 """
 import argparse
 import csv
@@ -264,13 +266,27 @@ def main(argv=None):
             # factor once and multi-RHS solve (factor-once / solve-many).
             return fe.DirectSolverOptions(reuse_factorization=True)
         if args.solver == "amg":
-            # linear=True lowers this at create_solver to a matrix-free Krylov
-            # solve with a fixed AMG V-cycle preconditioner (hierarchy built once
-            # from a sample Jacobian), so the solve itself jits / vmaps / grads.
-            return fe.AMGSolverOptions(near_nullspace="rigid_body", verbose=False)
+            # Matrix-free CG preconditioned by a fixed AMG V-cycle (the hierarchy
+            # is built once from a sample Jacobian by fe.amg below), so the solve
+            # itself jits / vmaps / grads.
+            return fe.KrylovSolverOptions(solver="cg", tol=1e-8, atol=1e-10,
+                                          maxiter=500, verbose=False)
         return fe.KrylovSolverOptions(solver="cg", tol=args.tol,
-                                      atol=args.tol * 1e-3, maxiter=args.maxiter,
-                                      use_jacobi_preconditioner=True)
+                                      atol=args.tol * 1e-3, maxiter=args.maxiter)
+
+    def preconditioner(problem, bc, tp, ts):
+        """The preconditioner of the Krylov solvers (None for ``direct``).
+
+        For ``amg`` the returned ``AMGPreconditioner`` is a pytree: it is threaded
+        through every compiled mode as a jit argument (``preconditioner=P``), so
+        the hierarchy is never baked into an executable as constants.
+        """
+        if args.solver == "amg":
+            return fe.amg(problem, bc, tp, fe.AMGOptions(near_nullspace="rigid_body"),
+                          traced_structure=ts)
+        if args.solver == "krylov":
+            return fe.jacobi()
+        return None
 
     nu = 0.3
 
@@ -304,14 +320,18 @@ def main(argv=None):
         surf = [(traction,)]
         tp = fe.TracedParams(volume_vars=(E,), surface_vars=surf)
         ts = fe.TracedStructure.from_problem(problem)
+        pre = preconditioner(problem, bc, tp, ts)
         solver = fe.create_solver(problem, bc, solver_options=solver_options(),
+                                  preconditioner=pre,
                                   linear=True, traced_params=tp,
                                   traced_structure=ts, return_solution=False)
-        # AMG: carry the hierarchy in ts so the compiled modes take it as an
-        # argument instead of baking it in as constants (None for other solvers).
-        ts = ts.with_preconditioner(solver.preconditioner_state)
+        # AMG: the hierarchy P is passed to every compiled solve as an argument
+        # (preconditioner=P) instead of being baked in as constants. P is None
+        # for the other solvers (the per-call override then keeps the
+        # create_solver preconditioner: fe.jacobi() for krylov, none for direct).
+        P = pre if args.solver == "amg" else None
         initial = fe.zero_like_initial_guess(problem, bc)
-        return solver, tp, initial, ts, E, surf
+        return solver, tp, initial, ts, P, E, surf
 
     rows = []
 
@@ -341,7 +361,7 @@ def main(argv=None):
         res = (nx, ny, nz)
         print(f"target={target:,} -> nx={nx} ny={ny} nz={nz}  dof={dof:,}")
         try:
-            solver, tp, initial, ts, E, surf = build(nx, ny, nz)
+            solver, tp, initial, ts, P, E, surf = build(nx, ny, nz)
         except Exception as e:                     # OOM at build / assembly
             print(f"  build failed: {type(e).__name__}: {e}")
             record("build", dof, res, 1, float("nan"), [], note=type(e).__name__)
@@ -350,7 +370,7 @@ def main(argv=None):
 
         if "eager" in args.modes:
             try:
-                fn = lambda: solver(tp, initial, traced_structure=ts)
+                fn = lambda: solver(tp, initial, traced_structure=ts, preconditioner=P)
                 record("eager", dof, res, 1, float("nan"),
                        timed(fn, block, args.warmup, args.repeats))
             except Exception as e:
@@ -358,12 +378,14 @@ def main(argv=None):
 
         if "jit" in args.modes:
             try:
-                # ts is a jit ARGUMENT, not a closure: closing over it bakes every
-                # mesh-sized structural array into the executable as a constant.
-                jfn = jax.jit(lambda t, ig, s: solver(t, ig, traced_structure=s))
-                compile_s, jrun = aot(jfn, tp, initial, ts)
+                # ts (and the AMG hierarchy P) are jit ARGUMENTS, not closures:
+                # closing over them bakes every mesh-sized structural array / AMG
+                # level into the executable as a constant.
+                jfn = jax.jit(lambda t, ig, s, p: solver(t, ig, traced_structure=s,
+                                                         preconditioner=p))
+                compile_s, jrun = aot(jfn, tp, initial, ts, P)
                 record("jit", dof, res, 1, compile_s,
-                       timed(lambda: jrun(tp, initial, ts), block, args.warmup, args.repeats))
+                       timed(lambda: jrun(tp, initial, ts, P), block, args.warmup, args.repeats))
             except Exception as e:
                 record("jit", dof, res, 1, float("nan"), [], note=type(e).__name__)
 
@@ -372,17 +394,17 @@ def main(argv=None):
         # direct + reuse_factorization reuses the forward factors for the adjoint
         # (SPD / symmetric matrix type); amg reuses its hierarchy; krylov runs a
         # second CG. Read the adjoint overhead as grad / jit at the same DOF.
-        def objective(E_field, s):
+        def objective(E_field, s, p):
             tpi = fe.TracedParams(volume_vars=(E_field,), surface_vars=surf)
-            u = solver(tpi, initial, traced_structure=s)
+            u = solver(tpi, initial, traced_structure=s, preconditioner=p)
             return 0.5 * jnp.dot(u, u)
 
         if "grad" in args.modes:
             try:
                 gfn = jax.jit(jax.value_and_grad(objective))
-                compile_s, grun = aot(gfn, E, ts)
+                compile_s, grun = aot(gfn, E, ts, P)
                 record("grad", dof, res, 1, compile_s,
-                       timed(lambda: grun(E, ts), block, args.warmup, args.repeats),
+                       timed(lambda: grun(E, ts, P), block, args.warmup, args.repeats),
                        note="value_and_grad of 0.5*|u|^2 wrt nodal E")
             except Exception as e:
                 record("grad", dof, res, 1, float("nan"), [], note=type(e).__name__)
@@ -392,7 +414,7 @@ def main(argv=None):
             try:
                 gefn = jax.value_and_grad(objective)
                 record("grad-eager", dof, res, 1, float("nan"),
-                       timed(lambda: gefn(E, ts), block, args.warmup, args.repeats),
+                       timed(lambda: gefn(E, ts, P), block, args.warmup, args.repeats),
                        note="value_and_grad of 0.5*|u|^2 wrt nodal E")
             except Exception as e:
                 record("grad-eager", dof, res, 1, float("nan"), [], note=type(e).__name__)
@@ -414,24 +436,24 @@ def main(argv=None):
                 if kind == "lhs":
                     E_batch = E[None, :] * scales[:, None]         # (B, num_nodes)
 
-                    def solve_one(E_field, s):
+                    def solve_one(E_field, s, p):
                         tpi = fe.TracedParams(volume_vars=(E_field,), surface_vars=surf)
-                        return solver(tpi, initial, traced_structure=s)
+                        return solver(tpi, initial, traced_structure=s, preconditioner=p)
                     batched_arg = E_batch
                 else:                                              # kind == "rhs"
                     traction = surf[0][0]                          # the load leaf
                     tr_batch = traction[None] * scales.reshape((B,) + (1,) * traction.ndim)
 
-                    def solve_one(tr_field, s):
+                    def solve_one(tr_field, s, p):
                         tpi = fe.TracedParams(volume_vars=(E,),
                                               surface_vars=[(tr_field,)])
-                        return solver(tpi, initial, traced_structure=s)
+                        return solver(tpi, initial, traced_structure=s, preconditioner=p)
                     batched_arg = tr_batch
 
-                vfn = jax.jit(jax.vmap(solve_one, in_axes=(0, None)))
-                compile_s, vrun = aot(vfn, batched_arg, ts)
+                vfn = jax.jit(jax.vmap(solve_one, in_axes=(0, None, None)))
+                compile_s, vrun = aot(vfn, batched_arg, ts, P)
                 record(label, dof, res, B, compile_s,
-                       timed(lambda: vrun(batched_arg, ts), block, args.warmup, args.repeats))
+                       timed(lambda: vrun(batched_arg, ts, P), block, args.warmup, args.repeats))
             except Exception as e:
                 record(label, dof, res, args.batch, float("nan"), [],
                        note=type(e).__name__)

@@ -140,7 +140,7 @@ class CahnHilliardPipeline(ImplicitPipeline):
 
         solver_opts = fe.KrylovSolverOptions(
             solver='auto', tol=1e-10, atol=1e-10,
-            maxiter=10000, use_jacobi_preconditioner=True,
+            maxiter=10000,
         )
         newton_opts = fe.NewtonOptions(
             tol=1e-6, rel_tol=1e-8, max_iter=25,
@@ -148,6 +148,7 @@ class CahnHilliardPipeline(ImplicitPipeline):
         self.solver = fe.create_solver(
             self.problem, bc,
             solver_options=solver_opts,
+            preconditioner=fe.jacobi(),
             newton_options=newton_opts,
             traced_params=fe.TracedParams(volume_vars=(self._c0[:, 0],)),
         )
@@ -219,11 +220,11 @@ solver_opts = fe.KrylovSolverOptions(
     solver='auto',
     tol=1e-10, atol=1e-10,
     maxiter=10000,
-    use_jacobi_preconditioner=True,
 )
+solver = fe.create_solver(..., solver_options=solver_opts, preconditioner=fe.jacobi())
 ```
 
-Jacobi preconditioning (`use_jacobi_preconditioner=True`) is important for convergence, as the diagonal scaling differs significantly between the $c$ and $\mu$ blocks.
+Jacobi preconditioning (`preconditioner=fe.jacobi()`, the diagonal of each Newton step's tangent) is important for convergence, as the diagonal scaling differs significantly between the $c$ and $\mu$ blocks.
 
 ### Newton Solver
 

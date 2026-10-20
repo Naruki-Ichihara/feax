@@ -81,8 +81,8 @@ bc_th = fe.DirichletBCConfig([
 tp_th = fe.TracedParams(volume_vars=(rho,))
 solve_T = fe.create_solver(
     thermal, bc_th,
-    solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-10, atol=1e-12,
-                                          use_jacobi_preconditioner=True),
+    solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-10, atol=1e-12),
+    preconditioner=fe.jacobi(),
     linear=True)
 sol_T = solve_T(tp_th, fe.zero_like_initial_guess(thermal, bc_th))
 T_nodes = fe.TracedParams.node_var_from_solution(thermal, sol_T)
@@ -112,8 +112,8 @@ bc_me = fe.DirichletBCConfig([
 tp_me = fe.TracedParams(volume_vars=(rho, T_nodes))
 solve_u = fe.create_solver(
     mech, bc_me,
-    solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-10, atol=1e-12,
-                                          use_jacobi_preconditioner=True),
+    solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-10, atol=1e-12),
+    preconditioner=fe.jacobi(),
     linear=True)
 sol_u = solve_u(tp_me, fe.zero_like_initial_guess(mech, bc_me))
 

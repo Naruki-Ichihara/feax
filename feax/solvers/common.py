@@ -5,7 +5,6 @@ Small stateless utilities used across linear/newton/reduced solver modules.
 
 import jax
 import jax.numpy as np
-from jax.experimental.sparse import BCOO
 
 from ..problem import MatrixView
 from .options import DirectSolverOptions, KrylovSolverOptions, SolverOptions
@@ -83,17 +82,6 @@ def create_x0_parametric(P_mat=None):
     return x0_fn
 
 
-def create_jacobi_preconditioner(A: BCOO, shift: float = 1e-12):
-    """Create Jacobi (diagonal) preconditioner from sparse matrix."""
-    diagonal = _extract_sparse_diagonal(A)
-    diagonal_inv = 1.0 / (diagonal + shift)
-
-    def matvec(x):
-        return diagonal_inv * x
-
-    return matvec
-
-
 def _as_csr_triple(A):
     """Return ``(csr_data, csr_indptr, csr_indices)`` for a direct backend.
 
@@ -103,6 +91,9 @@ def _as_csr_triple(A):
     conversion is needed.
     """
     from ..csr import CSRMatrix
+    from .preconditioners import LinearOperator
+    if isinstance(A, LinearOperator):
+        A = A.csr
     if not isinstance(A, CSRMatrix):
         raise TypeError(
             "Direct solvers require a feax.csr.CSRMatrix (the CSR-direct "
@@ -127,7 +118,7 @@ def create_direct_solve_fn(
 
     if solver == "spsolve":
         from .direct.spsolve import spsolve
-        def solve(A, b, x0=None):
+        def solve(A, b, x0=None, preconditioner=None):
             csr_data, csr_offsets, csr_columns = _as_csr_triple(A)
             x = spsolve(
                 b_values=b,
@@ -142,7 +133,7 @@ def create_direct_solve_fn(
 
     if solver == "umfpack":
         from .direct.umfpack import umfpack_solve
-        def solve(A, b, x0=None):
+        def solve(A, b, x0=None, preconditioner=None):
             csr_data, csr_offsets, csr_columns = _as_csr_triple(A)
             x = umfpack_solve(
                 b_values=b,
@@ -158,7 +149,7 @@ def create_direct_solve_fn(
 
     if solver == "cholmod":
         from .direct.cholmod import cholmod_solve
-        def solve(A, b, x0=None):
+        def solve(A, b, x0=None, preconditioner=None):
             csr_data, csr_offsets, csr_columns = _as_csr_triple(A)
             x = cholmod_solve(
                 b_values=b,
@@ -178,7 +169,7 @@ def create_direct_solve_fn(
         cudss_solver = None
         _actual_nnz = None
 
-        def solve(A, b, x0=None):
+        def solve(A, b, x0=None, preconditioner=None):
             nonlocal cudss_solver, _actual_nnz
             csr_data, csr_offsets, csr_columns = _as_csr_triple(A)
 
@@ -210,25 +201,30 @@ def create_direct_solve_fn(
     )
 
 
-def create_iterative_solve_fn(options: KrylovSolverOptions):
-    """Create an iterative linear solve function."""
+def create_iterative_solve_fn(options: KrylovSolverOptions, preconditioner=None):
+    """Create an iterative linear solve function ``solve(A, b, x0, preconditioner=None)``.
+
+    ``A`` may be an assembled ``CSRMatrix``, a matvec callable, or a
+    :class:`feax.solvers.preconditioners.LinearOperator`. The preconditioner
+    (the one bound here, or the per-call override) is called with the
+    operator of the solve, ``preconditioner(op) -> M``, so it is rebuilt from
+    the current operator every time.
+    """
     if options.solver == "auto":
         raise ValueError(
             "KrylovSolverOptions.solver is 'auto' (unresolved). "
             "Call resolve_iterative_solver() before create_iterative_solve_fn()."
         )
+    from .preconditioners import LinearOperator
 
-    def choose_preconditioner(A):
-        if options.use_jacobi_preconditioner and options.preconditioner is None:
-            if callable(A) and not isinstance(A, BCOO):
-                # Cannot extract diagonal from a callable matvec
-                return None
-            return create_jacobi_preconditioner(A, options.jacobi_shift)
-        return options.preconditioner
+    def operator_and_M(A, override):
+        op = LinearOperator.wrap(A)
+        P = preconditioner if override is None else override
+        return op.matvec, (None if P is None else P(op))
 
     if options.solver == "cg":
-        def solve(A, b, x0):
-            M = choose_preconditioner(A)
+        def solve(A, b, x0, preconditioner=None):
+            A, M = operator_and_M(A, preconditioner)
             x, _ = jax.scipy.sparse.linalg.cg(
                 A, b, x0=x0, M=M,
                 tol=options.tol,
@@ -239,8 +235,8 @@ def create_iterative_solve_fn(options: KrylovSolverOptions):
         return solve
 
     if options.solver == "bicgstab":
-        def solve(A, b, x0):
-            M = choose_preconditioner(A)
+        def solve(A, b, x0, preconditioner=None):
+            A, M = operator_and_M(A, preconditioner)
             x, _ = jax.scipy.sparse.linalg.bicgstab(
                 A, b, x0=x0, M=M,
                 tol=options.tol,
@@ -252,8 +248,8 @@ def create_iterative_solve_fn(options: KrylovSolverOptions):
 
     if options.solver == "gmres":
         _restart = getattr(options, 'restart', None) or 20
-        def solve(A, b, x0):
-            M = choose_preconditioner(A)
+        def solve(A, b, x0, preconditioner=None):
+            A, M = operator_and_M(A, preconditioner)
             x, _ = jax.scipy.sparse.linalg.gmres(
                 A, b, x0=x0, M=M,
                 tol=options.tol,
@@ -273,9 +269,14 @@ def create_iterative_solve_fn(options: KrylovSolverOptions):
 def create_linear_solve_fn(
     solver_options,
     *,
+    preconditioner=None,
     cache_namespace: str = "global",
 ):
-    """Create a linear solve function based on solver options."""
+    """Create a linear solve function ``solve(A, b, x0, preconditioner=None)``.
+
+    ``preconditioner`` (``preconditioner(op) -> M``) is bound as the default of
+    a Krylov solve; direct solves have none (passing one is an error).
+    """
     if isinstance(solver_options, SolverOptions):
         raise RuntimeError(
             "SolverOptions has been removed. "
@@ -283,16 +284,19 @@ def create_linear_solve_fn(
         )
 
     if isinstance(solver_options, DirectSolverOptions):
+        if preconditioner is not None:
+            raise ValueError(
+                "A preconditioner has no effect with a direct solver "
+                f"({solver_options.solver}); use KrylovSolverOptions with it, or drop it.")
         return create_direct_solve_fn(
             solver_options,
             cache_namespace=cache_namespace,
         )
     if isinstance(solver_options, KrylovSolverOptions):
-        return create_iterative_solve_fn(solver_options)
+        return create_iterative_solve_fn(solver_options, preconditioner=preconditioner)
     raise TypeError(
         "Unsupported solver option type. "
-        f"Expected DirectSolverOptions or KrylovSolverOptions, got {type(solver_options).__name__}. "
-        "(AMGSolverOptions is lowered to a Krylov solve before reaching here.)"
+        f"Expected DirectSolverOptions or KrylovSolverOptions, got {type(solver_options).__name__}."
     )
 
 
@@ -368,6 +372,9 @@ def _extract_sparse_diagonal(A):
 
 def _matvec_with_matrix_view(A, x, matrix_view: MatrixView):
     """Apply matrix-vector product respecting stored matrix view."""
+    from .preconditioners import LinearOperator
+    if isinstance(A, LinearOperator):
+        A = A.csr if A.has_csr else A.matvec
     if callable(A):
         return A(x)
 

@@ -6,8 +6,9 @@ selection logic for solving systems of the form A x = b arising
 in finite element analysis.
 
 Key Features:
-- Jacobi (diagonal) preconditioner
 - Solver selection: cg, bicgstab, gmres, spsolve, umfpack, cholmod, cudss
+- Preconditioning through one callable, ``preconditioner(op) -> M``
+  (see :mod:`feax.solvers.preconditioners`)
 - Convergence checking for ill-conditioned problems
 - Adjoint linear solve for gradient computation
 - create_linear_solver: high-level differentiable solver for linear problems
@@ -15,7 +16,6 @@ Key Features:
 
 import logging
 import os
-from dataclasses import replace
 from typing import Any, Callable, Optional
 
 import jax
@@ -34,14 +34,12 @@ from ..problem import MatrixView, Problem
 from .common import (
     _safe_negate,
     check_convergence,
-    create_iterative_solve_fn,
     create_linear_solve_fn,
     prewarm_direct_solvers,
     create_x0,
 )
 from .options import (
     AbstractSolverOptions,
-    AMGSolverOptions,
     DirectSolverOptions,
     KrylovSolverOptions,
     MatrixProperty,
@@ -49,6 +47,7 @@ from .options import (
     resolve_direct_solver,
     resolve_iterative_solver,
 )
+from .preconditioners import LinearOperator, as_pytree
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +59,7 @@ def linear_solve_adjoint(
     matrix_view: MatrixView,
     bc=None,
     linear_solve_fn: Optional[Callable] = None,
+    preconditioner=None,
 ):
     """Solve linear system for adjoint problem.
 
@@ -78,6 +78,8 @@ def linear_solve_adjoint(
     linear_solve_fn : callable, optional
         Pre-created linear solve function. If None, one is created from
         solver_options internally.
+    preconditioner : callable, optional
+        ``preconditioner(op) -> M`` for a Krylov adjoint solve.
 
     Returns
     -------
@@ -103,7 +105,7 @@ def linear_solve_adjoint(
         else:
             x0 = np.zeros_like(b)
 
-    sol = linear_solve_fn(A, b, x0)
+    sol = linear_solve_fn(A, b, x0, preconditioner=preconditioner)
 
     if solver_options.check_convergence:
         sol = check_convergence(
@@ -173,6 +175,8 @@ def create_linear_solver(
     traced_params=None,
     symmetric_elimination: bool = True,
     traced_structure=None,
+    preconditioner=None,
+    adjoint_preconditioner=None,
 ) -> Callable[[Any, np.ndarray], np.ndarray]:
     """Create a differentiable solver for linear FE problems.
 
@@ -200,12 +204,24 @@ def create_linear_solver(
         Use symmetric Dirichlet elimination (zero BC rows *and* columns). Linear
         FE operators are symmetric after symmetric elimination, so the Krylov
         adjoint reuses the forward matvec (``Jᵀ = J``).
+    preconditioner : callable, optional
+        ``preconditioner(op) -> M`` for a Krylov forward solve, called with the
+        operator of each solve (:class:`~feax.solvers.preconditioners.LinearOperator`):
+        :func:`feax.jacobi`, :func:`feax.amg`, a fixed ``lambda op: M``, or
+        your own. An error with a direct solver. It can also be given (or
+        overridden) per call, ``solver(tp, u0, preconditioner=P)`` — the way to
+        make a pytree preconditioner such as :class:`feax.AMGPreconditioner` a
+        traced argument of a jitted solve rather than a closure constant.
+    adjoint_preconditioner : callable, optional
+        The same for the adjoint solve. Defaults to ``preconditioner`` (and to
+        its per-call override) when the adjoint solve is Krylov.
 
     Returns
     -------
     differentiable_solve : callable
-        A function with signature ``(traced_params, initial_guess) -> solution``
-        that is differentiable w.r.t. ``traced_params`` via ``jax.grad``.
+        ``solver(traced_params, initial_guess=None, bc=None, traced_structure=None,
+        preconditioner=None) -> solution``, differentiable w.r.t.
+        ``traced_params`` (and ``bc``) via ``jax.grad``.
 
     Notes
     -----
@@ -213,7 +229,8 @@ def create_linear_solver(
     assembles the Jacobian straight into CSR (for factorization), while
     ``KrylovSolverOptions`` (cg/bicgstab/gmres) is fully **matrix-free** — the
     forward and adjoint matvecs are residual JVPs, so the element Jacobian is
-    never materialized.
+    never materialized (a preconditioner that reads ``op.values`` / ``op.diag``
+    triggers one assembly per solve).
 
     Forward pass performs a single linear solve:
 
@@ -258,39 +275,14 @@ def create_linear_solver(
             "SolverOptions has been removed. "
             "Use DirectSolverOptions or KrylovSolverOptions."
         )
-    if not isinstance(solver_options, (DirectSolverOptions, KrylovSolverOptions, AMGSolverOptions)):
-        raise TypeError(
-            "Unsupported solver_options type. "
-            f"Expected DirectSolverOptions, KrylovSolverOptions, or AMGSolverOptions, got {type(solver_options).__name__}."
-        )
-    if not isinstance(adjoint_solver_options, (DirectSolverOptions, KrylovSolverOptions, AMGSolverOptions)):
-        raise TypeError(
-            "Unsupported adjoint_solver_options type. "
-            f"Expected DirectSolverOptions, KrylovSolverOptions, or AMGSolverOptions, got {type(adjoint_solver_options).__name__}."
-        )
-
-    # AMGSolverOptions lowers to a matrix-free Krylov solve preconditioned by a
-    # once-built AMG V-cycle (rigid-body near-null-space for vector problems).
-    # The hierarchies are also exposed as ``solver.preconditioner_state`` so a
-    # jitted caller can pass them in through ``traced_structure`` (see
-    # ``_solve_fns``) rather than baking every level in as a constant.
-    from .amg import amg_to_krylov_options
-    fwd_amg = adj_amg = None
-    if isinstance(solver_options, AMGSolverOptions):
-        fwd_cycle = solver_options.cycle
-        solver_options, fwd_amg = amg_to_krylov_options(
-            solver_options, problem, bc, traced_params, traced_structure,
-            symmetric_elimination, return_hierarchy=True)
-    if isinstance(adjoint_solver_options, AMGSolverOptions):
-        if shared_opts:
-            adjoint_solver_options = solver_options
-        else:
-            adj_cycle = adjoint_solver_options.cycle
-            adjoint_solver_options, adj_amg = amg_to_krylov_options(
-                adjoint_solver_options, problem, bc, traced_params, traced_structure,
-                symmetric_elimination, return_hierarchy=True)
-    preconditioner_state = (
-        None if fwd_amg is None and adj_amg is None else (fwd_amg, adj_amg))
+    for _role, _opts in (("solver_options", solver_options),
+                         ("adjoint_solver_options", adjoint_solver_options)):
+        if not isinstance(_opts, (DirectSolverOptions, KrylovSolverOptions)):
+            raise TypeError(
+                f"Unsupported {_role} type. Expected DirectSolverOptions or "
+                f"KrylovSolverOptions, got {type(_opts).__name__}. (AMG is a "
+                "preconditioner: pass KrylovSolverOptions and preconditioner=fe.amg(...).)"
+            )
 
     if isinstance(solver_options, KrylovSolverOptions):
         solver_options = resolve_iterative_solver(solver_options, default_matrix_property)
@@ -317,15 +309,29 @@ def create_linear_solver(
 
     # Operator representation follows the solve method: direct factorizes the
     # assembled CSR matrix; Krylov (cg/bicgstab/gmres) needs only a matvec, so
-    # it uses the matrix-free operator (a residual JVP) — no assembly at all.
-    # (AMGSolverOptions has already been lowered to a Krylov + AMG preconditioner
-    # above, so it follows the matrix-free path here.)
+    # it uses the matrix-free operator (a residual JVP) — no assembly unless a
+    # preconditioner asks the operator for its values.
     _fwd_direct = isinstance(solver_options, DirectSolverOptions)
     _adj_direct = isinstance(adjoint_solver_options, DirectSolverOptions)
 
-    # CSR-direct operators (only built when a direct solver is on either path).
+    # Preconditioners: one callable per Krylov side. The adjoint shares the
+    # forward one (and its per-call override) unless given its own.
+    if preconditioner is not None and _fwd_direct:
+        raise ValueError(
+            "preconditioner has no effect with a direct forward solver "
+            f"({solver_options.solver}); use KrylovSolverOptions with it, or drop it.")
+    if adjoint_preconditioner is not None and _adj_direct:
+        raise ValueError(
+            "adjoint_preconditioner has no effect with a direct adjoint solver "
+            f"({adjoint_solver_options.solver}); use KrylovSolverOptions with it, or drop it.")
+    _adj_shares_fwd = adjoint_preconditioner is None and not _adj_direct
+    _fwd_P_default = as_pytree(preconditioner)
+    _adj_P_fixed = as_pytree(adjoint_preconditioner)
+
+    # CSR operators: the direct paths consume them; the matrix-free paths
+    # assemble lazily (only if a preconditioner reads op.values / op.diag).
     J_bc_csr_func = create_J_bc_csr_function(problem, bc, symmetric=symmetric_elimination) if (_fwd_direct or _adj_direct) else None
-    J_bc_csr_parametric = create_J_bc_csr_parametric(problem, symmetric=symmetric_elimination) if (_fwd_direct or _adj_direct) else None
+    J_bc_csr_parametric = create_J_bc_csr_parametric(problem, symmetric=symmetric_elimination)
     # Detect dead (u-independent) surface loads once: if the surface Jacobian is
     # identically zero we drop it from the CSR assembly, which keeps the operator
     # independent of ``surface_vars``. Then a ``jax.vmap`` over the load hoists the
@@ -351,23 +357,13 @@ def create_linear_solver(
         )
     x0_fn = solver_options.x0_fn if isinstance(solver_options, KrylovSolverOptions) else None
 
-    def _solve_fns(ts):
-        """(forward, adjoint) solve fns, rebuilt around the AMG hierarchies that
-        ``ts.preconditioner`` carries as traced leaves; the closure-constant
-        defaults when it carries none."""
-        state = getattr(ts, "preconditioner", None)
-        if state is None:
-            return linear_solve_fn, adjoint_linear_solve_fn
-        fwd_ml, adj_ml = state
-        fwd_fn = linear_solve_fn if fwd_ml is None else create_iterative_solve_fn(
-            replace(solver_options,
-                    preconditioner=fwd_ml.aspreconditioner(cycle=fwd_cycle)))
-        if adjoint_solver_options is solver_options:
-            return fwd_fn, fwd_fn
-        adj_fn = adjoint_linear_solve_fn if adj_ml is None else create_iterative_solve_fn(
-            replace(adjoint_solver_options,
-                    preconditioner=adj_ml.aspreconditioner(cycle=adj_cycle)))
-        return fwd_fn, adj_fn
+    def _matfree_operator(sol, traced_params, effective_bc, ts, matvec, transpose=False):
+        """The matrix-free operator as a LinearOperator whose CSR values are
+        assembled only if the preconditioner asks for them."""
+        return LinearOperator(
+            matvec=matvec,
+            assemble=lambda: J_bc_csr_parametric(sol, traced_params, effective_bc, ts),
+            structure=ts, problem=problem, bc=effective_bc, transpose=transpose)
 
     # Pre-warm with the CSR Jacobian when a direct solver is used so the cuDSS
     # symbolic structure matches the canonical CSR fed at solve time. (FEM
@@ -417,8 +413,11 @@ def create_linear_solver(
             delta_sol = _solve_with(token, -res, device_id=_dev_id)
             return initial_guess + delta_sol, token
 
+    # ``precond`` is the forward preconditioner of this call (a pytree, or
+    # None): an argument of the custom_vjp so that a jitted caller can pass it
+    # in as traced leaves (e.g. an AMG hierarchy) instead of a closure constant.
     @jax.custom_vjp
-    def differentiable_solve(traced_params, initial_guess, effective_bc, ts):
+    def differentiable_solve(traced_params, initial_guess, effective_bc, ts, precond):
         if _reuse_factor:
             sol, _ = _factor_and_solve(initial_guess, traced_params, effective_bc, ts)
             return sol
@@ -428,7 +427,8 @@ def create_linear_solver(
             res = res_bc_parametric(initial_guess, traced_params, effective_bc, ts)
             op = J_bc_csr_parametric(initial_guess, traced_params, effective_bc, ts)
         else:
-            res, op = matfree_res_J_param(initial_guess, traced_params, effective_bc, ts)
+            res, matvec = matfree_res_J_param(initial_guess, traced_params, effective_bc, ts)
+            op = _matfree_operator(initial_guess, traced_params, effective_bc, ts, matvec)
 
         b = -res
         x0 = None
@@ -437,7 +437,7 @@ def create_linear_solver(
                 bc_rows=effective_bc.bc_rows, bc_vals=effective_bc.bc_vals)
             x0 = _x0_fn(initial_guess)
 
-        delta_sol = _solve_fns(ts)[0](op, b, x0)
+        delta_sol = linear_solve_fn(op, b, x0, preconditioner=precond)
 
         if solver_options.check_convergence:
             delta_sol = check_convergence(
@@ -449,17 +449,17 @@ def create_linear_solver(
 
         return initial_guess + delta_sol
 
-    def f_fwd(traced_params, initial_guess, effective_bc, ts):
+    def f_fwd(traced_params, initial_guess, effective_bc, ts, precond):
         if _reuse_factor:
             sol, token = _factor_and_solve(initial_guess, traced_params, effective_bc, ts)
-            return sol, (traced_params, sol, effective_bc, ts, token)
-        sol = differentiable_solve(traced_params, initial_guess, effective_bc, ts)
-        return sol, (traced_params, sol, effective_bc, ts)
+            return sol, (traced_params, sol, effective_bc, ts, precond, token)
+        sol = differentiable_solve(traced_params, initial_guess, effective_bc, ts, precond)
+        return sol, (traced_params, sol, effective_bc, ts, precond)
 
     def f_bwd(res, v):
         if _reuse_factor:
             # Reuse the forward factorization: λ = J⁻ᵀ v = J⁻¹ v (symmetric).
-            traced_params, sol, effective_bc, ts, token = res
+            traced_params, sol, effective_bc, ts, _precond, token = res
             adjoint_vec = _solve_with(token, v, device_id=_dev_id)
 
             def res_fn(tp, bc_arg):
@@ -470,9 +470,10 @@ def create_linear_solver(
             vjp_iv, vjp_bc = f_vjp(adjoint_list)
             vjp_iv = jax.tree_util.tree_map(_safe_negate, vjp_iv)
             vjp_bc = jax.tree_util.tree_map(_safe_negate, vjp_bc)
-            return (vjp_iv, None, vjp_bc, None)
+            return (vjp_iv, None, vjp_bc, None, None)
 
-        traced_params, sol, effective_bc, ts = res
+        traced_params, sol, effective_bc, ts, precond = res
+        adj_precond = precond if _adj_shares_fwd else _adj_P_fixed
 
         # Adjoint solve: J^T @ adjoint = v
         use_transpose = problem.matrix_view not in (MatrixView.UPPER, MatrixView.LOWER)
@@ -487,16 +488,19 @@ def create_linear_solver(
             ) if use_transpose else J
         elif symmetric_elimination:
             # Symmetric BC ⇒ J is symmetric ⇒ Jᵀ = J (matrix-free matvec).
-            _, J_adjoint = matfree_res_J_param(sol, traced_params, effective_bc, ts)
+            _, matvec = matfree_res_J_param(sol, traced_params, effective_bc, ts)
+            J_adjoint = _matfree_operator(sol, traced_params, effective_bc, ts, matvec)
         else:
             # Non-symmetric BC: Jᵀ is the VJP of the BC-applied residual.
             _, _vjp = jax.vjp(
                 lambda s: res_bc_parametric(s, traced_params, effective_bc, ts), sol)
-            J_adjoint = lambda w: _vjp(w)[0]
+            J_adjoint = _matfree_operator(
+                sol, traced_params, effective_bc, ts, lambda w: _vjp(w)[0], transpose=True)
         adjoint_vec = linear_solve_adjoint(
             J_adjoint, v, adjoint_solver_options, problem.matrix_view,
             effective_bc,
-            linear_solve_fn=_solve_fns(ts)[1]
+            linear_solve_fn=adjoint_linear_solve_fn,
+            preconditioner=adj_precond,
         )
 
         # VJP of residual w.r.t. traced_params and bc
@@ -511,23 +515,28 @@ def create_linear_solver(
         vjp_iv = jax.tree_util.tree_map(_safe_negate, vjp_iv)
         vjp_bc = jax.tree_util.tree_map(_safe_negate, vjp_bc)
 
-        return (vjp_iv, None, vjp_bc, None)
+        return (vjp_iv, None, vjp_bc, None, None)
 
     differentiable_solve.defvjp(f_fwd, f_bwd)
 
     can_omit_initial_guess = not solver_options.uses_x0()
 
-    import warnings
     from ..utils import zero_like_initial_guess
 
     default_initial_guess = zero_like_initial_guess(problem, bc)
 
-    def solver_wrapper(traced_params, initial_guess=None, bc=None, traced_structure=None):
+    def solver_wrapper(traced_params, initial_guess=None, bc=None, traced_structure=None,
+                       preconditioner=None):
         effective_bc = bc if isinstance(bc, DirichletBC) else _default_bc
         ig = default_initial_guess if (can_omit_initial_guess and initial_guess is None) else initial_guess
         if ig is None:
             ig = default_initial_guess
-        return differentiable_solve(traced_params, ig, effective_bc, traced_structure)
+        if preconditioner is None:
+            precond = _fwd_P_default
+        elif _fwd_direct:
+            raise ValueError("preconditioner has no effect with a direct forward solver.")
+        else:
+            precond = as_pytree(preconditioner)
+        return differentiable_solve(traced_params, ig, effective_bc, traced_structure, precond)
 
-    solver_wrapper.preconditioner_state = preconditioner_state
     return solver_wrapper

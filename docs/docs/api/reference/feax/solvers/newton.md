@@ -43,7 +43,9 @@ def create_newton_solver(problem,
                          traced_params=None,
                          extra_residual_fn=None,
                          symmetric_elimination: bool = True,
-                         traced_structure=None)
+                         traced_structure=None,
+                         preconditioner=None,
+                         adjoint_preconditioner=None)
 ```
 
 Create a differentiable nonlinear Newton solver.
@@ -78,7 +80,10 @@ def create_callback_newton_solver(problem,
                                   newton_options: NewtonOptions = None,
                                   traced_params=None,
                                   symmetric_elimination: bool = True,
-                                  traced_structure=None)
+                                  traced_structure=None,
+                                  preconditioner=None,
+                                  adjoint_preconditioner=None,
+                                  adjoint_shares_forward: bool = True)
 ```
 
 Create a differentiable, jit/vmap-safe Newton solver (traced loop).
@@ -96,6 +101,10 @@ the loop).
 jit/vmap a failed line search stops the iteration (no exception can be
 raised from traced values).
 
-Returns ``solver(traced_params, initial_guess, bc=None, traced_structure=None)
--&gt; solution``.
+``preconditioner`` / ``adjoint_preconditioner`` are ``preconditioner(op) -&gt; M``
+callables for the Krylov solves; with ``adjoint_shares_forward`` the adjoint
+uses the forward one (including a per-call override).
+
+Returns ``solver(traced_params, initial_guess, bc=None, traced_structure=None,
+preconditioner=None) -&gt; solution``.
 

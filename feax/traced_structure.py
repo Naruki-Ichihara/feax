@@ -35,7 +35,7 @@ Usage
 >>> sol = jit_solve(tp, ts)                            # nothing baked
 """
 
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, fields
 from typing import Any, Tuple
 
 import jax
@@ -93,10 +93,6 @@ class TracedStructure:
     nanson_scale: Tuple
     csr_face_perm: np.ndarray
     csr_face_sorted_slots: np.ndarray
-
-    # --- solver-owned runtime state (e.g. the AMG hierarchy), see
-    # ``with_preconditioner``. A pytree or None; not built by ``from_problem``.
-    preconditioner: Any = None
 
     @classmethod
     def from_problem(cls, problem, free_scratch: bool = True) -> "TracedStructure":
@@ -166,17 +162,6 @@ class TracedStructure:
             problem.free_assembly_scratch(drop_no_ts_maps=True)
 
         return result
-
-    def with_preconditioner(self, state) -> "TracedStructure":
-        """Return a copy carrying a solver's preconditioner state as leaves.
-
-        ``state`` is ``solver.preconditioner_state`` (the AMG hierarchy for
-        ``AMGSolverOptions``; ``None`` otherwise). Passing the returned structure
-        as ``traced_structure=`` makes the hierarchy a traced argument of a jitted
-        solve instead of a closure constant baked into the executable. A state
-        from another solver only changes the preconditioner, not the solution.
-        """
-        return replace(self, preconditioner=state)
 
     def tree_flatten(self):
         leaves = tuple(getattr(self, f.name) for f in fields(self))
