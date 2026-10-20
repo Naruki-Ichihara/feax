@@ -41,6 +41,7 @@ from jax import Array
 from spineax.cudss.solver import (
     analyze as _analyze,
     factorize as _numeric_factorize,
+    refactorize as _numeric_refactorize,
     solve as _solve,
 )
 
@@ -51,6 +52,16 @@ def factorize(csr_values, csr_offsets, csr_columns, *,
     token = _analyze(csr_values, csr_offsets, csr_columns,
                      mtype_id=mtype_id, mview_id=mview_id, device_id=device_id)
     return _numeric_factorize(token, csr_values)
+
+
+def refactorize(token, csr_values):
+    """Numerically re-factorize ``token``'s matrix with new values on the same
+    pattern, keeping its symbolic analysis (reordering) and its memory.
+
+    The returned token replaces ``token`` (spineax renames the entry; using
+    the old token afterwards re-factorizes it from scratch).
+    """
+    return _numeric_refactorize(token, csr_values)
 
 
 def solve_with(token, b_values, device_id: int = 0):
