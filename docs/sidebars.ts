@@ -67,6 +67,7 @@ const sidebars: SidebarsConfig = {
         'advanced/laminated_plates',
         'advanced/batched_topology_optimization',
         'advanced/batched_solves',
+        'advanced/batched_topology_optimization_shared_pcg',
       ],
     },
     'solver_internals',

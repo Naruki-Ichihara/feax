@@ -39,6 +39,22 @@ class BatchedSolver()
 
 What :func:`vmap` returns. ``kind`` is ``&quot;rhs&quot;`` or ``&quot;lhs&quot;``.
 
+#### operator\_signature
+
+```python
+def operator_signature(traced_params,
+                       initial_guess=None,
+                       traced_structure=None)
+```
+
+A signature of every case&#x27;s operator, ``(B, n_dof)``: the log of the
+diagonal of its (BC-applied) stiffness matrix at the initial guess.
+
+Independent of how the design is parametrized (density, modulus,
+orientation, ...): whatever enters the operator shows up here. Feed it
+to :func:`feax.gene.similarity_order` to order the batch so that
+``chunk`` groups similar operators for the shared preconditioner.
+
 #### vmap
 
 ```python

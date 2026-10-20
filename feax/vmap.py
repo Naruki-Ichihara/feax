@@ -142,6 +142,26 @@ class BatchedSolver:
             U = Solution(U, self.solver.layout)
         return (U, info) if self.return_info else U
 
+    def operator_signature(self, traced_params, initial_guess=None, traced_structure=None):
+        """A signature of every case's operator, ``(B, n_dof)``: the log of the
+        diagonal of its (BC-applied) stiffness matrix at the initial guess.
+
+        Independent of how the design is parametrized (density, modulus,
+        orientation, ...): whatever enters the operator shows up here. Feed it
+        to :func:`feax.gene.similarity_order` to order the batch so that
+        ``chunk`` groups similar operators for the shared preconditioner."""
+        from .utils import zero_like_initial_guess
+        u0 = zero_like_initial_guess(self.solver.problem, self.solver.bc) if initial_guess is None else initial_guess
+        ts = self.solver.traced_structure if traced_structure is None else traced_structure
+        tp, front, _ = _to_front(traced_params, _axes_tree(self.in_axes, self.solver.sample_params))
+        src = ts if ts is not None else self.solver.problem
+        slots = src.csr_diag_slots
+
+        def one(t):
+            diag = self.solver.assemble(u0, t, traced_structure=ts).data[slots]
+            return jnp.log(jnp.maximum(diag, 1e-300))
+        return jax.vmap(one, in_axes=(front,))(tp)
+
     def __repr__(self):
         return (f"BatchedSolver({self.kind}, {self.solver!r}, chunk={self.chunk}, "
                 f"preconditioner={getattr(self.preconditioner, '__name__', self.preconditioner)!r})")

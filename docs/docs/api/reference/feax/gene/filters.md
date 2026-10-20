@@ -146,8 +146,10 @@ where w_ij is a distance-based weight function.
 
 - `filter_fn` - A pure-JAX function (rho) -&gt; rho_filtered; compose it
   under the caller&#x27;s ``jax.jit`` (feax.gene.optimizer does this)
-- `Input` - (num_nodes,) node-based density field
-- `Output` - (num_nodes,) filtered node-based density field
+- `Input` - (num_nodes,) node-based density field, or a batch
+  of them, (B, num_nodes) (e.g. the designs of a
+  ``feax.vmap`` batch)
+- `radius`0 - the filtered field(s), same shape
 
 
 **Example**:
@@ -223,8 +225,9 @@ Apply Heaviside projection to density field for sharp void/solid boundaries.
 
 H(ρ) = (tanh(β*(ρ-threshold)) + 1) / 2
 
-This function is pure JAX; jit it (or the loss containing it) at the
-call site for efficient batched processing.
+This function is pure JAX and elementwise, so it applies to a single
+field or to a batch (B, n) alike; jit it (or the loss containing it) at
+the call site.
 
 **Arguments**:
 

@@ -21,9 +21,11 @@ from feax.experimental.narrowband import _res_ladder, _upsample, oc_update
 
 def test_api_surface():
     # the narrow-band OC path and cmg live in feax.experimental only
-    for name in ("run_oc", "narrowband", "oc_update", "run_narrowband_oc",
+    # (gene.oc_update is the general pure-JAX OC update, a different function)
+    for name in ("run_oc", "narrowband", "run_narrowband_oc",
                  "run_narrowband_multires", "create_sensitivity_filter"):
         assert not hasattr(gene, name)
+    assert gene.oc_update is not ex.narrowband.oc_update
     assert not hasattr(fe, "NarrowBandCMG") and not hasattr(fe.solvers, "NarrowBandCMG")
     assert ex.oc_update is ex.narrowband.oc_update
     assert ex.run_narrowband_oc is ex.narrowband.run_narrowband_oc

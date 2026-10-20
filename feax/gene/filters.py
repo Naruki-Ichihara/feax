@@ -289,8 +289,10 @@ def create_density_filter(mesh, radius: float, weight_type: str = "cone",
     Returns:
         filter_fn: A pure-JAX function (rho) -> rho_filtered; compose it
             under the caller's ``jax.jit`` (feax.gene.optimizer does this)
-                  Input: (num_nodes,) node-based density field
-                  Output: (num_nodes,) filtered node-based density field
+                  Input: (num_nodes,) node-based density field, or a batch
+                         of them, (B, num_nodes) (e.g. the designs of a
+                         ``feax.vmap`` batch)
+                  Output: the filtered field(s), same shape
 
     Example:
         >>> # Create filter function once
@@ -322,11 +324,13 @@ def create_density_filter(mesh, radius: float, weight_type: str = "cone",
         """Apply density filter to node-based design variables.
 
         Args:
-            rho: Design variables at nodes (num_nodes,)
+            rho: Design variables at nodes (num_nodes,), or a batch (B, num_nodes)
 
         Returns:
-            Filtered design variables at nodes (num_nodes,)
+            Filtered design variables, same shape
         """
+        if rho.ndim == 2:
+            return jax.vmap(filter_fn)(rho)
         # Sparse matrix-vector multiplication for weighted averaging
         rho_weighted = weight_matrix @ rho
         # Normalize by row sums
@@ -377,8 +381,9 @@ def heaviside_projection(rho, beta=10.0, threshold=0.5):
 
     H(ρ) = (tanh(β*(ρ-threshold)) + 1) / 2
 
-    This function is pure JAX; jit it (or the loss containing it) at the
-    call site for efficient batched processing.
+    This function is pure JAX and elementwise, so it applies to a single
+    field or to a batch (B, n) alike; jit it (or the loss containing it) at
+    the call site.
 
     Args:
         rho: Density field (normalized to [0, 1])

@@ -417,3 +417,59 @@ def step(state: MMAState, *args) -> MMAState
 
 One outer GCMMA iteration (with inner conservativity loop).
 
+## BatchedGCMMA Objects
+
+```python
+class BatchedGCMMA(GCMMA)
+```
+
+GCMMA over a batch of ``B`` independent problems that are *evaluated together*.
+
+Use it when the ``B`` objective evaluations are cheapest as one call — the
+designs of a :func:`feax.vmap` batch, whose ``B`` finite-element solves
+share one factorization. ``jax.vmap`` of :class:`GCMMA` would evaluate
+every design on its own; here every evaluation is one call on the whole
+batch, while the subproblems, asymptotes and the conservativity loop are
+per problem (vectorized, with the inner loop masked so that a problem whose
+approximation is already conservative keeps its candidate while the others
+re-solve).
+
+Parameters
+----------
+- **value_and_grad_fn** (*callable*): ``fn(X, *args) -&gt; (f0, df0dx, fval, dfdx)`` on the batch, with shapes ``(B,), (B, n), (B, m), (B, m, n)`` (``+ aux`` with ``has_aux``); constraints are ``fval &lt;= 0`` per problem.
+- **value_fn** (*callable or None*): ``fn(X, *args) -&gt; (f0, fval)`` on the batch, for the inner loop.
+- **and** (*meth:``8 work unchanged; a stopping test fires when *every**)
+
+
+#### init
+
+```python
+def init(X0, *args) -> MMAState
+```
+
+Create the initial state (one evaluation of the whole batch).
+
+#### step
+
+```python
+def step(state: MMAState, *args) -> MMAState
+```
+
+One outer iteration of every problem, with a masked inner loop.
+
+#### run
+
+```python
+def run(X0,
+        *args,
+        max_iter=100,
+        kkt_tol=0.0,
+        xtol=0.0,
+        ftol=0.0,
+        jit=True,
+        callback: Optional[Callable[[MMAState], None]] = None) -> MMAState
+```
+
+Python-loop driver (see :meth:`MMA.run`); stops when every problem
+passes a stopping test.
+
