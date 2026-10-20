@@ -18,6 +18,39 @@ Key Features:
 
 Linear/backward/newton/reduced implementations live under ``solvers/``.
 
+## Solver Objects
+
+```python
+class Solver()
+```
+
+The callable :func:`create_solver` returns.
+
+Calling it runs the solve, ``solver(traced_params, initial_guess=None,
+bc=None, traced_structure=None, preconditioner=None)``, and (by default)
+wraps the result in a :class:`feax.Solution`. It also carries what it was
+built from — ``problem``, ``bc``, ``options``, ``adjoint_options``,
+``sample_params``, ``traced_structure``, ``preconditioner``, ``linear``,
+``symmetric_elimination``, ``projection`` — and can assemble its own
+operator (:meth:``4) and residual (:meth:``5); this is what
+:func:``6 uses to batch it.
+
+#### residual
+
+```python
+def residual(sol, traced_params, bc=None, traced_structure=None)
+```
+
+The BC-applied residual ``r(sol; traced_params)`` (flat).
+
+#### assemble
+
+```python
+def assemble(sol, traced_params, bc=None, traced_structure=None)
+```
+
+The BC-applied tangent at ``sol`` as a :class:`feax.csr.CSRMatrix`.
+
 #### create\_solver
 
 ```python

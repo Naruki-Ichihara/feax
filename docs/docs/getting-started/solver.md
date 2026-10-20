@@ -624,10 +624,32 @@ grads     = jax.vmap(jax.grad(loss))(vals_batch)
 The `vmap` wall-clock then stays almost flat in the batch size `B` — one factorization amortized over `B` cheap solves, instead of `B` independent factor-and-solve calls. On a ~50k-DOF elasticity problem this is ≈15–25× faster at `B = 32` for both the forward solve and `value_and_grad`. No new API is needed; the reuse happens transparently inside `jax.vmap`.
 
 :::note Only when the matrix is shared across the batch
-This fast path needs the matrix to be **invariant** across the batch (load / BC-value / source-term studies). If the batched parameter changes the matrix itself — per-sample material or density, as in topology optimization — each sample needs its own factorization, and FEAX falls back to factorizing per batch element automatically. See [Factorization reuse](#factorization-reuse-reuse_factorization).
+This fast path needs the matrix to be **invariant** across the batch (load / BC-value / source-term studies). If the batched parameter changes the matrix itself — per-sample material or density, as in topology optimization — each sample needs its own factorization, and FEAX falls back to factorizing per batch element automatically. See [Factorization reuse](#factorization-reuse-reuse_factorization), or use `fe.vmap` below, which solves such a batch with one shared factorization instead.
 :::
 
 Without `reuse_factorization`, `jax.vmap` still works but re-factorizes each batch element, so a batch of same-matrix load cases sees little speedup — the flag is what turns `vmap` into factor-once / solve-many.
+
+### Batching: load cases vs designs (`fe.vmap`)
+
+`jax.vmap` does not know what a batch means. If the batched parameters change only the right-hand side (load cases on one design), a direct solver should factorize once and back-substitute every case; if they change the stiffness matrix (one design per case), `jax.vmap` of a direct solver factorizes every case and holds all `N` factorizations at once — an A100 runs out of memory at `N = 10` for 254k DOF. `fe.vmap` batches a *linear* solver over its `TracedParams`, detects which of the two it is (a JVP of the assembled matrix with respect to the batched leaves at the solver's sample parameters) and picks the solve:
+
+- **rhs batch** (same matrix): plain `jax.vmap` of the solver — with a direct solver, one factorization and a multi-RHS solve.
+- **lhs batch** (one matrix per case): all `N` matrices are assembled on the shared sparsity pattern and solved together by batched conjugate gradients, preconditioned by one shared cuDSS factorization of their mean (`fe.shared_factor()`, or `fe.jacobi()` without cuDSS). `chunk=C` bounds the memory to `C` matrices at a time, and `return_info=True` reports the CG iterations of every case.
+
+```python
+solver = fe.create_solver(problem, bc, fe.DirectSolverOptions(), linear=True,
+                          traced_params=tp0, traced_structure=ts)
+
+# same design, N tractions -> rhs: factorize once, solve N right-hand sides
+loads_batch = fe.vmap(solver, in_axes=fe.TracedParams(volume_vars=(None,), surface_vars=[(0,)]))
+U = loads_batch(fe.TracedParams(volume_vars=(E,), surface_vars=[(loads,)]), u0, ts)       # (N, n)
+
+# N modulus fields -> lhs: batched CG with one shared factorization per group of 10
+designs = fe.vmap(solver, in_axes=0, chunk=10, return_info=True)
+U, info = designs(fe.TracedParams(volume_vars=(E_batch,), surface_vars=[(loads,)]), u0, ts)
+```
+
+The returned callable is differentiable (the adjoint batch is solved the same way) and jit-able. It takes the `fe.Solver` object from `create_solver(..., linear=True, traced_params=tp)`; Newton solves still go through `jax.vmap`. See [Batched Solves: feax.vmap](../advanced/batched_solves.md) for `in_axes`, the options, custom batch-level preconditioners and the limitations.
 
 ### Gradients with `jax.grad`
 
@@ -682,3 +704,4 @@ for i in range(len(bc_vals)):
 | Extra residual term (cohesive) | `False` | — | `KrylovSolverOptions()` or `DirectSolverOptions()` with `extra_residual_fn` |
 | Batched parameter study | `True`/`False` | `True` | any (all paths vmap) |
 | Many load cases (same matrix), `vmap` | `True` | `True` | `DirectSolverOptions(solver="cudss", reuse_factorization=True)` |
+| Many designs (one matrix each), batched | `True` | `True` | `fe.vmap(solver, chunk=C)` — batched CG with `fe.shared_factor()` (see [Batched Solves](../advanced/batched_solves.md)) |

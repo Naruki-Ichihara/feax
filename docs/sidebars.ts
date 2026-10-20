@@ -66,6 +66,7 @@ const sidebars: SidebarsConfig = {
         'advanced/cahn_hilliard',
         'advanced/laminated_plates',
         'advanced/batched_topology_optimization',
+        'advanced/batched_solves',
       ],
     },
     'solver_internals',

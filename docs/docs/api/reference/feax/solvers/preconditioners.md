@@ -43,6 +43,7 @@ Attributes
 - **csr** (*CSRMatrix*): The assembled, BC-applied operator. Assembled on first access when the solve is matrix-free (one assembly; the matvec stays matrix-free).
 - **diag** (*array*): The diagonal of ``csr`` (gathered through the problem&#x27;s diagonal slot map when available).
 - **transpose** (*bool*): True for the adjoint operator ``Jᵀ``. ``csr`` then still holds ``J`` (its diagonal is the same; AMG and Jacobi do not need the transpose).
+- **batched** (*bool*): True inside :func:``7 over a design batch: ``values`` is then ``(N, nnz)`` (one matrix per case on the shared pattern), ``diag`` is ``(N, n)``, and the ``M`` a preconditioner returns must act on the whole batch, ``M(R) -&gt; Z`` with ``R`` of shape ``(N, n)``.
 
 
 #### wrap
@@ -55,14 +56,32 @@ def wrap(cls, A, **kw)
 Wrap whatever a solve function receives (CSRMatrix, its transpose,
 a matvec callable, a sparse/dense matrix) into a LinearOperator.
 
+#### values
+
+```python
+@property
+def values()
+```
+
+CSR values: ``(nnz,)``, or ``(N, nnz)`` when ``batched``.
+
+#### diag
+
+```python
+@property
+def diag()
+```
+
+Diagonal of the operator: ``(n,)``, or ``(N, n)`` when ``batched``.
+
 #### has\_csr\_pattern\_of
 
 ```python
 def has_csr_pattern_of(src) -> bool
 ```
 
-Whether ``csr`` is on the problem&#x27;s own CSR pattern (so the slot
-maps of ``src`` apply) rather than e.g. a merged or reduced pattern.
+Whether the operator is on the problem&#x27;s own CSR pattern (so the
+slot maps of ``src`` apply) rather than e.g. a merged or reduced pattern.
 
 #### as\_pytree
 
@@ -85,6 +104,34 @@ The diagonal is read from the assembled operator of *each* solve (one
 assembly on the matrix-free Krylov path), so it follows the parameters —
 e.g. the SIMP stiffness contrast in topology optimization. ``shift``
 regularizes near-zero diagonal entries.
+
+#### shared\_factor
+
+```python
+def shared_factor(matrix_type: str = "spd", *, device_id: int = 0) -> Callable
+```
+
+One factorization shared by a batch: ``M = K_avg⁻¹`` with
+``K_avg = mean_i K_i``.
+
+Meant for :func:`feax.vmap` over a design batch (``op.values`` of shape
+``(N, nnz)``): the values are averaged over the batch, the mean matrix is
+factorized once with cuDSS, and ``M`` applies its back-substitution to all
+``N`` right-hand sides at once. When the ``K_i`` are close to each other
+the preconditioned CG converges in a few iterations, so the batch costs
+about one factorization plus a few batched SpMV / back-substitutions —
+instead of ``N`` factorizations. On a single operator (``(nnz,)`` values)
+the &quot;mean&quot; is the operator itself and CG converges in one iteration.
+
+Known as a mean-based preconditioner (stochastic FEM) / approximate
+reanalysis; it is only as good as the spread of the batch — watch the
+iteration counts :func:`feax.vmap` returns.
+
+Parameters
+----------
+- **matrix_type** (*{`&quot;spd&quot;, &quot;symmetric&quot;, &quot;general&quot;`}*): cuDSS factorization of the mean matrix (an SPD elasticity / diffusion operator after symmetric Dirichlet elimination is ``&quot;spd&quot;``).
+- **device_id** (*int*): CUDA device of the factorization.
+
 
 ## AMGOptions Objects
 

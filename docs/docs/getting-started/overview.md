@@ -583,6 +583,7 @@ sols = batched_solve(batched_traced_params)
 - Build `fe.TracedStructure.from_problem(problem)` before `create_solver` and pass it to both. Without it, `jax.jit` bakes every mesh-sized array of the `Problem` into the executable as a constant, which inflates compile time and host memory and prevents reuse across problems of the same shape. See the [JIT Transform](../basic/jit_transform.md) tutorial.
 - `jax.grad` is supported (first-order). `jax.hessian` (second-order) is not, because solvers use `custom_vjp` internally.
 - `jax.vmap` works for all solver paths — linear, Newton, and reduced. Batching is over BC **values** and parameters; BC **locations** must be identical within a batch (see the [Solver Guide](./solver.md)).
+- `fe.vmap(solver)` batches a linear solver over its `TracedParams` and solves the batch well: load cases on one matrix are one factorization and a multi-RHS solve; designs with one matrix each are a batched CG with one shared factorization (`fe.shared_factor()`), instead of `N` factorizations held at once. See [Batched Solves](../advanced/batched_solves.md).
 
 ## Post-Processing
 

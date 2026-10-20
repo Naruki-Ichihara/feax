@@ -12,7 +12,8 @@ from .common import (
     create_x0,
 )
 from .amg import rigid_body_modes
-from .preconditioners import AMGOptions, AMGPreconditioner, LinearOperator, amg, jacobi
+from .batched import BatchedSolveInfo, batched_pcg, batched_spmv
+from .preconditioners import AMGOptions, AMGPreconditioner, LinearOperator, amg, jacobi, shared_factor
 from .linear import create_linear_solver, linear_solve
 from .newton import (
     create_newton_solver,
@@ -62,6 +63,10 @@ __all__ = [
     "LinearOperator",
     "amg",
     "jacobi",
+    "shared_factor",
+    "BatchedSolveInfo",
+    "batched_pcg",
+    "batched_spmv",
     "CUDSSMatrixType",
     "CUDSSMatrixView",
     "CUDSSOptions",

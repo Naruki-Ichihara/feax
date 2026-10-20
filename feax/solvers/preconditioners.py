@@ -60,19 +60,31 @@ class LinearOperator:
     transpose : bool
         True for the adjoint operator ``Jᵀ``. ``csr`` then still holds ``J``
         (its diagonal is the same; AMG and Jacobi do not need the transpose).
+    batched : bool
+        True inside :func:`feax.vmap` over a design batch: ``values`` is then
+        ``(N, nnz)`` (one matrix per case on the shared pattern), ``diag`` is
+        ``(N, n)``, and the ``M`` a preconditioner returns must act on the
+        whole batch, ``M(R) -> Z`` with ``R`` of shape ``(N, n)``.
     """
 
     def __init__(self, matvec=None, csr=None, assemble=None, structure=None,
-                 problem=None, bc=None, transpose=False):
-        if matvec is None and csr is None:
-            raise ValueError("LinearOperator needs a matvec or an assembled CSR matrix.")
+                 problem=None, bc=None, transpose=False, *, values=None,
+                 indptr=None, indices=None, batched=False):
+        if matvec is None and csr is None and values is None:
+            raise ValueError("LinearOperator needs a matvec, a CSR matrix or CSR values.")
+        if values is not None and (indptr is None or indices is None):
+            raise ValueError("values need their pattern: pass indptr and indices.")
         self._matvec = matvec
         self._csr = csr
         self._assemble = assemble
+        self._values = values
+        self._indptr = indptr
+        self._indices = indices
         self.structure = structure
         self.problem = problem
         self.bc = bc
         self.transpose = transpose
+        self.batched = batched
 
     @classmethod
     def wrap(cls, A, **kw):
@@ -92,7 +104,11 @@ class LinearOperator:
     def matvec(self, v):
         if self._matvec is not None:
             return self._matvec(v)
-        return self._csr @ v
+        if self._csr is not None:
+            return self._csr @ v
+        from .batched import batched_spmv
+        spmv = batched_spmv(self._values, self._indptr, self._indices)
+        return spmv(self._values, v) if self.batched else spmv(self._values, v[None])[0]
 
     def __matmul__(self, v):
         return self.matvec(v)
@@ -119,42 +135,48 @@ class LinearOperator:
 
     @property
     def values(self):
-        return self.csr.data
+        """CSR values: ``(nnz,)``, or ``(N, nnz)`` when ``batched``."""
+        return self._values if self._values is not None else self.csr.data
 
     @property
     def indptr(self):
-        return self.csr.indptr
+        return self._indptr if self._indptr is not None else self.csr.indptr
 
     @property
     def indices(self):
-        return self.csr.indices
+        return self._indices if self._indices is not None else self.csr.indices
 
     @property
     def shape(self):
-        return self.csr.shape
+        n = self.indptr.shape[0] - 1
+        return (n, n)
 
     @property
     def diag(self):
+        """Diagonal of the operator: ``(n,)``, or ``(N, n)`` when ``batched``."""
         src = self.structure if self.structure is not None else self.problem
         slots = getattr(src, "csr_diag_slots", None) if src is not None else None
         if slots is not None and self.has_csr_pattern_of(src):
-            return self.values[slots]
-        csr = self.csr
-        n = csr.shape[0]
-        nnz = csr.indices.shape[0]
-        rows = jnp.repeat(jnp.arange(n), jnp.diff(csr.indptr), total_repeat_length=nnz)
-        on_diag = rows == csr.indices
-        return jnp.zeros(n, csr.data.dtype).at[jnp.where(on_diag, rows, n)].add(
-            jnp.where(on_diag, csr.data, 0.0))
+            return self.values[..., slots]
+        values, indptr, indices = self.values, self.indptr, self.indices
+        n = indptr.shape[0] - 1
+        nnz = indices.shape[0]
+        rows = jnp.repeat(jnp.arange(n), jnp.diff(indptr), total_repeat_length=nnz)
+        on_diag = rows == indices
+        target = jnp.where(on_diag, rows, n)
+
+        def one(v):
+            return jnp.zeros(n, v.dtype).at[target].add(jnp.where(on_diag, v, 0.0))
+        return jax.vmap(one)(values) if values.ndim == 2 else one(values)
 
     def has_csr_pattern_of(self, src) -> bool:
-        """Whether ``csr`` is on the problem's own CSR pattern (so the slot
-        maps of ``src`` apply) rather than e.g. a merged or reduced pattern."""
+        """Whether the operator is on the problem's own CSR pattern (so the
+        slot maps of ``src`` apply) rather than e.g. a merged or reduced pattern."""
         indptr = getattr(src, "csr_indptr", None)
         if indptr is None:
             return False
-        return self.csr.indptr.shape == jnp.shape(indptr) and \
-            self.csr.indices.shape == jnp.shape(getattr(src, "csr_indices"))
+        return self.indptr.shape == jnp.shape(indptr) and \
+            self.indices.shape == jnp.shape(getattr(src, "csr_indices"))
 
 
 # ---------------------------------------------------------------------------
@@ -213,10 +235,69 @@ def jacobi(shift: float = 1e-12) -> Callable:
     regularizes near-zero diagonal entries.
     """
     def preconditioner(op: LinearOperator):
-        inv = 1.0 / (op.diag + shift)
+        inv = 1.0 / (op.diag + shift)          # (n,) or, batched, (N, n)
         return lambda r: inv * r
 
     preconditioner.__name__ = "jacobi"
+    return preconditioner
+
+
+# ---------------------------------------------------------------------------
+# Shared factorization (design batches)
+# ---------------------------------------------------------------------------
+
+_CUDSS_MTYPE = {"general": 0, "symmetric": 1, "spd": 3}
+
+
+def shared_factor(matrix_type: str = "spd", *, device_id: int = 0) -> Callable:
+    """One factorization shared by a batch: ``M = K_avg⁻¹`` with
+    ``K_avg = mean_i K_i``.
+
+    Meant for :func:`feax.vmap` over a design batch (``op.values`` of shape
+    ``(N, nnz)``): the values are averaged over the batch, the mean matrix is
+    factorized once with cuDSS, and ``M`` applies its back-substitution to all
+    ``N`` right-hand sides at once. When the ``K_i`` are close to each other
+    the preconditioned CG converges in a few iterations, so the batch costs
+    about one factorization plus a few batched SpMV / back-substitutions —
+    instead of ``N`` factorizations. On a single operator (``(nnz,)`` values)
+    the "mean" is the operator itself and CG converges in one iteration.
+
+    Known as a mean-based preconditioner (stochastic FEM) / approximate
+    reanalysis; it is only as good as the spread of the batch — watch the
+    iteration counts :func:`feax.vmap` returns.
+
+    Parameters
+    ----------
+    matrix_type : {"spd", "symmetric", "general"}
+        cuDSS factorization of the mean matrix (an SPD elasticity / diffusion
+        operator after symmetric Dirichlet elimination is ``"spd"``).
+    device_id : int
+        CUDA device of the factorization.
+
+    Requires cuDSS (``spineax``).
+    """
+    if matrix_type not in _CUDSS_MTYPE:
+        raise ValueError(f"matrix_type must be one of {tuple(_CUDSS_MTYPE)}, got {matrix_type!r}.")
+    mtype_id = _CUDSS_MTYPE[matrix_type]
+
+    def preconditioner(op: LinearOperator):
+        try:
+            from ._cudss_compat import factorize, solve_with
+        except ImportError as e:  # pragma: no cover - optional dependency
+            raise ImportError(
+                "shared_factor() needs cuDSS (the spineax package); use fe.jacobi() "
+                "or an AMG preconditioner otherwise.") from e
+        values = op.values
+        if values.ndim == 2:
+            values = jnp.mean(values, axis=0)
+        token = factorize(values, op.indptr, op.indices,
+                          device_id=device_id, mtype_id=mtype_id, mview_id=0)
+        solve_one = lambda r: solve_with(token, r, device_id=device_id)
+        if op.batched:
+            return jax.vmap(solve_one)
+        return solve_one
+
+    preconditioner.__name__ = "shared_factor"
     return preconditioner
 
 
@@ -425,5 +506,6 @@ __all__ = [
     "LinearOperator",
     "amg",
     "jacobi",
+    "shared_factor",
     "as_pytree",
 ]

@@ -44,6 +44,71 @@ from .solvers.reduced import create_reduced_solver
 logger = logging.getLogger(__name__)
 
 
+class Solver:
+    """The callable :func:`create_solver` returns.
+
+    Calling it runs the solve, ``solver(traced_params, initial_guess=None,
+    bc=None, traced_structure=None, preconditioner=None)``, and (by default)
+    wraps the result in a :class:`feax.Solution`. It also carries what it was
+    built from — ``problem``, ``bc``, ``options``, ``adjoint_options``,
+    ``sample_params``, ``traced_structure``, ``preconditioner``, ``linear``,
+    ``symmetric_elimination``, ``projection`` — and can assemble its own
+    operator (:meth:`assemble`) and residual (:meth:`residual`); this is what
+    :func:`feax.vmap` uses to batch it.
+    """
+
+    def __init__(self, fn, *, problem, bc, options, adjoint_options, linear,
+                 symmetric_elimination, sample_params=None, traced_structure=None,
+                 preconditioner=None, adjoint_preconditioner=None, projection=None,
+                 return_solution=True):
+        self._fn = fn
+        self.problem = problem
+        self.bc = bc
+        self.options = options
+        self.adjoint_options = adjoint_options
+        self.linear = linear
+        self.symmetric_elimination = symmetric_elimination
+        self.sample_params = sample_params
+        self.traced_structure = traced_structure
+        self.preconditioner = preconditioner
+        self.adjoint_preconditioner = adjoint_preconditioner
+        self.projection = projection
+        self.return_solution = return_solution
+        self.layout = tuple((fe_.num_total_nodes, int(v_))
+                            for fe_, v_ in zip(problem.fes, problem.vec))
+        self._res_fn = None
+        self._J_fn = None
+
+    def __call__(self, *args, **kwargs):
+        from .solution import Solution
+        args = tuple(a.dofs if isinstance(a, Solution) else a for a in args)
+        kwargs = {k: (v.dofs if isinstance(v, Solution) else v) for k, v in kwargs.items()}
+        out = self._fn(*args, **kwargs)
+        return Solution(out, self.layout) if self.return_solution else out
+
+    def residual(self, sol, traced_params, bc=None, traced_structure=None):
+        """The BC-applied residual ``r(sol; traced_params)`` (flat)."""
+        if self._res_fn is None:
+            from .assembler import create_res_bc_parametric
+            self._res_fn = create_res_bc_parametric(self.problem)
+        return self._res_fn(sol, traced_params, bc if bc is not None else self.bc,
+                            traced_structure if traced_structure is not None else self.traced_structure)
+
+    def assemble(self, sol, traced_params, bc=None, traced_structure=None):
+        """The BC-applied tangent at ``sol`` as a :class:`feax.csr.CSRMatrix`."""
+        if self._J_fn is None:
+            from .assembler import create_J_bc_csr_parametric
+            self._J_fn = create_J_bc_csr_parametric(self.problem, symmetric=self.symmetric_elimination)
+        return self._J_fn(sol, traced_params, bc if bc is not None else self.bc,
+                          traced_structure if traced_structure is not None else self.traced_structure)
+
+    def __repr__(self):
+        kind = "linear" if self.linear else "newton"
+        return (f"Solver({kind}, options={type(self.options).__name__}"
+                f"({getattr(self.options, 'solver', '?')}), "
+                f"preconditioner={getattr(self.preconditioner, '__name__', self.preconditioner)!r})")
+
+
 def create_solver(
     problem: Problem,
     bc: DirichletBC,
@@ -250,24 +315,19 @@ def create_solver(
     ...     bc_step = bc.replace_vals(new_vals)  # update prescribed values
     ...     sol = solver(traced_params, sol, bc=bc_step)
     """
-    def _wrap(solver_fn):
-        """Opt-in Solution wrapper: unwraps Solution inputs (so a previous
-        result can be the next initial_guess) and wraps the flat output."""
-        if not return_solution:
-            return solver_fn
-        from .solution import Solution
-        _layout = tuple((fe_.num_total_nodes, int(v_))
-                        for fe_, v_ in zip(problem.fes, problem.vec))
-
-        def wrapped(*args, **kwargs):
-            args = tuple(a.dofs if isinstance(a, Solution) else a for a in args)
-            kwargs = {k: (v.dofs if isinstance(v, Solution) else v)
-                      for k, v in kwargs.items()}
-            return Solution(solver_fn(*args, **kwargs), _layout)
-        return wrapped
-
     linear_options = solver_options
     adjoint_linear_options = adjoint_solver_options
+
+    def _wrap(solver_fn):
+        """Wrap the solve function in a :class:`Solver` carrying its metadata
+        (the resolved options are read when this is called)."""
+        return Solver(
+            solver_fn, problem=problem, bc=bc, options=linear_options,
+            adjoint_options=adjoint_linear_options, linear=bool(linear or projection is not None),
+            symmetric_elimination=symmetric_elimination, sample_params=traced_params,
+            traced_structure=traced_structure, preconditioner=preconditioner,
+            adjoint_preconditioner=adjoint_preconditioner, projection=projection,
+            return_solution=return_solution)
 
     # SolverOptions is now deprecated
     if isinstance(linear_options, SolverOptions) or isinstance(adjoint_linear_options, SolverOptions):

@@ -178,8 +178,10 @@ from .spgrid import SparseDesign, StructuredGrid, voxelize_mesh
 from .narrowband import NarrowBand, SupersetBand
 from .problem import MatrixView, Problem
 from .solver import (
+    Solver,
     create_solver,
 )
+from .vmap import BatchedSolver, vmap
 from .solvers.common import (
     check_convergence,
     create_direct_solve_fn,
@@ -188,7 +190,7 @@ from .solvers.common import (
     create_x0,
 )
 from .solvers.amg import rigid_body_modes
-from .solvers.preconditioners import AMGOptions, AMGPreconditioner, LinearOperator, amg, jacobi
+from .solvers.preconditioners import AMGOptions, AMGPreconditioner, LinearOperator, amg, jacobi, shared_factor
 from .solvers.eigen import (
     BucklingConvergenceError,
     create_linear_buckling_solver,
