@@ -39,7 +39,9 @@
             "reference/feax/gene/mdmm",
             "reference/feax/gene/mesh_extraction",
             "reference/feax/gene/optimizer",
-            "reference/feax/gene/responses"
+            "reference/feax/gene/responses",
+            "reference/feax/gene/similarity",
+            "reference/feax/gene/update"
           ],
           "label": "feax.gene",
           "type": "category"

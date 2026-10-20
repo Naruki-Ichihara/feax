@@ -833,3 +833,221 @@ class GCMMA(MMA):
         return MMAState(sol.x, state.x, state.xold1, low, upp, raa0, raa,
                         f0, df0dx, fval, dfdx, sol, it, innerit,
                         kkt_norm, kkt_max, f0app, fapp, aux)
+
+
+# ---------------------------------------------------------------------------
+# A batch of independent problems, evaluated together
+# ---------------------------------------------------------------------------
+
+def _select(active, new, old):
+    """Per-case selection of pytree leaves with a leading batch axis."""
+    def pick(n, o):
+        n = np.asarray(n)
+        if n.ndim == 0 or n.shape[0] != active.shape[0]:
+            return n
+        return np.where(active.reshape((-1,) + (1,) * (n.ndim - 1)), n, o)
+    return jax.tree_util.tree_map(pick, new, old)
+
+
+class BatchedGCMMA(GCMMA):
+    """GCMMA over a batch of ``B`` independent problems that are *evaluated together*.
+
+    Use it when the ``B`` objective evaluations are cheapest as one call — the
+    designs of a :func:`feax.vmap` batch, whose ``B`` finite-element solves
+    share one factorization. ``jax.vmap`` of :class:`GCMMA` would evaluate
+    every design on its own; here every evaluation is one call on the whole
+    batch, while the subproblems, asymptotes and the conservativity loop are
+    per problem (vectorized, with the inner loop masked so that a problem whose
+    approximation is already conservative keeps its candidate while the others
+    re-solve).
+
+    Parameters
+    ----------
+    value_and_grad_fn : callable
+        ``fn(X, *args) -> (f0, df0dx, fval, dfdx)`` on the batch, with shapes
+        ``(B,), (B, n), (B, m), (B, m, n)`` (``+ aux`` with ``has_aux``);
+        constraints are ``fval <= 0`` per problem.
+    value_fn : callable or None
+        ``fn(X, *args) -> (f0, fval)`` on the batch, for the inner loop.
+    xmin, xmax, n_constraints, ... :
+        As for :class:`GCMMA`; the bounds are shared by every problem.
+
+    The state is an :class:`MMAState` whose arrays carry a leading batch
+    axis (``iteration`` is shared). :meth:`solve`, :meth:`solve_with_history`
+    and :meth:`run` work unchanged; a stopping test fires when *every*
+    problem passes it.
+
+    Example — with ``feax.vmap``::
+
+        batched = fe.vmap(solver, in_axes=..., preconditioner=fe.shared_factor())
+
+        def value_and_grad(X, data):             # X: (B, n)
+            (c, aux), dc = jax.value_and_grad(lambda X: compliances(X, data), has_aux=True)(X)
+            ...                                   # one batched solve for all B
+            return c / c0, dc / c0, g, dg         # (B,), (B, n), (B, m), (B, m, n)
+
+        opt = BatchedGCMMA(value_and_grad, 0.0, 1.0, n_constraints=1)
+        state = opt.solve(X0, data, max_iter=100)
+    """
+
+    # -- shapes ------------------------------------------------------------
+    def _eval(self, X, *args):
+        out = self.value_and_grad_fn(X, *args)
+        if self.has_aux:
+            f0, df0dx, fval, dfdx, aux = out
+        else:
+            f0, df0dx, fval, dfdx = out
+            aux = None
+        B, n = X.shape
+        f0 = np.reshape(np.asarray(f0, self.dtype), (B,))
+        df0dx = np.reshape(np.asarray(df0dx, self.dtype), (B, n))
+        fval = np.reshape(np.asarray(fval, self.dtype), (B, self.m))
+        dfdx = np.reshape(np.asarray(dfdx, self.dtype), (B, self.m, n))
+        return f0, df0dx, fval, dfdx, aux
+
+    def _eval_values(self, X, *args):
+        if self.value_fn is None:
+            return self._eval(X, *args)
+        f0, fval = self.value_fn(X, *args)
+        B, n = X.shape
+        f0 = np.reshape(np.asarray(f0, self.dtype), (B,))
+        fval = np.reshape(np.asarray(fval, self.dtype), (B, self.m))
+        return (f0, np.zeros((B, n), self.dtype), fval,
+                np.zeros((B, self.m, n), self.dtype), None)
+
+    # -- per-problem building blocks, vectorized over the batch ------------
+    def _v_asymptotes(self, it, x, xold1, xold2, xmin, xmax, low, upp):
+        fn = lambda x, x1, x2, lo, up: update_asymptotes(
+            it, x, x1, x2, xmin, xmax, lo, up, asyinit=self.asyinit,
+            asyincr=self.asyincr, asydecr=self.asydecr)
+        return jax.vmap(fn)(x, xold1, xold2, low, upp)
+
+    def _v_move_bounds(self, x, xmin, xmax, low, upp):
+        fn = lambda x, lo, up: move_bounds(x, xmin, xmax, lo, up, albefa=self.albefa, move=self.move)
+        return jax.vmap(fn)(x, low, upp)
+
+    def _v_initial_raa(self, df0dx, dfdx, xmin, xmax):
+        return jax.vmap(lambda d0, d: self._initial_raa(d0, d, xmin, xmax))(df0dx, dfdx)
+
+    def _v_solve(self, x, xmin, xmax, low, upp, alfa, beta, f0, df0dx, fval, dfdx, raa0, raa):
+        def one(x, lo, up, al, be, f0, d0, fv, d, r0, r):
+            sub = build_subproblem(x, xmin, xmax, lo, up, al, be, f0, d0, fv, d, r0, r)
+            sol = self._solve(sub)
+            f0app, fapp = evaluate_approximation(sub, sol.x)
+            return sol, f0app, fapp
+        return jax.vmap(one)(x, low, upp, alfa, beta, f0, df0dx, fval, dfdx, raa0, raa)
+
+    def _v_kkt(self, sol, xmin, xmax, df0dx, fval, dfdx):
+        return jax.vmap(lambda s, d0, fv, d: self._kkt(s, xmin, xmax, d0, fv, d))(sol, df0dx, fval, dfdx)
+
+    # -- public API --------------------------------------------------------
+    def init(self, X0, *args) -> MMAState:
+        """Create the initial state (one evaluation of the whole batch)."""
+        X = np.asarray(X0, self.dtype)
+        if X.ndim != 2:
+            raise ValueError(f"BatchedGCMMA needs a batch of designs (B, n), got shape {X.shape}.")
+        B, n = X.shape
+        xmin, xmax = self._bounds(n)
+        f0, df0dx, fval, dfdx, aux = self._eval(X, *args)
+        raa0, raa = self._v_initial_raa(df0dx, dfdx, xmin, xmax)
+        m, dt = self.m, self.dtype
+        sol = SubproblemSolution(
+            X, np.zeros((B, m), dt), np.zeros((B,), dt), np.zeros((B, m), dt),
+            np.zeros((B, n), dt), np.zeros((B, n), dt), np.zeros((B, m), dt),
+            np.zeros((B,), dt), np.zeros((B, m), dt))
+        inf = np.full((B,), np.inf, dt)
+        low = np.broadcast_to(xmin, (B, n))
+        upp = np.broadcast_to(xmax, (B, n))
+        return MMAState(X, X, X, low, upp, raa0, raa, f0, df0dx, fval, dfdx,
+                        sol, np.zeros((), np.int32), np.zeros((B,), np.int32),
+                        inf, inf, f0, fval, aux)
+
+    def step(self, state: MMAState, *args) -> MMAState:
+        """One outer iteration of every problem, with a masked inner loop."""
+        B, n = state.x.shape
+        xmin, xmax = self._bounds(n)
+        it = state.iteration + np.int32(1)
+        low, upp = self._v_asymptotes(it, state.x, state.xold1, state.xold2, xmin, xmax,
+                                      state.low, state.upp)
+        alfa, beta = self._v_move_bounds(state.x, xmin, xmax, low, upp)
+        raa0, raa = self._v_initial_raa(state.df0dx, state.dfdx, xmin, xmax)
+
+        def solve_and_eval(raa0, raa):
+            sol, f0app, fapp = self._v_solve(
+                state.x, xmin, xmax, low, upp, alfa, beta, state.f0, state.df0dx,
+                state.fval, state.dfdx, raa0, raa)
+            vals = self._eval_values(sol.x, *args)                  # ONE batched evaluation
+            conserv = jax.vmap(lambda a, b, c, d: is_conservative(a, b, c, d, epsimin=self.epsimin))(
+                f0app, vals[0], fapp, vals[2])
+            return sol, f0app, fapp, vals, conserv
+
+        sol, f0app, fapp, vals, conserv = solve_and_eval(raa0, raa)
+        innerit = np.zeros((B,), np.int32)
+
+        if self.max_inner > 0:
+            def active_of(innerit, conserv):
+                return (~conserv) & (innerit < self.max_inner)
+
+            def inner_cond(carry):
+                innerit, _raa0, _raa, _sol, _f0app, _fapp, _vals, conserv = carry
+                return np.any(active_of(innerit, conserv))
+
+            def inner_body(carry):
+                innerit, raa0, raa, sol, f0app, fapp, vals, conserv = carry
+                active = active_of(innerit, conserv)
+                raa0_n, raa_n = jax.vmap(
+                    lambda xn, x, lo, up, f0n, fn, f0a, fa, r0, r: update_raa(
+                        xn, x, xmin, xmax, lo, up, f0n, fn, f0a, fa, r0, r, epsimin=self.epsimin)
+                )(sol.x, state.x, low, upp, vals[0], vals[2], f0app, fapp, raa0, raa)
+                raa0 = np.where(active, raa0_n, raa0)
+                raa = np.where(active[:, None], raa_n, raa)
+                sol_n, f0app_n, fapp_n, vals_n, conserv_n = solve_and_eval(raa0, raa)
+                # problems that were already conservative keep their candidate
+                sol = _select(active, sol_n, sol)
+                f0app = np.where(active, f0app_n, f0app)
+                fapp = np.where(active[:, None], fapp_n, fapp)
+                vals = _select(active, vals_n, vals)
+                conserv = np.where(active, conserv_n, conserv)
+                return (innerit + active.astype(np.int32), raa0, raa, sol, f0app, fapp,
+                        vals, conserv)
+
+            innerit, raa0, raa, sol, f0app, fapp, vals, conserv = lax.while_loop(
+                inner_cond, inner_body,
+                (innerit, raa0, raa, sol, f0app, fapp, vals, conserv))
+
+        if self.value_fn is None:
+            f0, df0dx, fval, dfdx, aux = vals
+        else:
+            f0, df0dx, fval, dfdx, aux = self._eval(sol.x, *args)
+        kkt_norm, kkt_max = self._v_kkt(sol, xmin, xmax, df0dx, fval, dfdx)
+        return MMAState(sol.x, state.x, state.xold1, low, upp, raa0, raa,
+                        f0, df0dx, fval, dfdx, sol, it, innerit,
+                        kkt_norm, kkt_max, f0app, fapp, aux)
+
+    def _converged(self, state: MMAState, prev_x, prev_f0, kkt_tol, xtol, ftol):
+        """Stop when every problem passes the (static) tests."""
+        done = np.zeros(state.x.shape[0], bool)
+        if kkt_tol > 0:
+            done = done | (state.kkt_norm < kkt_tol)
+        if xtol > 0:
+            scale = np.maximum(1.0, np.max(np.abs(state.x), axis=1))
+            done = done | (np.max(np.abs(state.x - prev_x), axis=1) < xtol * scale)
+        if ftol > 0:
+            scale = np.maximum(1.0, np.abs(state.f0))
+            done = done | (np.abs(state.f0 - prev_f0) < ftol * scale)
+        return np.all(done)
+
+    def run(self, X0, *args, max_iter=100, kkt_tol=0.0, xtol=0.0, ftol=0.0,
+            jit=True, callback: Optional[Callable[[MMAState], None]] = None) -> MMAState:
+        """Python-loop driver (see :meth:`MMA.run`); stops when every problem
+        passes a stopping test."""
+        step = jax.jit(self.step) if jit else self.step
+        state = self.init(X0, *args)
+        for _ in range(max_iter):
+            prev_x, prev_f0 = state.x, state.f0
+            state = step(state, *args)
+            if callback is not None:
+                callback(state)
+            if bool(self._converged(state, prev_x, prev_f0, kkt_tol, xtol, ftol)):
+                break
+        return state

@@ -19,6 +19,10 @@ it is, and picks the solve accordingly:
   of their mean (:func:`feax.shared_factor`), or :func:`feax.jacobi` without
   cuDSS. Each case reports its CG iteration count.
 
+A Newton solver is batched the same way: all cases iterate together in one
+traced loop, with one shared factorization of the mean tangent per Newton step
+and a per-case line search (a nonlinear batch is always an lhs batch).
+
 The returned callable is differentiable (custom VJP: the adjoint batch is
 solved the same way) and composes with ``jax.jit``.
 """
@@ -30,7 +34,7 @@ import jax
 import jax.numpy as jnp
 
 from .solver import Solver
-from .solvers.batched import BatchedSolveInfo, batched_pcg
+from .solvers.batched import BatchedNewtonInfo, BatchedSolveInfo, batched_pcg
 from .solvers.common import _safe_negate
 from .solvers.options import DirectSolverOptions, KrylovSolverOptions, has_cudss
 from .solvers.preconditioners import AMGPreconditioner, LinearOperator, jacobi, shared_factor
@@ -138,6 +142,26 @@ class BatchedSolver:
             U = Solution(U, self.solver.layout)
         return (U, info) if self.return_info else U
 
+    def operator_signature(self, traced_params, initial_guess=None, traced_structure=None):
+        """A signature of every case's operator, ``(B, n_dof)``: the log of the
+        diagonal of its (BC-applied) stiffness matrix at the initial guess.
+
+        Independent of how the design is parametrized (density, modulus,
+        orientation, ...): whatever enters the operator shows up here. Feed it
+        to :func:`feax.gene.similarity_order` to order the batch so that
+        ``chunk`` groups similar operators for the shared preconditioner."""
+        from .utils import zero_like_initial_guess
+        u0 = zero_like_initial_guess(self.solver.problem, self.solver.bc) if initial_guess is None else initial_guess
+        ts = self.solver.traced_structure if traced_structure is None else traced_structure
+        tp, front, _ = _to_front(traced_params, _axes_tree(self.in_axes, self.solver.sample_params))
+        src = ts if ts is not None else self.solver.problem
+        slots = src.csr_diag_slots
+
+        def one(t):
+            diag = self.solver.assemble(u0, t, traced_structure=ts).data[slots]
+            return jnp.log(jnp.maximum(diag, 1e-300))
+        return jax.vmap(one, in_axes=(front,))(tp)
+
     def __repr__(self):
         return (f"BatchedSolver({self.kind}, {self.solver!r}, chunk={self.chunk}, "
                 f"preconditioner={getattr(self.preconditioner, '__name__', self.preconditioner)!r})")
@@ -151,7 +175,14 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
     Parameters
     ----------
     solver : Solver
-        A *linear* solver from :func:`feax.create_solver` (``linear=True``).
+        A solver from :func:`feax.create_solver`: linear (``linear=True``) or
+        the standard traced Newton solver (no ``extra_residual_fn``, no
+        host-side AMG rebuild). A Newton batch is always an lhs batch (the
+        tangent depends on the state): all cases iterate together, with one
+        shared factorization of the mean tangent per Newton step and a per-case
+        line search; ``info`` is then a :class:`BatchedNewtonInfo` (Newton
+        iterations, ``converged``, ``line_search_failed``, CG iterations) and
+        every case's final iterate is returned, converged or not.
     in_axes : int, None or a TracedParams-shaped prefix
         Which leaves of ``traced_params`` carry the batch axis (as for
         ``jax.vmap``; the initial guess and the TracedStructure are shared).
@@ -192,10 +223,11 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
     if not isinstance(solver, Solver):
         raise TypeError("feax.vmap takes the solver returned by feax.create_solver "
                         f"(got {type(solver).__name__}); jax.vmap batches any function.")
-    if not solver.linear:
+    if not solver.linear and not solver.traced_newton:
         raise NotImplementedError(
-            "feax.vmap supports linear solvers (create_solver(linear=True)); "
-            "batch a Newton solver with jax.vmap.")
+            "feax.vmap batches the standard traced Newton solver; this solver runs a host "
+            "loop (extra_residual_fn, or an AMG preconditioner that rebuilds its hierarchy). "
+            "Batch it with jax.vmap.")
     if solver.projection is not None:
         raise NotImplementedError("feax.vmap does not support reduced (projection=) solvers yet.")
     if batch not in ("auto", "rhs", "lhs"):
@@ -215,7 +247,10 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
 
     kind = batch
     if kind == "auto":
-        kind = "lhs" if _operator_depends_on(solver, axes_tree, u0_default) else "rhs"
+        # A nonlinear tangent depends on the state, which depends on every
+        # batched parameter: a Newton batch always changes the operator.
+        kind = "lhs" if (not solver.linear or
+                         _operator_depends_on(solver, axes_tree, u0_default)) else "rhs"
 
     # ---- rhs: the operator is shared, jax.vmap does the right thing -------
     if kind == "rhs":
@@ -259,8 +294,9 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
         direct_solver = solver if isinstance(solver.options, DirectSolverOptions) else None
         if direct_solver is None:
             from .solver import create_solver
-            direct_solver = create_solver(problem, bc, options, linear=True, traced_params=sample,
-                                          traced_structure=ts0,
+            direct_solver = create_solver(problem, bc, options, linear=solver.linear,
+                                          newton_options=solver.newton_options,
+                                          traced_params=sample, traced_structure=ts0,
                                           symmetric_elimination=solver.symmetric_elimination,
                                           return_solution=False)
 
@@ -280,6 +316,9 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
 
     if not isinstance(options, KrylovSolverOptions):
         raise TypeError(f"options must be KrylovSolverOptions or DirectSolverOptions, got {type(options).__name__}.")
+    if not solver.linear:
+        return _newton_vmap(solver, in_axes, axes_tree, options, preconditioner, chunk,
+                            return_info, u0_default, ts0)
     if options.solver not in ("auto", "cg"):
         raise NotImplementedError(
             f"the batched lhs solve is conjugate gradients (SPD operators); got solver={options.solver!r}.")
@@ -402,3 +441,163 @@ def _chunked(group_fn, tp, front, N, chunk, extra=None):
     def merge(o):
         return o.reshape((G * C,) + o.shape[2:])[:N]
     return jax.tree_util.tree_map(merge, out)
+
+
+# ---------------------------------------------------------------------------
+# Newton: a batched Newton loop with one shared factorization per step
+# ---------------------------------------------------------------------------
+
+def _newton_vmap(solver, in_axes, axes_tree, options, preconditioner, chunk, return_info,
+                 u0_default, ts0):
+    """lhs batch of the standard traced Newton solver.
+
+    All cases iterate together: per Newton step the N tangents are assembled on
+    the shared pattern, the batch-level preconditioner is built from them (by
+    default one factorization of their mean), the N Newton directions come from
+    one batched CG, and the Armijo line search runs per case. A converged case
+    (or one whose line search failed) keeps its iterate while the others go on.
+    Every case's final iterate is returned, converged or not; the
+    :class:`BatchedNewtonInfo` says which cases converged, which stopped on a
+    failed line search, and which ran out of ``max_iter``. The custom VJP
+    solves the N adjoint systems at the returned iterates the same way
+    (symmetric tangents).
+    """
+    from .solvers.newton import create_armijo_line_search_scan
+    from .solvers.options import has_cudss
+
+    problem, bc = solver.problem, solver.bc
+    newton = solver.newton_options
+    if options.solver not in ("auto", "cg"):
+        raise NotImplementedError(
+            f"the batched Newton solve uses conjugate gradients (SPD tangents); got solver={options.solver!r}.")
+    if not solver.symmetric_elimination:
+        raise NotImplementedError("the batched Newton solve needs a symmetric tangent (symmetric_elimination=True).")
+    if preconditioner is None:
+        own = solver.preconditioner
+        if isinstance(own, AMGPreconditioner) or getattr(own, "__name__", None) in ("jacobi", "shared_factor"):
+            preconditioner = own
+    if preconditioner is None:
+        preconditioner = shared_factor() if has_cudss() else jacobi()
+    if isinstance(preconditioner, AMGPreconditioner):
+        _amg = preconditioner
+        preconditioner = lambda op: jax.vmap(_amg(op))
+        preconditioner.__name__ = "amg"
+    if not callable(preconditioner):
+        raise TypeError("preconditioner must be callable, preconditioner(op) -> M.")
+
+    K0 = solver.assemble(u0_default, solver.sample_params)
+    indptr, indices = K0.indptr, K0.indices
+    tol, atol, maxiter = options.tol, options.atol, options.maxiter
+    front = jax.tree_util.tree_map(lambda ax: None if ax is None else 0, axes_tree, is_leaf=_is_axis_leaf)
+
+    def _operator(values, ts):
+        return LinearOperator(values=values, indptr=indptr, indices=indices, structure=ts,
+                              problem=problem, bc=bc, batched=True)
+
+    def _fns(ts):
+        res = lambda s, t: solver.residual(s, t, traced_structure=ts)
+        v_res = jax.vmap(res, in_axes=(0, front))
+        v_asm = jax.vmap(lambda s, t: solver.assemble(s, t, traced_structure=ts).data, in_axes=(0, front))
+        armijo = create_armijo_line_search_scan(
+            res, c1=newton.line_search_c1, rho=newton.line_search_rho,
+            max_backtracks=newton.line_search_max_backtracks)
+        v_ls = jax.vmap(lambda s, d, r, rn, t: armijo(s, d, r, rn, traced_params=t),
+                        in_axes=(0, 0, 0, 0, front))
+        return v_res, v_asm, v_ls
+
+    def _batched_solve(values, rhs, ts):
+        M = preconditioner(_operator(values, ts))
+        return batched_pcg(values, indptr, indices, rhs, M, tol=tol, atol=atol, maxiter=maxiter)
+
+    def _newton_group(tp_g, U0, ts):
+        """The batched Newton loop of one group. ``U0`` is ``(n,)`` (shared) or ``(C, n)``."""
+        v_res, v_asm, v_ls = _fns(ts)
+        C = jax.tree_util.tree_leaves(jax.tree_util.tree_map(
+            lambda leaf, ax: None if ax is None else leaf.shape[0], tp_g, front, is_leaf=_is_axis_leaf))[0]
+        U = jnp.broadcast_to(U0, (C,) + U0.shape[-1:]) if U0.ndim == 1 else U0
+        R = v_res(U, tp_g)
+        rn = jnp.linalg.norm(R, axis=1)
+        rn0 = jnp.maximum(rn, 1e-30)
+        converged = lambda rn_: (rn_ <= newton.tol) | (rn_ / rn0 <= newton.rel_tol)
+        state = (U, rn, jnp.zeros(C, jnp.int32), converged(rn), jnp.ones(C, bool),
+                 jnp.zeros(C, jnp.int32), jnp.array(0, jnp.int32))
+
+        def cond(st):
+            return (st[6] < newton.max_iter) & ~jnp.all(st[3] | ~st[4])
+
+        def body(st):
+            U, rn, its, done, found, cg_its, k = st
+            R = v_res(U, tp_g)
+            values = v_asm(U, tp_g)
+            X, info = _batched_solve(values, -R, ts)
+            newU, newn, _alpha, ok = v_ls(U, X, R, rn, tp_g)
+            active = ~(done | ~found)
+            U = jnp.where(active[:, None], newU, U)
+            rn = jnp.where(active, newn, rn)
+            its = jnp.where(active, k + 1, its)
+            cg_its = jnp.where(active, cg_its + info.iterations, cg_its)
+            found = jnp.where(active, ok, found)
+            done = done | converged(rn)
+            return U, rn, its, done, found, cg_its, k + 1
+
+        U, rn, its, done, found, cg_its, _ = jax.lax.while_loop(cond, body, state)
+        # The final iterate of every case is returned (converged or not).
+        info = BatchedNewtonInfo(iterations=its, converged=done, line_search_failed=~found,
+                                 cg_iterations=cg_its, residual=rn / rn0)
+        return U, info
+
+    def _forward(tp, N, U0, ts):
+        if chunk is None or chunk >= N:
+            return _newton_group(tp, U0, ts)
+        if U0.ndim == 1:
+            return _chunked(lambda c: _newton_group(c, U0, ts), tp, front, N, chunk)
+        return _chunked(lambda c, u: _newton_group(c, u, ts), tp, front, N, chunk, extra=U0)
+
+    def _adjoint(tp, U, gU, ts):
+        _, v_asm, _ = _fns(ts)
+
+        def group(tp_g, U_g, gU_g):
+            values = v_asm(U_g, tp_g)
+            lam, _ = _batched_solve(values, gU_g, ts)
+            return lam
+        N = gU.shape[0]
+        if chunk is None or chunk >= N:
+            return group(tp, U, gU)
+        UG = jnp.concatenate([U[..., None], gU[..., None]], axis=-1)   # chunk both together
+        return _chunked(lambda c, ug: group(c, ug[..., 0], ug[..., 1]), tp, front, N, chunk, extra=UG)
+
+    def _batch_size(tp):
+        return jax.tree_util.tree_leaves(jax.tree_util.tree_map(
+            lambda leaf, ax: None if ax is None else leaf.shape[0], tp, front, is_leaf=_is_axis_leaf))[0]
+
+    @jax.custom_vjp
+    def solve_newton(tp, U0, ts):
+        return _forward(tp, _batch_size(tp), U0, ts)
+
+    def fwd(tp, U0, ts):
+        out = solve_newton(tp, U0, ts)
+        return out, (tp, out[0], ts)
+
+    def bwd(res, g):
+        tp, U, ts = res
+        gU, _ = g
+        lam = _adjoint(tp, U, gU, ts)
+
+        def one(u_i, lam_i, tp_i):
+            _, f_vjp = jax.vjp(lambda t: solver.residual(u_i, t, traced_structure=ts), tp_i)
+            return jax.tree_util.tree_map(_safe_negate, f_vjp(lam_i)[0])
+        ct = jax.vmap(one, in_axes=(0, 0, front))(U, lam, tp)
+        ct = jax.tree_util.tree_map(
+            lambda c, ax: c if ax is not None else jnp.sum(c, axis=0), ct, front, is_leaf=_is_axis_leaf)
+        return ct, None, None
+
+    solve_newton.defvjp(fwd, bwd)
+
+    def solve(tp, u0, ts):
+        u0 = u0_default if u0 is None else jnp.asarray(u0)
+        ts = ts0 if ts is None else ts
+        tp, _, _ = _to_front(tp, axes_tree)
+        return solve_newton(tp, u0, ts)
+
+    return BatchedSolver(solve, solver=solver, kind="lhs", in_axes=in_axes, options=options,
+                         preconditioner=preconditioner, chunk=chunk, return_info=return_info)

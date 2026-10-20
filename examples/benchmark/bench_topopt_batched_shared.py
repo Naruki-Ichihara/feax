@@ -5,14 +5,17 @@ solves share K(rho). Here every load case gets its OWN design ``rho_i`` (B
 independent topologies), so the matrices differ per case -- the ``vmap-lhs``
 situation, where the direct solver would factorize B matrices per evaluation.
 
-Shared mode instead factorizes once per evaluation:
+Both modes batch the one linear solver with ``fe.vmap`` over the per-case
+modulus fields and loads (an lhs batch: the modulus changes the operator).
+Shared mode factorizes once per evaluation --
 
     E_i = SIMP(rho_i)                    per-case nodal modulus
-    K_0 = K(mean_i E_i) = mean_i K_i     factorized ONCE
+    K_0 = K(mean_i E_i) = mean_i K_i     factorized ONCE (fe.shared_factor)
     K_i u_i = f_i                        batched CG preconditioned by K_0^{-1}
 
-(``bench_shared_factor_pcg.py`` measures that solver alone.) Direct mode solves
-each case with its own factorization (``lax.map``), as the reference.
+(``bench_shared_factor_pcg.py`` measures that solver alone.) Direct mode
+(``options=DirectSolverOptions(), chunk=1``) solves each case with its own
+factorization, one after another, as the reference.
 
 Compliance is self-adjoint, so the gradient needs no adjoint solves:
 ``dc_i/drho_i = -u_i^T (dK/drho_i) u_i``.
@@ -108,9 +111,8 @@ def main(argv=None):
     import numpy as onp
     import feax as fe
     import feax.gene as gene
-    from feax.assembler import create_J_bc_csr_parametric, create_res_bc_parametric
+    from feax.assembler import create_res_bc_parametric
     from feax.experimental.mma import GCMMA
-    from feax.solvers._cudss_compat import factorize, solve_with
 
     _, device = device_info(jax, args.device_name)
     out_path = args.output or os.path.join(HERE, "bench_topopt_batched.csv")
@@ -168,11 +170,7 @@ def main(argv=None):
     F = map_vals @ F_unit                                                # (B, n)
     loads = tuple(map_vals[:, j][:, None, None] * unit[None] for j in range(3))
 
-    # Matrix structure (shared by every case) and the filter / volume operators.
-    J_fn = create_J_bc_csr_parametric(problem, symmetric=True)
-    J_s = jax.jit(J_fn)(u0, tparams(E_vf), bc, ts)
-    indptr, indices = J_s.indptr, J_s.indices
-    rows = jnp.repeat(jnp.arange(n), jnp.diff(indptr), total_repeat_length=indices.shape[0])
+    # The filter / volume operators.
     radius = args.filter_radius_cells * spacing[0]
     filt_W, filt_rowsum = filter_weights(mesh.points, radius)
     vol_w = jax.grad(gene.create_volume_fn(problem))(jnp.zeros((n_nodes,)))
@@ -180,8 +178,7 @@ def main(argv=None):
     print(f"nx={nx} ny={ny} nz={nz}  nodes={n_nodes:,}  dof={n:,}  design vars={B * n_nodes:,}  "
           f"load angles from -z: {onp.round(onp.degrees(theta), 1).tolist()}\n")
 
-    data = dict(ts=ts, u0=u0, F=F, loads=loads, filter=(filt_W, filt_rowsum), vol_w=vol_w,
-                indptr=indptr, indices=indices, rows=rows)
+    data = dict(ts=ts, u0=u0, F=F, loads=loads, filter=(filt_W, filt_rowsum), vol_w=vol_w)
 
     def project(X, d):                                                   # (B, n_nodes)
         Wm, rs = d["filter"]
@@ -192,52 +189,31 @@ def main(argv=None):
         return E0 * (SIMP_EPSILON + (1.0 - SIMP_EPSILON) * rho ** penal)
 
     # ---------------- solvers: (B, n_nodes) moduli -> (B, n) displacements ----
-    def solve_shared(Es, d):
-        """One factorization of K(mean E) = mean_i K_i, batched PCG for the K_i."""
-        datas = jax.lax.map(lambda E: J_fn(d["u0"], tparams(E), bc, d["ts"]).data, Es)
-        J0 = J_fn(d["u0"], tparams(Es.mean(0)), bc, d["ts"]).data
-        token = factorize(J0, d["indptr"], d["indices"], mtype_id=3, mview_id=0)
-        M = jax.vmap(lambda r: solve_with(token, r))
-        spmv = jax.vmap(lambda a, x: jax.ops.segment_sum(
-            a * x[d["indices"]], d["rows"], num_segments=n))
-        Fb = d["F"]
-        bnorm = jnp.linalg.norm(Fb, axis=1)
-        Z = M(Fb)
-        state = (jnp.zeros_like(Fb), Fb, Z, jnp.sum(Fb * Z, 1),
-                 jnp.zeros(B, bool), jnp.zeros(B, jnp.int32), 0)
-
-        def cond(s):
-            return (s[6] < args.maxiter) & ~jnp.all(s[4])
-
-        def body(s):
-            X, R, P, rz, done, its, k = s
-            AP = spmv(datas, P)
-            alpha = jnp.where(done, 0.0, rz / jnp.sum(P * AP, 1))
-            X = X + alpha[:, None] * P
-            R = R - alpha[:, None] * AP
-            now = jnp.linalg.norm(R, axis=1) <= args.tol * bnorm
-            its = jnp.where(done, its, k + 1)
-            Z = M(R)
-            rz_new = jnp.sum(R * Z, 1)
-            fin = done | now
-            beta_ = jnp.where(fin, 0.0, rz_new / rz)
-            P = jnp.where(fin[:, None], P, Z + beta_[:, None] * P)
-            return X, R, P, jnp.where(fin, rz, rz_new), fin, its, k + 1
-
-        U, _, _, _, _, its, _ = jax.lax.while_loop(cond, body, state)
-        return U, its
-
+    # One linear solver, batched by fe.vmap over (E_i, loads_i); the modulus
+    # changes the operator, so both modes are lhs batches of the same solver.
     direct_solver = fe.create_solver(
         problem, bc, solver_options=fe.DirectSolverOptions(), linear=True,
         traced_params=tparams(E_vf, *(l[0] for l in loads)), traced_structure=ts,
         return_solution=False)
+    batch_axes = fe.TracedParams(volume_vars=(0,), surface_vars=[(0, 0, 0)])
 
-    def solve_direct(Es, d):
-        """Reference: each case factorized and solved on its own (lax.map)."""
-        tx, ty, tz = d["loads"]
-        U = jax.lax.map(lambda a: direct_solver(tparams(*a), d["u0"], traced_structure=d["ts"]),
-                        (Es, tx, ty, tz))
-        return U, jnp.zeros(B, jnp.int32)
+    # shared: one factorization of K(mean E) = mean_i K_i, batched PCG for the K_i
+    shared_batched = fe.vmap(
+        direct_solver, in_axes=batch_axes, batch="lhs", return_info=True,
+        options=fe.KrylovSolverOptions(solver="cg", tol=args.tol, atol=0.0, maxiter=args.maxiter),
+        preconditioner=fe.shared_factor())
+    # direct: each case factorized and solved on its own (chunk=1: one at a time)
+    direct_batched = fe.vmap(
+        direct_solver, in_axes=batch_axes, batch="lhs", return_info=True,
+        options=fe.DirectSolverOptions(), chunk=1)
+
+    def make_solve(batched):
+        def solve(Es, d):
+            U, info = batched(tparams(Es, *d["loads"]), d["u0"], d["ts"])
+            return U, info.iterations
+        return solve
+
+    solve_shared, solve_direct = make_solve(shared_batched), make_solve(direct_batched)
 
     # ---------------- compliance with the self-adjoint sensitivity -------------
     def make_compliances(solve):

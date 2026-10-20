@@ -5,7 +5,10 @@
 solving them one by one, and B factorizations must fit in GPU memory at once
 (B = 10 already fails at 254k DOF on A100).
 
-Here the cases are solved with a single shared factorization instead:
+Here the cases are solved with ``fe.vmap`` of the linear solver. The batched
+parameter is the modulus field, which changes the operator, so ``fe.vmap``
+takes its lhs path: the B matrices are assembled on their shared pattern and
+solved together by batched CG preconditioned by ``fe.shared_factor`` --
 
     K_0 = K(E_bar)                      factorized ONCE (E_bar = mean of the case fields)
     K_i u_i = f   for i = 1..B          preconditioned CG with M = K_0^{-1}
@@ -14,7 +17,8 @@ Every CG iteration is one batched SpMV with the B assembled ``K_i`` plus one
 batched back-substitution with the ``K_0`` factors (the cheap multi-RHS solve of
 ``vmap-rhs``). When ``K_i`` is close to ``K_0`` CG converges in a few iterations,
 so the cost per case approaches that of ``vmap-rhs`` while only one factorization
-is ever held in memory.
+is ever held in memory. ``--case-chunk`` (``chunk=``) solves the cases in groups,
+one factorization of the group mean per group.
 
 Cases: the cantilever of ``bench_linear_elasticity.py`` (8 x 2 x 2 HEX8 grid,
 clamp at x = 0, tip traction), with a random log-normal Young's modulus field per
@@ -22,19 +26,19 @@ case, ``E_i(x) = E0 * exp(sigma * g_i(x) - sigma^2 / 2)``, ``g_i`` a smooth
 unit-variance Gaussian field (random Fourier features, correlation length
 ``--corr-len``). ``--sigma`` sets the spread (0.3 -> E varies by roughly +-30 %).
 
-Per DOF target it reports the time of the batched assembly, the single
-factorization and the batched PCG, the CG iteration counts, and compares
-``--ref-cases`` cases against a plain direct solve of each (time per case and
-relative error of the PCG solution). Rows append to ``bench_shared_factor.csv``.
+Per DOF target it reports the wall time of the batched solve (``total_s``: the
+whole ``fe.vmap`` call), the standalone times of its two set-up pieces
+(``assemble_s``: assembling the B matrices, ``factor_s``: factorizing K_0) and
+the remainder (``pcg_s = total_s - assemble_s - factor_s``, the CG iterations),
+the CG iteration counts, and the wall time of a plain direct solve of the first
+``--ref-cases`` cases, one by one (the ``vmap-lhs`` cost per case) with the
+relative error of the PCG solution against them. Rows append to
+``bench_shared_factor.csv``.
 
 Run:
     python bench_shared_factor_pcg.py
     python bench_shared_factor_pcg.py --dofs 500000 --batch 50 --sigma 0.5
     python bench_shared_factor_pcg.py --dofs 500000 --batch 100 --case-chunk 10
-
-With ``--case-chunk C`` the cases are assembled and solved in groups of C, one
-group after another, all with the same factorization: only one group of K_i is
-ever stored (B = 100 at 500k DOF would otherwise need 29 GB just for them).
 """
 import argparse
 import csv
@@ -63,12 +67,13 @@ def parse_args(argv=None):
     p.add_argument("--tol", type=float, default=1e-8, help="PCG relative residual tolerance.")
     p.add_argument("--maxiter", type=int, default=500, help="PCG iteration cap.")
     p.add_argument("--precond", choices=["shared", "jacobi", "none"], default="shared",
-                   help="CG preconditioner: the shared K_0 factorization (default), the "
-                        "per-case diagonal (Jacobi), or none. jacobi/none factorize nothing.")
+                   help="CG preconditioner (fe.vmap preconditioner=): the shared K_0 "
+                        "factorization fe.shared_factor() (default), the per-case diagonal "
+                        "fe.jacobi(), or none. jacobi/none factorize nothing.")
     p.add_argument("--case-chunk", type=int, default=0,
-                   help="Assemble and solve the cases in groups of this size, one group "
-                        "after another, all sharing the one factorization (0 = all at "
-                        "once). Bounds the memory of the stored K_i to one group.")
+                   help="Solve the cases in groups of this size (fe.vmap chunk=), one "
+                        "group after another with one factorization of the group mean "
+                        "each (0 = all at once). Bounds the memory of the stored K_i.")
     p.add_argument("--ref-cases", type=int, default=3,
                    help="Cases also solved by a plain direct solve (timing + error).")
     p.add_argument("--seed", type=int, default=0)
@@ -114,8 +119,6 @@ def main(argv=None):
     import jax.numpy as jnp
     import numpy as onp
     import feax as fe
-    from feax.assembler import create_J_bc_csr_parametric, create_res_bc_parametric
-    from feax.solvers._cudss_compat import factorize, solve_with
 
     _, device = device_info(jax, args.device_name)
     out_path = args.output or os.path.join(HERE, "bench_shared_factor.csv")
@@ -178,98 +181,48 @@ def main(argv=None):
             Es = jax.jit(lambda o, p: jax.lax.map(field, (o, p)))(omega, phase)  # (B, n_nodes)
             E_bar = Es.mean(0)
 
-            J_fn = create_J_bc_csr_parametric(problem, symmetric=True)
-            res_fn = create_res_bc_parametric(problem)
-            J0 = jax.jit(J_fn)(u0, tp(E_bar), bc, ts)
-            indptr, indices = J0.indptr, J0.indices
-            rows = jnp.repeat(jnp.arange(n), jnp.diff(indptr),
-                              total_repeat_length=indices.shape[0])
-            f = -jax.jit(res_fn)(u0, tp(E_bar), bc, ts)                    # load (E-free)
-
-            # 1) ONE factorization: K_0 = K(E_bar), SPD, full storage (shared only)
-            if args.precond == "shared":
-                fact = jax.jit(lambda d: factorize(d, indptr, indices, mtype_id=3, mview_id=0))
-                block(fact(J0.data))                                        # compile + warm
-                t_fac, token = timed(fact, J0.data)
-            else:
-                t_fac, token = 0.0, None
-            is_diag = rows == indices
-
-            # 2) the K_i of one group of cases (assembled one at a time: bounded memory)
-            assemble = jax.jit(lambda Es: jax.lax.map(
-                lambda E: J_fn(u0, tp(E), bc, ts).data, Es))
-
-            # 3) batched PCG, preconditioner = back-substitution with K_0's factors
-            def spmv(d, x):
-                return jax.ops.segment_sum(d * x[indices], rows, num_segments=n)
-
-            @jax.jit
-            def pcg(data, f, token):
-                B = data.shape[0]
-                Ax = jax.vmap(spmv)
-                if args.precond == "shared":
-                    M = jax.vmap(lambda r: solve_with(token, r))
-                elif args.precond == "jacobi":
-                    diag = jax.vmap(lambda d: jax.ops.segment_sum(
-                        jnp.where(is_diag, d, 0.0), rows, num_segments=n))(data)
-                    M = lambda R: R / diag
-                else:
-                    M = lambda R: R
-                bnorm = jnp.linalg.norm(f)
-                X = jnp.zeros((B, n))
-                R = jnp.broadcast_to(f, (B, n))
-                Z = M(R)
-                rz = jnp.sum(R * Z, 1)
-                state = (X, R, Z, rz, jnp.zeros(B, bool), jnp.zeros(B, jnp.int32), 0)
-
-                def cond(s):
-                    return (s[6] < args.maxiter) & ~jnp.all(s[4])
-
-                def body(s):
-                    X, R, P, rz, done, its, k = s
-                    AP = Ax(data, P)
-                    alpha = jnp.where(done, 0.0, rz / jnp.sum(P * AP, 1))
-                    X = X + alpha[:, None] * P
-                    R = R - alpha[:, None] * AP
-                    now = jnp.linalg.norm(R, axis=1) <= args.tol * bnorm
-                    its = jnp.where(done, its, k + 1)
-                    Z = M(R)
-                    rz_new = jnp.sum(R * Z, 1)
-                    beta = jnp.where(done | now, 0.0, rz_new / rz)
-                    P = jnp.where((done | now)[:, None], P, Z + beta[:, None] * P)
-                    return X, R, P, jnp.where(done | now, rz, rz_new), done | now, its, k + 1
-
-                X, R, _, _, done, its, _ = jax.lax.while_loop(cond, body, state)
-                return X, its, done
-
-            # Groups of C cases, one after another; the last group is padded by
-            # repeating its final case (the padded results are dropped).
-            C = args.case_chunk if 0 < args.case_chunk < args.batch else args.batch
-            groups = []
-            for s0 in range(0, args.batch, C):
-                idx = onp.arange(s0, s0 + C).clip(max=args.batch - 1)
-                groups.append((idx, min(C, args.batch - s0)))
-            block(pcg(assemble(Es[groups[0][0]]), f, token))                # compile + warm
-            t_asm = t_pcg = 0.0
-            Xs, its_all, done_all = [], [], []
-            for idx, keep in groups:
-                t_a, data = timed(assemble, Es[idx])                        # (C, nnz)
-                t_p, (Xg, itg, dg) = timed(pcg, data, f, token)
-                del data
-                t_asm += t_a
-                t_pcg += t_p
-                Xs.append(Xg[:keep]); its_all.append(onp.asarray(itg)[:keep])
-                done_all.append(onp.asarray(dg)[:keep])
-            X = jnp.concatenate(Xs)
-            its = onp.concatenate(its_all)
-            done = onp.concatenate(done_all)
-            if not done.all():
-                print(f"  WARNING: {int((~done).sum())} case(s) hit --maxiter")
-
-            # 4) reference: plain direct solve of the first few cases, one by one
+            # The solver, batched over the modulus field by fe.vmap (lhs path).
             solver = fe.create_solver(problem, bc, solver_options=fe.DirectSolverOptions(),
                                       linear=True, traced_params=tp(E_bar),
                                       traced_structure=ts, return_solution=False)
+            precond = {"shared": fe.shared_factor(), "jacobi": fe.jacobi(),
+                       "none": lambda op: (lambda R: R)}[args.precond]
+            C = args.case_chunk if 0 < args.case_chunk < args.batch else None
+            batched = fe.vmap(
+                solver, in_axes=fe.TracedParams(volume_vars=(0,), surface_vars=[(None,)]),
+                options=fe.KrylovSolverOptions(solver="cg", tol=args.tol, atol=0.0,
+                                               maxiter=args.maxiter),
+                preconditioner=precond, chunk=C, return_info=True)
+            assert batched.kind == "lhs", batched
+            solve = jax.jit(lambda Es: batched(tp(Es), u0, ts))
+            block(solve(Es))                                                # compile + warm
+            t_total, (X, info) = timed(solve, Es)
+            its, done = onp.asarray(info.iterations), onp.asarray(info.converged)
+            if not done.all():
+                print(f"  WARNING: {int((~done).sum())} case(s) hit --maxiter")
+
+            # The two set-up pieces of that call, timed on their own: assembling
+            # the B matrices and factorizing K_0 = K(E_bar) (shared only).
+            assemble = jax.jit(lambda Es: jax.vmap(
+                lambda E: solver.assemble(u0, tp(E), traced_structure=ts).data)(Es))
+            E_group = Es if C is None else Es[:C]
+            block(assemble(E_group))                                        # compile + warm
+            t_asm, values = timed(assemble, E_group)                        # one group
+            t_asm *= 1 if C is None else -(-args.batch // C)                # all groups
+            if args.precond == "shared":
+                from feax.solvers._cudss_compat import factorize
+                indptr, indices = solver.assemble(u0, tp(E_bar)).indptr, solver.assemble(u0, tp(E_bar)).indices
+                fact = jax.jit(lambda d: factorize(d, indptr, indices, mtype_id=3, mview_id=0))
+                block(fact(values.mean(0)))
+                t_fac, _ = timed(fact, values.mean(0))
+                t_fac *= 1 if C is None else -(-args.batch // C)
+            else:
+                t_fac = 0.0
+            del values
+            t_pcg = max(t_total - t_asm - t_fac, 0.0)
+            groups = -(-args.batch // (C or args.batch))
+
+            # Reference: plain direct solve of the first few cases, one by one.
             direct = jax.jit(lambda E: solver(tp(E), u0, traced_structure=ts))
             block(direct(Es[0]))                                            # compile + warm
             n_ref = min(args.ref_cases, args.batch)
@@ -279,16 +232,17 @@ def main(argv=None):
                 ref_t.append(t_i)
                 errs.append(float(jnp.linalg.norm(X[i] - u_i) / jnp.linalg.norm(u_i)))
 
-            total = t_asm + t_fac + t_pcg
+            total = t_total
             ref_case = float(onp.mean(ref_t))
             row.update(assemble_s=t_asm, factor_s=t_fac, pcg_s=t_pcg, total_s=total,
                        per_case_s=total / args.batch, iters_mean=float(its.mean()),
                        iters_max=int(its.max()), ref_per_case_s=ref_case,
                        speedup_vs_direct=ref_case / (total / args.batch),
                        max_rel_err=max(errs), precond=args.precond, note="")
-            print(f"  [{args.precond}] {args.batch} cases in {len(groups)} group(s) of {C}:  "
-                  f"assemble K_i: {t_asm:7.3f}s   factor K_0 once: {t_fac:7.3f}s   "
-                  f"PCG: {t_pcg:7.3f}s  (iters mean {its.mean():.1f}, max {its.max()})")
+            print(f"  [{args.precond}] {args.batch} cases in {groups} group(s) of {C or args.batch}:  "
+                  f"fe.vmap solve: {t_total:7.3f}s  = assemble K_i {t_asm:6.3f}s + "
+                  f"factor K_0 {t_fac:6.3f}s + PCG {t_pcg:6.3f}s  "
+                  f"(iters mean {its.mean():.1f}, max {its.max()})")
             print(f"  {args.precond}: {total / args.batch:.4f}s/case   direct one by one: "
                   f"{ref_case:.4f}s/case   speed-up x{ref_case / (total / args.batch):.1f}   "
                   f"max rel.err vs direct = {max(errs):.1e}")

@@ -147,10 +147,10 @@ def test_lhs_direct_warns_without_chunk(s):
     assert _rel(batched(tp, s["u0"], s["ts"]).dofs, s["ref_lhs"]) < 1e-9
 
 
-def test_rejects_non_solver_and_newton(s):
+def test_rejects_non_solver_and_accepts_newton(s):
     with pytest.raises(TypeError):
         fe.vmap(lambda tp: tp)
+    # a (traced) Newton solver is batched too: always an lhs batch
     newton = fe.create_solver(s["problem"], s["bc"], s["direct"], linear=False,
                               traced_params=s["tp0"], traced_structure=s["ts"])
-    with pytest.raises(NotImplementedError):
-        fe.vmap(newton)
+    assert fe.vmap(newton, in_axes=fe.TracedParams(volume_vars=(None,), surface_vars=[(0,)])).kind == "lhs"

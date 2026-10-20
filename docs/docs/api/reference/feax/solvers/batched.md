@@ -34,6 +34,36 @@ Per-case diagnostics of :func:`batched_pcg`.
 
 (N,) float: final relative residual ||r|| / ||b||
 
+## BatchedNewtonInfo Objects
+
+```python
+class BatchedNewtonInfo(NamedTuple)
+```
+
+Per-case diagnostics of a batched Newton solve (:func:`feax.vmap` of a
+Newton solver). Every case&#x27;s final iterate is returned whether or not it
+converged; these flags say which ones did.
+
+#### iterations
+
+(N,) int32: Newton iterations taken by each case
+
+#### converged
+
+(N,) bool: residual reached tol / rel_tol
+
+#### line\_search\_failed
+
+(N,) bool: stopped because the Armijo search found no step
+
+#### cg\_iterations
+
+(N,) int32: CG iterations summed over the Newton steps
+
+#### residual
+
+(N,) float: final ||r|| / ||r_0||
+
 #### batched\_spmv
 
 ```python

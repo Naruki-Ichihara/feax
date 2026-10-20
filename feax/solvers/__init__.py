@@ -12,7 +12,7 @@ from .common import (
     create_x0,
 )
 from .amg import rigid_body_modes
-from .batched import BatchedSolveInfo, batched_pcg, batched_spmv
+from .batched import BatchedNewtonInfo, BatchedSolveInfo, batched_pcg, batched_spmv
 from .preconditioners import AMGOptions, AMGPreconditioner, LinearOperator, amg, jacobi, shared_factor
 from .linear import create_linear_solver, linear_solve
 from .newton import (
@@ -64,6 +64,7 @@ __all__ = [
     "amg",
     "jacobi",
     "shared_factor",
+    "BatchedNewtonInfo",
     "BatchedSolveInfo",
     "batched_pcg",
     "batched_spmv",

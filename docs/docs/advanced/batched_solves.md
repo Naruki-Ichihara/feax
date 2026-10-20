@@ -4,7 +4,7 @@ sidebar_label: Batched Solves (feax.vmap)
 
 # Batched Solves: `feax.vmap`
 
-`fe.vmap` batches a *linear* FEAX solver over its `TracedParams` and solves the batch well: a batch of **load cases** on one stiffness matrix is one factorization and a multi-right-hand-side solve, a batch of **designs** (one stiffness matrix per case) is a batched conjugate-gradient solve preconditioned by one shared factorization. It looks at which parameters are batched, decides which of the two it is, and picks the solve accordingly. The result is differentiable and composes with `jax.jit`.
+`fe.vmap` batches a FEAX solver over its `TracedParams` and solves the batch well: a batch of **load cases** on one stiffness matrix is one factorization and a multi-right-hand-side solve, a batch of **designs** (one stiffness matrix per case) is a batched conjugate-gradient solve preconditioned by one shared factorization. It looks at which parameters are batched, decides which of the two it is, and picks the solve accordingly. A **Newton** solver is batched the same way, one shared factorization of the mean tangent per Newton step. The result is differentiable and composes with `jax.jit`.
 
 ```python
 batched = fe.vmap(solver, in_axes=0, *, batch="auto", options=None,
@@ -14,7 +14,7 @@ U = batched(traced_params, initial_guess=None, traced_structure=None)
 
 ## Why not `jax.vmap`?
 
-`jax.vmap(solver)` already batches a FEAX solver, and it is the right tool for Newton solves and for anything that is not a linear solve (see the [Vectorization Transform](../basic/vmap_transform.md) tutorial). But `jax.vmap` does not know what the batch *means*:
+`jax.vmap(solver)` already batches a FEAX solver, and it is the right tool for anything that is not a solve of this kind (see the [Vectorization Transform](../basic/vmap_transform.md) tutorial). But `jax.vmap` does not know what the batch *means*:
 
 - When the batched parameters change only the **right-hand side** — tractions, source terms, boundary values on the same design — a direct solver can factorize once and back-substitute `N` right-hand sides. With `reuse_factorization=True` cuDSS does this under `jax.vmap` (see [Factorize once, solve many](../getting-started/solver.md#factorize-once-solve-many-reuse_factorization)).
 - When the batched parameters change the **stiffness matrix** — material fields, SIMP densities, one design per case — `jax.vmap` of a direct solver factorizes every case and holds all `N` factorizations at once. That runs out of memory quickly: an A100 ran out at `N = 10` for a 254k-DOF cantilever. `jax.vmap` of a Krylov solver works, but every case iterates on its own with a per-case preconditioner and nothing is shared between the cases.
@@ -23,7 +23,7 @@ U = batched(traced_params, initial_guess=None, traced_structure=None)
 
 ## Setting up
 
-`fe.vmap` takes the `fe.Solver` object returned by `fe.create_solver(..., linear=True, traced_params=tp)`. The solver carries what it was built from (`problem`, `bc`, `options`, `sample_params`, `traced_structure`, `preconditioner`, `linear`) and can assemble its own operator (`solver.assemble(u, tp)`) and residual (`solver.residual(u, tp)`); `fe.vmap` uses these to inspect the batch and to assemble the batched operators. The sample `traced_params=` is required: it gives the parameter structure that `in_axes` is matched against and the point at which the batch kind is detected.
+`fe.vmap` takes the `fe.Solver` object returned by `fe.create_solver(..., traced_params=tp)`, linear (`linear=True`) or the standard traced Newton solver. The solver carries what it was built from (`problem`, `bc`, `options`, `newton_options`, `sample_params`, `traced_structure`, `preconditioner`, `linear`) and can assemble its own operator (`solver.assemble(u, tp)`) and residual (`solver.residual(u, tp)`); `fe.vmap` uses these to inspect the batch and to assemble the batched operators. The sample `traced_params=` is required: it gives the parameter structure that `in_axes` is matched against and the point at which the batch kind is detected.
 
 ```python
 import feax as fe
@@ -237,9 +237,29 @@ The same contract is what `fe.create_solver(preconditioner=...)` uses for a sing
 
 Underneath, the kernel is available directly as `feax.solvers.batched.batched_pcg(values, indptr, indices, b, M, *, tol, atol, maxiter, x0) -> (X, BatchedSolveInfo)` for CSR values of shape `(N, nnz)` (or a single `(nnz,)` matrix shared by all right-hand sides) and `b` of shape `(N, n)`, and `feax.solvers.batched.batched_spmv(values, indptr, indices)` returns the batched matrix-vector product `spmv(V, X) -> (N, n)`.
 
+## Newton solvers
+
+A Newton solver (`create_solver(..., linear=False)`) is batched by the same call. For a nonlinear problem the tangent depends on the state, which depends on every batched parameter, so a Newton batch is always an **lhs** batch (`batch="rhs"` still forces plain `jax.vmap`). All cases iterate together in one traced loop:
+
+1. per Newton step, the residuals and the `N` tangents of the current iterates are assembled on the shared pattern;
+2. the batch-level preconditioner is built from the `N` tangents — by default one shared factorization of their mean — and the `N` Newton directions come from one batched CG (`options`);
+3. the Armijo line search of the solver's `NewtonOptions` runs per case;
+4. a case that has converged (`tol` / `rel_tol`), or whose line search failed, keeps its iterate while the others go on, until every case is done or `max_iter`.
+
+Every case's **final iterate is returned whether or not it converged**, and `info` is a `BatchedNewtonInfo` that says what happened to each case: `iterations` (Newton steps), `converged` (residual reached `tol` / `rel_tol`), `line_search_failed` (stopped because the Armijo search found no step), `cg_iterations` (CG iterations summed over the steps) and `residual` (final relative residual). A case that is neither converged nor failed ran out of `max_iter`. Under tracing no exception can be raised, so `raise_on_line_search_failure` does not apply here; check the flags. The custom VJP solves the `N` adjoint systems of the converged tangents the same way, so the tangents are assumed symmetric (a hyperelastic tangent derived from an energy is), with `symmetric_elimination=True`. `chunk=` groups the cases exactly as for a linear batch, with one preconditioner per group and per step. The initial guess may be shared, `(n,)`, or given per case, `(N, n)`.
+
+```python
+newton = fe.create_solver(problem, bc, fe.DirectSolverOptions(), linear=False,
+                          newton_options=fe.NewtonOptions(tol=1e-8), traced_params=tp0,
+                          traced_structure=ts)
+batched = fe.vmap(newton, in_axes=0, return_info=True,
+                  options=fe.KrylovSolverOptions(solver="cg", tol=1e-10, maxiter=500))
+U, info = batched(fe.TracedParams((), [(loads,)]), u0, ts)   # N load levels, N Newton iterations each
+```
+
 ## Limitations
 
-- **Linear solvers only.** `fe.vmap` needs `create_solver(..., linear=True)`; batch a Newton solver with `jax.vmap`.
+- **Newton: the traced path only.** A Newton solver with `extra_residual_fn`, or with an AMG preconditioner that rebuilds its hierarchy (`rebuild_every != 0`), runs a host loop and cannot be batched here; use `jax.vmap`.
 - **The sample parameters are required.** The solver must have been created with `traced_params=`; it is how `fe.vmap` sees the parameter structure and detects the batch kind.
 - **No reduced solvers.** A solver with `projection=` (periodic boundary conditions) is not supported yet.
 - **CG only, SPD operators.** The lhs batch is conjugate gradients on the symmetric, BC-eliminated operator: `options.solver` must be `"cg"` (or `"auto"`) and the solver must use `symmetric_elimination=True`. Non-symmetric problems can use `options=fe.DirectSolverOptions()` with `chunk=`.

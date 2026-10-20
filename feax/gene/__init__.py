@@ -71,6 +71,8 @@ from .filters import (
     compute_volume_fraction_threshold,
 )
 from .responses import create_compliance_fn, create_dynamic_compliance_fn, create_volume_fn
+from .update import oc_update, simp
+from .similarity import group_spread, similarity_order
 
 __all__ = [
     # Response functions
@@ -87,6 +89,14 @@ __all__ = [
     # Projection and threshold
     'heaviside_projection',
     'compute_volume_fraction_threshold',
+
+    # Material interpolation and design update (one field or a batch)
+    'simp',
+    'oc_update',
+
+    # Ordering a batch of designs for grouped batched solves
+    'similarity_order',
+    'group_spread',
 
     # Minimum length scale (Zhou et al. 2015 geometric constraints)
     'length_scale',
