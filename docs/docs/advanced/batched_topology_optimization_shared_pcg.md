@@ -81,9 +81,8 @@ def evaluate(X, beta):
 
 X = jnp.full((B, n_nodes), VOLFRAC)
 for k in range(1, ITERS + 1):
-    beta = BETA[...]                                               # Heaviside continuation
     X = gene.oc_update(X, dc, VOLFRAC, dv=dv, move=MOVE)
-    c, dc, v, info = evaluate(X, beta)
+    c, dc, v, info = evaluate(X, BETA)                 # fixed projection sharpness
 ```
 
 Summing the B compliances gives the B sensitivities in one backward pass, since the designs are independent (`dc[i]` depends on `X[i]` only). `gene.oc_update` on a `(B, n)` array runs one bisection per design, so every design meets the volume fraction exactly; `VOLFRAC` may also be an array `(B,)`.
@@ -170,6 +169,9 @@ Two things to read off this run, next to the OC one:
 - **Every inner iteration is one more batched evaluation for all designs.** While the approximations are conservative (`beta` ≤ 4) no inner iterations are needed and an outer step costs one evaluation; once the projection sharpens (`beta = 8`) two to three inner iterations per design appear and the step costs three to four. That, not the subproblem solve, is why the run took 2.8× the OC time. With hundreds of designs the slowest one sets the count, so keep `MAX_INNER` small and watch `state.inner_iterations`.
 
 ## What the run shows
+
+The runs below were made with a Heaviside continuation (`beta` 1 → 2 → 4 → 8); the scripts now use a fixed `BETA` (default 2, `BETA=` to change), so the counts and times differ.
+
 
 ```
 iter  beta  c/c0 mean  c/c0 max          vol  CG iters mean/max    time

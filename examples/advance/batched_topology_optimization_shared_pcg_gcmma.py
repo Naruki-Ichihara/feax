@@ -60,7 +60,7 @@ B = _env("B", 8)           # designs: load directions 0 .. 180 (1 - 1/B) deg fro
 CHUNK = _env("CHUNK", 4) or None   # designs per shared factorization (0: the whole batch)
 ITERS = _env("ITERS", 40)
 FILTER_RADIUS = 2.5 * (L / NX)
-BETA = (1.0, 2.0, 4.0, 8.0)    # Heaviside continuation, one value per quarter of the run
+BETA = _env("BETA", 2.0)       # Heaviside projection sharpness, fixed for the whole run (no continuation)
 MOVE = 0.2                 # GCMMA move limit (fraction of xmax - xmin)
 MAX_INNER = 3              # GCMMA inner (conservativity) iterations: each one is a batched evaluation
 TRACTION = 1e-2
@@ -177,11 +177,11 @@ evaluate = make_evaluate(batched)
 
 # ── Optimization loop ──────────────────────────────────────────────────────
 X = jnp.full((B, n_nodes), VOLFRAC)
-beta = BETA[0]
+beta = BETA
 order = jnp.arange(B)
 c, dc, v, its = evaluate(X, beta, order)
 c0 = c
-beta_at = lambda k: BETA[min(len(BETA) - 1, (k - 1) * len(BETA) // ITERS)]
+beta_at = lambda k: BETA
 
 
 def report(k, beta, c, v, its, t_start):

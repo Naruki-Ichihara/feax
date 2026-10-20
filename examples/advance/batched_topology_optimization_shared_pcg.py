@@ -61,7 +61,7 @@ B = _env("B", 8)           # designs: load directions 0 .. 180 (1 - 1/B) deg fro
 CHUNK = _env("CHUNK", 4) or None   # designs per shared factorization (0: the whole batch)
 ITERS = _env("ITERS", 40)
 FILTER_RADIUS = 2.5 * (L / NX)
-BETA = (1.0, 2.0, 4.0, 8.0)    # Heaviside continuation, one value per quarter of the run
+BETA = _env("BETA", 2.0)       # Heaviside projection sharpness, fixed for the whole run (no continuation)
 MOVE = 0.2
 TRACTION = 1e-2
 REORDER_EVERY = _env("REORDER_EVERY", 5)   # re-sort the batch by operator similarity every this many iterations (0: never)
@@ -177,13 +177,13 @@ evaluate = make_evaluate(batched)
 
 # ── Optimization loop ──────────────────────────────────────────────────────
 X = jnp.full((B, n_nodes), VOLFRAC)
-beta = BETA[0]
+beta = BETA
 order = jnp.arange(B)
 _t0 = perf_counter()
 c, dc, v, its = jax.block_until_ready(evaluate(X, beta, order))
 t_eval0 = perf_counter() - _t0     # includes the compile
 c0 = c
-beta_at = lambda k: BETA[min(len(BETA) - 1, (k - 1) * len(BETA) // ITERS)]
+beta_at = lambda k: BETA
 
 
 def report(k, beta, c, v, its, t_start):
