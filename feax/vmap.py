@@ -32,6 +32,7 @@ from typing import Any, Callable, Optional
 
 import jax
 import jax.numpy as jnp
+import numpy as onp
 
 from .solver import Solver
 from .solvers.batched import BatchedNewtonInfo, BatchedSolveInfo, batched_pcg
@@ -116,6 +117,30 @@ def _operator_depends_on(solver: Solver, axes_tree, u0) -> bool:
     return float(jnp.max(jnp.abs(dv))) > 1e-12 * scale
 
 
+class _CsrPattern:
+    """The CSR pattern shared by the batch's operators.
+
+    Read from the TracedStructure of the call when there is one: its arrays are
+    traced leaves, so nothing nnz-sized is baked into a jitted caller as a
+    constant (at 500k DOF the pattern alone is ~10^8 bytes, and XLA folds such
+    constants on one thread). Without a TracedStructure it comes from one
+    concrete assembly at the solver's sample parameters, made here (eagerly:
+    under a trace it would be a tracer) -- the call falls back to the solver's
+    own TracedStructure, so a call can only miss one when the solver has none.
+    """
+
+    def __init__(self, solver, u0, sample):
+        self._fallback = None
+        if solver.traced_structure is None:
+            K0 = solver.assemble(u0, sample)
+            self._fallback = (K0.indptr, K0.indices)
+
+    def __call__(self, ts):
+        if ts is not None:
+            return ts.csr_indptr, ts.csr_indices
+        return self._fallback
+
+
 # ---------------------------------------------------------------------------
 # the batched solver
 # ---------------------------------------------------------------------------
@@ -123,24 +148,60 @@ def _operator_depends_on(solver: Solver, axes_tree, u0) -> bool:
 class BatchedSolver:
     """What :func:`vmap` returns. ``kind`` is ``"rhs"`` or ``"lhs"``."""
 
-    def __init__(self, fn, *, solver, kind, in_axes, options, preconditioner, chunk, return_info):
+    def __init__(self, fn, *, solver, kind, in_axes, options, preconditioner, chunk, return_info,
+                 share=None, factorize_fn=None):
         self._fn = fn
+        self._factorize_fn = factorize_fn
+        self._factorize_jit = None
         self.solver = solver
         self.kind = kind
         self.in_axes = in_axes
         self.options = options
         self.preconditioner = preconditioner
         self.chunk = chunk
+        self.share = share
         self.return_info = return_info
+        self._signature = None
 
-    def __call__(self, traced_params, initial_guess=None, traced_structure=None):
+    def __call__(self, traced_params, initial_guess=None, traced_structure=None, factors=None):
+        """Solve the batch. ``factors`` (from :meth:`factorize`) are the
+        group factorizations to precondition with -- no mean is assembled and
+        nothing is factorized; without them each call factorizes its own."""
         from .solution import Solution
         if isinstance(initial_guess, Solution):
             initial_guess = initial_guess.dofs
-        U, info = self._fn(traced_params, initial_guess, traced_structure)
+        if factors is None:
+            U, info = self._fn(traced_params, initial_guess, traced_structure)
+        elif self._factorize_fn is None:
+            raise ValueError("factors= applies to an lhs CG batch with fe.shared_factor().")
+        else:
+            U, info = self._fn(traced_params, initial_guess, traced_structure, factors)
         if self.solver.return_solution:
             U = Solution(U, self.solver.layout)
         return (U, info) if self.return_info else U
+
+    def factorize(self, traced_params, initial_guess=None, traced_structure=None):
+        """Factorize the mean operator of every group of ``share`` cases (one
+        cuDSS entry each, kept alive) and return them as ``factors`` for
+        ``batched(..., factors=factors)``.
+
+        The preconditioner only has to be close, not current: reuse the
+        factors over several calls -- e.g. the iterations of an optimization
+        -- and factorize again (at the current parameters) when the CG counts
+        have grown too much. The batch must keep its order and ``share``
+        while the factors are reused. spineax keeps ``SPINEAX_FACTOR_CACHE``
+        entries (read at each new entry): set it to at least the number of
+        groups, or an evicted group is re-factorized from its stored mean on
+        every use (correct, but no reuse)."""
+        if self._factorize_fn is None:
+            raise ValueError("factorize applies to an lhs CG batch with fe.shared_factor().")
+        if self._factorize_jit is None:
+            self._factorize_jit = jax.jit(self._factorize_fn)
+        from .utils import zero_like_initial_guess
+        u0 = (zero_like_initial_guess(self.solver.problem, self.solver.bc)
+              if initial_guess is None else initial_guess)
+        ts = self.solver.traced_structure if traced_structure is None else traced_structure
+        return self._factorize_jit(traced_params, u0, ts)
 
     def operator_signature(self, traced_params, initial_guess=None, traced_structure=None):
         """A signature of every case's operator, ``(B, n_dof)``: the log of the
@@ -154,22 +215,36 @@ class BatchedSolver:
         u0 = zero_like_initial_guess(self.solver.problem, self.solver.bc) if initial_guess is None else initial_guess
         ts = self.solver.traced_structure if traced_structure is None else traced_structure
         tp, front, _ = _to_front(traced_params, _axes_tree(self.in_axes, self.solver.sample_params))
-        src = ts if ts is not None else self.solver.problem
-        slots = src.csr_diag_slots
+        if self._signature is None:
+            # jitted once, with the mesh-sized arrays as arguments; assembled
+            # ``chunk`` operators at a time (all N at once would hold N
+            # operators: 29 GiB for 100 cases at 500k DOF)
+            def signature(tp, u0, ts):
+                slots = (ts if ts is not None else self.solver.problem).csr_diag_slots
 
-        def one(t):
-            diag = self.solver.assemble(u0, t, traced_structure=ts).data[slots]
-            return jnp.log(jnp.maximum(diag, 1e-300))
-        return jax.vmap(one, in_axes=(front,))(tp)
+                def one(t):
+                    diag = self.solver.assemble(u0, t, traced_structure=ts).data[slots]
+                    return jnp.log(jnp.maximum(diag, 1e-300))
+                group = lambda c: jax.vmap(one, in_axes=(front,))(c)
+                n_cases = jax.tree_util.tree_leaves(jax.tree_util.tree_map(
+                    lambda leaf, ax: None if ax is None else leaf.shape[0], tp, front,
+                    is_leaf=_is_axis_leaf))[0]
+                if self.chunk is None or self.chunk >= n_cases:
+                    return group(tp)
+                return _chunked(group, tp, front, n_cases, self.chunk)
+            self._signature = jax.jit(signature)
+        return self._signature(tp, u0, ts)
 
     def __repr__(self):
-        return (f"BatchedSolver({self.kind}, {self.solver!r}, chunk={self.chunk}, "
+        share = "" if self.share is None else f", share={self.share}"
+        return (f"BatchedSolver({self.kind}, {self.solver!r}, chunk={self.chunk}{share}, "
                 f"preconditioner={getattr(self.preconditioner, '__name__', self.preconditioner)!r})")
 
 
 def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
          options: Optional[Any] = None, preconditioner: Optional[Callable] = None,
-         chunk: Optional[int] = None, return_info: bool = False) -> BatchedSolver:
+         chunk: Optional[int] = None, share: Optional[int] = None,
+         return_info: bool = False) -> BatchedSolver:
     """Batch a feax solver over ``traced_params``, solving the batch well.
 
     Parameters
@@ -207,7 +282,22 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
         ignored here (it may not accept a batched operator).
     chunk : int, optional
         Process the batch in groups of this size (``lax.map`` over groups): a
-        preconditioner per group and a memory bound of ``chunk`` operators.
+        memory bound of ``chunk`` operators, and -- unless ``share`` is set --
+        a preconditioner per group.
+    share : int, optional
+        Cases per shared preconditioner, independent of ``chunk`` (lhs linear
+        batch with :func:`feax.shared_factor`). The batch is split into groups
+        of ``share`` cases; each group's mean operator is accumulated ``chunk``
+        operators at a time, factorized once, and that one ``M``
+        preconditions the CG of all of the group's chunks. So
+        ``share=N, chunk=4`` is one factorization for the whole batch with
+        only 4 operators in memory. The groups re-factorize one cuDSS entry
+        in turn (one symbolic analysis, one factorization's memory), and the
+        adjoint runs the groups in reverse from the forward's last
+        factorization (with one group, the adjoint factorizes nothing).
+        Default: ``chunk`` (a preconditioner per chunk). Typical use: start
+        with the whole batch while the cases are alike and lower ``share`` as
+        the CG counts grow.
     return_info : bool
         Also return a :class:`feax.solvers.batched.BatchedSolveInfo` with the
         per-case CG iteration counts (``rhs``: zeros).
@@ -234,6 +324,8 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
         raise ValueError("batch must be 'auto', 'rhs' or 'lhs'.")
     if chunk is not None and int(chunk) < 1:
         raise ValueError("chunk must be a positive integer.")
+    if share is not None and int(share) < 1:
+        raise ValueError("share must be a positive integer.")
 
     from .utils import zero_like_initial_guess
     u0_default = zero_like_initial_guess(solver.problem, solver.bc)
@@ -251,6 +343,14 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
         # batched parameter: a Newton batch always changes the operator.
         kind = "lhs" if (not solver.linear or
                          _operator_depends_on(solver, axes_tree, u0_default)) else "rhs"
+
+    if share is not None and (kind == "rhs" or isinstance(options, DirectSolverOptions)
+                              or not solver.linear):
+        raise NotImplementedError(
+            "share= applies to the linear lhs batch solved by CG (one preconditioner per "
+            "group of cases); this batch is "
+            + ("rhs" if kind == "rhs" else "direct" if isinstance(options, DirectSolverOptions)
+               else "Newton") + ".")
 
     # ---- rhs: the operator is shared, jax.vmap does the right thing -------
     if kind == "rhs":
@@ -339,15 +439,27 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
         preconditioner.__name__ = "amg"
     if not callable(preconditioner):
         raise TypeError("preconditioner must be callable, preconditioner(op) -> M.")
+    # A mean-based preconditioner with token access (fe.shared_factor) takes
+    # the chained path: per group of ``share`` cases the mean operator is
+    # accumulated ``chunk`` operators at a time and factorized, re-factorizing
+    # ONE cuDSS entry from group to group (one symbolic analysis per
+    # evaluation), and the adjoint starts from the forward's last
+    # factorization. Any other preconditioner is built per group from all of
+    # the group's operators at once.
+    chained = callable(getattr(preconditioner, "factor", None))
+    if not chained and share is not None and (chunk is None or int(chunk) < int(share)):
+        raise ValueError(
+            f"share={share} > chunk={chunk} needs a preconditioner built from the mean operator "
+            f"(fe.shared_factor()); {getattr(preconditioner, '__name__', preconditioner)!r} "
+            "needs every operator of its group at once (set chunk >= share).")
 
-    # the shared pattern, from one concrete assembly at the sample parameters
-    K0 = solver.assemble(u0_default, sample)
-    indptr, indices = K0.indptr, K0.indices
+    pattern = _CsrPattern(solver, u0_default, sample)
     tol, atol, maxiter = options.tol, options.atol, options.maxiter
     # which leaves carry the batch (axis 0 once normalized): fixed by in_axes
     front = jax.tree_util.tree_map(lambda ax: None if ax is None else 0, axes_tree, is_leaf=_is_axis_leaf)
 
     def _operator(values, ts):
+        indptr, indices = pattern(ts)
         return LinearOperator(values=values, indptr=indptr, indices=indices, structure=ts,
                               problem=problem, bc=bc, batched=True)
 
@@ -360,53 +472,224 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
             rhs = -jax.vmap(lambda t: solver.residual(u0, t, traced_structure=ts),
                             in_axes=(front,))(tp_g)
         M = preconditioner(_operator(values, ts))
+        indptr, indices = pattern(ts)
         return batched_pcg(values, indptr, indices, rhs, M, tol=tol, atol=atol, maxiter=maxiter)
 
+    def _grouped(tp, N, u0, ts, rhs=None, reverse=False):
+        """The batch laid out in groups of ``share`` cases, ``chunk`` at a
+        time (padded): ``(G, xs, mean_of, solve_with, scatter)``. ``xs`` =
+        ``(leaves, valid, rhs)`` stacked by group; ``mean_of(leaves_g,
+        valid_g)`` accumulates a group's mean operator chunk by chunk;
+        ``solve_with(token, leaves_g, rhs_g)`` runs a group's CG with the
+        factorization ``token``; ``scatter`` maps the per-group outputs back
+        to case order."""
+        S = min(int(share or chunk or N), N)
+        C = min(int(chunk or S), S)
+        src, dst, valid = _share_layout(N, S, C)                          # (G, K, C) each
+        if reverse:
+            src, dst, valid = src[::-1], dst[::-1], valid[::-1]
+        leaves, treedef = jax.tree_util.tree_flatten(tp)
+        axes = _axis_leaves(front)
+        scanned = [jnp.asarray(leaf)[src] for leaf, ax in zip(leaves, axes) if ax is not None]
+        g_rhs = None if rhs is None else jnp.asarray(rhs)[src]
+        indptr, indices = pattern(ts)
+
+        def rebuild(group_leaves):
+            it = iter(group_leaves)
+            return jax.tree_util.tree_unflatten(
+                treedef, [next(it) if ax is not None else leaf for leaf, ax in zip(leaves, axes)])
+
+        def values_of(tp_c):
+            return jax.vmap(lambda t: solver.assemble(u0, t, traced_structure=ts).data,
+                            in_axes=(front,))(tp_c)
+
+        def mean_of(g_leaves, g_valid):
+            def acc(total, a):
+                c_leaves, c_valid = a
+                v = values_of(rebuild(c_leaves))
+                return total + jnp.sum(jnp.where(c_valid[:, None], v, 0.0), axis=0), None
+            total, _ = jax.lax.scan(acc, jnp.zeros(indices.shape[0], u0.dtype), (g_leaves, g_valid))
+            return total / jnp.maximum(jnp.sum(g_valid), 1)
+
+        def solve_with(token, g_leaves, g_rhs_):
+            M = preconditioner.apply(token)
+
+            def solve_chunk(a):
+                c_leaves, c_rhs = a
+                tp_c = rebuild(c_leaves)
+                b = c_rhs if c_rhs is not None else -jax.vmap(
+                    lambda t: solver.residual(u0, t, traced_structure=ts), in_axes=(front,))(tp_c)
+                return batched_pcg(values_of(tp_c), indptr, indices, b, M,
+                                   tol=tol, atol=atol, maxiter=maxiter)
+            return jax.lax.map(solve_chunk, (g_leaves, g_rhs_))
+
+        flat = jnp.asarray(dst).reshape(-1)                               # padding -> N, dropped
+
+        def scatter(out):                                                 # leaves (G, K, C, ...)
+            def one(o):
+                o = o.reshape((flat.shape[0],) + o.shape[3:])
+                return jnp.zeros((N,) + o.shape[1:], o.dtype).at[flat].set(o, mode="drop")
+            return jax.tree_util.tree_map(one, out)
+        return src.shape[0], (scanned, jnp.asarray(valid), g_rhs), mean_of, solve_with, scatter
+
+    def _solve_chained(tp, N, u0, ts, rhs=None, token=None):
+        """No factorizations given: each group's is made here, re-factorizing
+        ONE cuDSS entry from group to group. Returns ``(X, info, token)``;
+        ``token`` is the factorization of the last group processed. The
+        forward (``rhs`` None) runs the groups in order; the adjoint (``rhs``
+        given) runs them in reverse, starting with the forward's last group,
+        whose factorization ``token`` still holds -- so a single-group batch
+        factorizes once per forward + adjoint."""
+        G, (scanned, valid, g_rhs), mean_of, solve_with, scatter = _grouped(
+            tp, N, u0, ts, rhs, reverse=rhs is not None)
+        indptr, indices = pattern(ts)
+
+        def solve_group(token, g_leaves, g_rhs_):
+            out = solve_with(token, g_leaves, g_rhs_)
+            # The next group re-factorizes this very cuDSS entry: order that
+            # after every solve of this group.
+            return jax.lax.optimization_barrier((token, out))
+
+        def body(token, a):
+            g_leaves, g_valid, g_rhs_ = a
+            token = preconditioner.factor(mean_of(g_leaves, g_valid), indptr, indices, token)
+            return solve_group(token, g_leaves, g_rhs_)
+
+        head = lambda t: jax.tree_util.tree_map(lambda x: x[0], t)
+        tail = lambda t: jax.tree_util.tree_map(lambda x: x[1:], t)
+        if token is None:
+            token = preconditioner.factor(mean_of(head(scanned), valid[0]), indptr, indices)
+        token, out0 = solve_group(token, head(scanned), head(g_rhs))
+        if G > 1:
+            token, outs = jax.lax.scan(body, token, (tail(scanned), valid[1:], tail(g_rhs)))
+            out = jax.tree_util.tree_map(lambda a, b: jnp.concatenate([a[None], b]), out0, outs)
+        else:
+            out = jax.tree_util.tree_map(lambda a: a[None], out0)        # (G, K, C, ...)
+        X, info = scatter(out)
+        return X, info, token
+
+    def _factorize(tp, N, u0, ts):
+        """One factorization of the mean operator per group, stacked (one
+        cuDSS entry each, all kept): the ``factors`` a later solve reuses."""
+        G, (scanned, valid, _), mean_of, _, _ = _grouped(tp, N, u0, ts)
+        indptr, indices = pattern(ts)
+        return jax.lax.map(lambda a: preconditioner.factor(mean_of(*a), indptr, indices),
+                           (scanned, valid))
+
+    def _solve_factored(tp, N, u0, ts, factors, rhs=None):
+        """Solve with given per-group ``factors``: no mean, no factorization."""
+        G, (scanned, _, g_rhs), _, solve_with, scatter = _grouped(tp, N, u0, ts, rhs)
+        n_factors = jax.tree_util.tree_leaves(factors)[0].shape[0]
+        if n_factors != G:
+            raise ValueError(f"factors holds {n_factors} group factorizations; this batch "
+                             f"has {G} groups (N={N}, share={share}): call factorize again.")
+        out = jax.lax.map(lambda a: solve_with(*a), (factors, scanned, g_rhs))
+        return scatter(out)
+
     def _solve_batch(tp, N, u0, ts, rhs=None):
-        if chunk is None or chunk >= N:
+        group = chunk if share is None else share
+        if group is None or group >= N:
             return _solve_group(tp, u0, ts, rhs)
         if rhs is None:
-            return _chunked(lambda c: _solve_group(c, u0, ts, None), tp, front, N, chunk)
-        return _chunked(lambda c, r: _solve_group(c, u0, ts, r), tp, front, N, chunk, extra=rhs)
+            return _chunked(lambda c: _solve_group(c, u0, ts, None), tp, front, N, group)
+        return _chunked(lambda c, r: _solve_group(c, u0, ts, r), tp, front, N, group, extra=rhs)
 
     def _batch_size(tp):
         return jax.tree_util.tree_leaves(
             jax.tree_util.tree_map(lambda leaf, ax: None if ax is None else leaf.shape[0],
                                    tp, front, is_leaf=_is_axis_leaf))[0]
 
+    def _forward(tp, u0, ts, factors):
+        N = _batch_size(tp)
+        if factors is not None:
+            X, info = _solve_factored(tp, N, u0, ts, factors)
+            return X, info, factors
+        if chained:
+            return _solve_chained(tp, N, u0, ts)
+        X, info = _solve_batch(tp, N, u0, ts)
+        return X, info, None
+
     @jax.custom_vjp
-    def solve_lhs(tp, u0, ts):
-        X, info = _solve_batch(tp, _batch_size(tp), u0, ts)
+    def solve_lhs(tp, u0, ts, factors):
+        X, info, _ = _forward(tp, u0, ts, factors)
         return u0 + X, info
 
-    def fwd(tp, u0, ts):
-        out = solve_lhs(tp, u0, ts)
-        return out, (tp, out[0], u0, ts)
+    def fwd(tp, u0, ts, factors):
+        X, info, token = _forward(tp, u0, ts, factors)
+        out = (u0 + X, info)
+        return out, (tp, out[0], u0, ts, factors, token)
 
     def bwd(res, g):
-        tp, U, u0, ts = res
+        tp, U, u0, ts, factors, token = res
         gU, _ = g
+        N = gU.shape[0]
         # adjoint: K_i λ_i = v_i (symmetric operators), solved like the forward batch
-        lam, _ = _solve_batch(tp, gU.shape[0], u0, ts, rhs=gU)
-
-        def one(u_i, lam_i, tp_i):
-            _, f_vjp = jax.vjp(lambda t: solver.residual(u_i, t, traced_structure=ts), tp_i)
-            return jax.tree_util.tree_map(_safe_negate, f_vjp(lam_i)[0])
-        ct = jax.vmap(one, in_axes=(0, 0, front))(U, lam, tp)
-        ct = jax.tree_util.tree_map(
-            lambda c, ax: c if ax is not None else jnp.sum(c, axis=0), ct, front, is_leaf=_is_axis_leaf)
-        return ct, None, None
+        if factors is not None:
+            lam, _ = _solve_factored(tp, N, u0, ts, factors, rhs=gU)
+        elif chained:
+            lam, _, _ = _solve_chained(tp, N, u0, ts, rhs=gU, token=token)
+        else:
+            lam, _ = _solve_batch(tp, N, u0, ts, rhs=gU)
+        return _residual_cotangents(solver, U, lam, tp, ts, front, chunk), None, None, None
 
     solve_lhs.defvjp(fwd, bwd)
 
-    def solve(tp, u0, ts):
+    def solve(tp, u0, ts, factors=None):
+        u0 = u0_default if u0 is None else u0
+        ts = ts0 if ts is None else ts
+        if factors is not None and not chained:
+            raise ValueError("factors= needs a preconditioner with token access (fe.shared_factor()).")
+        tp, _, _ = _to_front(tp, axes_tree)
+        return solve_lhs(tp, u0, ts, factors)
+
+    def factorize(tp, u0, ts):
         u0 = u0_default if u0 is None else u0
         ts = ts0 if ts is None else ts
         tp, _, _ = _to_front(tp, axes_tree)
-        return solve_lhs(tp, u0, ts)
+        return _factorize(tp, _batch_size(tp), u0, ts)
 
     return BatchedSolver(solve, solver=solver, kind="lhs", in_axes=in_axes, options=options,
-                         preconditioner=preconditioner, chunk=chunk, return_info=return_info)
+                         preconditioner=preconditioner, chunk=chunk, share=share,
+                         return_info=return_info, factorize_fn=factorize if chained else None)
+
+
+def _share_layout(N, share, chunk):
+    """Index layout of ``share``-case groups processed ``chunk`` cases at a
+    time: ``(src, dst, valid)``, each ``(G, K, C)`` with ``G`` groups of ``K``
+    chunks of ``C = chunk``. ``src`` gathers the cases (padding repeats case
+    ``N - 1``), ``valid`` marks the real ones (padding is kept out of the
+    group means), ``dst`` scatters results back (padding goes to ``N``, out of
+    bounds, and is dropped)."""
+    G, K = -(-N // share), -(-share // chunk)
+    j = onp.arange(K * chunk)
+    case = onp.arange(G)[:, None] * share + j[None, :]
+    valid = (j[None, :] < share) & (case < N)
+    src = onp.where(valid, case, N - 1).reshape(G, K, chunk)
+    dst = onp.where(valid, case, N).reshape(G, K, chunk)
+    return src, dst, valid.reshape(G, K, chunk)
+
+
+def _residual_cotangents(solver, U, lam, tp, ts, front, chunk):
+    """``-(dr/dtp)^T λ`` of every case: the traced_params cotangents of the
+    batched solve, from the solutions ``U`` and adjoints ``lam`` (both
+    ``(N, n)``). Computed in groups of ``chunk`` cases like the solves: one
+    case's residual VJP carries element-sized intermediates, so a vmap over
+    the whole batch would hold N of them at once (17 GiB for 100 cases at
+    500k DOF). Unbatched leaves get the sum over the cases."""
+    def one(u_i, lam_i, tp_i):
+        _, f_vjp = jax.vjp(lambda t: solver.residual(u_i, t, traced_structure=ts), tp_i)
+        return jax.tree_util.tree_map(_safe_negate, f_vjp(lam_i)[0])
+
+    def group(tp_g, U_g, lam_g):
+        return jax.vmap(one, in_axes=(0, 0, front))(U_g, lam_g, tp_g)
+    N = U.shape[0]
+    if chunk is None or chunk >= N:
+        ct = group(tp, U, lam)
+    else:
+        UL = jnp.concatenate([U[..., None], lam[..., None]], axis=-1)   # chunk both together
+        ct = _chunked(lambda c, ul: group(c, ul[..., 0], ul[..., 1]), tp, front, N, chunk, extra=UL)
+    return jax.tree_util.tree_map(
+        lambda c, ax: c if ax is not None else jnp.sum(c, axis=0), ct, front, is_leaf=_is_axis_leaf)
 
 
 def _chunked(group_fn, tp, front, N, chunk, extra=None):
@@ -485,12 +768,12 @@ def _newton_vmap(solver, in_axes, axes_tree, options, preconditioner, chunk, ret
     if not callable(preconditioner):
         raise TypeError("preconditioner must be callable, preconditioner(op) -> M.")
 
-    K0 = solver.assemble(u0_default, solver.sample_params)
-    indptr, indices = K0.indptr, K0.indices
+    pattern = _CsrPattern(solver, u0_default, solver.sample_params)
     tol, atol, maxiter = options.tol, options.atol, options.maxiter
     front = jax.tree_util.tree_map(lambda ax: None if ax is None else 0, axes_tree, is_leaf=_is_axis_leaf)
 
     def _operator(values, ts):
+        indptr, indices = pattern(ts)
         return LinearOperator(values=values, indptr=indptr, indices=indices, structure=ts,
                               problem=problem, bc=bc, batched=True)
 
@@ -507,6 +790,7 @@ def _newton_vmap(solver, in_axes, axes_tree, options, preconditioner, chunk, ret
 
     def _batched_solve(values, rhs, ts):
         M = preconditioner(_operator(values, ts))
+        indptr, indices = pattern(ts)
         return batched_pcg(values, indptr, indices, rhs, M, tol=tol, atol=atol, maxiter=maxiter)
 
     def _newton_group(tp_g, U0, ts):
@@ -583,13 +867,7 @@ def _newton_vmap(solver, in_axes, axes_tree, options, preconditioner, chunk, ret
         gU, _ = g
         lam = _adjoint(tp, U, gU, ts)
 
-        def one(u_i, lam_i, tp_i):
-            _, f_vjp = jax.vjp(lambda t: solver.residual(u_i, t, traced_structure=ts), tp_i)
-            return jax.tree_util.tree_map(_safe_negate, f_vjp(lam_i)[0])
-        ct = jax.vmap(one, in_axes=(0, 0, front))(U, lam, tp)
-        ct = jax.tree_util.tree_map(
-            lambda c, ax: c if ax is not None else jnp.sum(c, axis=0), ct, front, is_leaf=_is_axis_leaf)
-        return ct, None, None
+        return _residual_cotangents(solver, U, lam, tp, ts, front, chunk), None, None
 
     solve_newton.defvjp(fwd, bwd)
 

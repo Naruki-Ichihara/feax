@@ -264,7 +264,17 @@ def shared_factor(matrix_type: str = "spd", *, device_id: int = 0) -> Callable:
 
     Known as a mean-based preconditioner (stochastic FEM) / approximate
     reanalysis; it is only as good as the spread of the batch — watch the
-    iteration counts :func:`feax.vmap` returns.
+    iteration counts :func:`feax.vmap` returns. In :func:`feax.vmap` the mean
+    is accumulated chunk by chunk (``chunk=``), so one factorization can serve
+    a batch whose operators do not fit in memory together (``share=``), and
+    the groups of a batch and the adjoint solve re-factorize one cuDSS entry
+    in place: one symbolic analysis and one factorization's memory per
+    evaluation, and no factorization at all in the adjoint of a single group.
+
+    Memory: spineax keeps up to ``SPINEAX_FACTOR_CACHE`` entries (default 8)
+    and cannot free one inside ``jit``, so each evaluation's entry stays
+    resident until a later one evicts it. On a large mesh set
+    ``SPINEAX_FACTOR_CACHE=1`` (before spineax is imported) to keep exactly one.
 
     Parameters
     ----------
@@ -297,7 +307,30 @@ def shared_factor(matrix_type: str = "spd", *, device_id: int = 0) -> Callable:
             return jax.vmap(solve_one)
         return solve_one
 
+    # Token-level access, for feax.vmap: M depends on the operators only
+    # through their mean, so the batch may accumulate the mean chunk by chunk,
+    # factor(mean, indptr, indices) it, and apply(token) the factorization to
+    # every chunk. Passing the previous token re-factorizes in place
+    # (refactorize: same symbolic analysis, same memory), so a sequence of
+    # groups -- and the adjoint solve after the forward -- reuses one cuDSS
+    # entry instead of analyzing and allocating a new one each time.
+    def factor(values, indptr, indices, token=None):
+        try:
+            from ._cudss_compat import factorize, refactorize
+        except ImportError as e:  # pragma: no cover - optional dependency
+            raise ImportError("shared_factor() needs cuDSS (the spineax package).") from e
+        if token is None:
+            return factorize(values, indptr, indices,
+                             device_id=device_id, mtype_id=mtype_id, mview_id=0)
+        return refactorize(token, values)
+
+    def apply(token):
+        from ._cudss_compat import solve_with
+        return jax.vmap(lambda r: solve_with(token, r, device_id=device_id))
+
     preconditioner.__name__ = "shared_factor"
+    preconditioner.factor = factor
+    preconditioner.apply = apply
     return preconditioner
 
 

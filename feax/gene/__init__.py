@@ -63,6 +63,7 @@ from .length_scale import (
     radius_for_minimum_width,
 )
 from .filters import (
+    DensityFilter,
     create_density_filter,
     create_helmholtz_filter,
     density_filter,
@@ -84,6 +85,7 @@ __all__ = [
     'create_helmholtz_filter',
     'helmholtz_filter',
     'create_density_filter',
+    'DensityFilter',
     'density_filter',
 
     # Projection and threshold

@@ -187,8 +187,12 @@ def helmholtz_filter(rho_source, mesh, radius, P=None, solver_options=None):
 
 
 def _compute_density_filter_weights_sparse(points, radius: float,
-                                           weight_type: str = "cone", batch_size: int = 500):
-    """Compute sparse filter weight matrix for density filtering (memory-efficient).
+                                           weight_type: str = "cone"):
+    """Compute sparse filter weight matrix for density filtering.
+
+    The neighbours within ``radius`` come from a k-d tree, so the cost is
+    O(N k) for N points with k neighbours each (an all-pairs distance pass is
+    O(N^2): minutes at 10^5 nodes).
 
     Args:
         points: Node coordinates (num_nodes, dim) as JAX or numpy array
@@ -197,69 +201,81 @@ def _compute_density_filter_weights_sparse(points, radius: float,
             - "cone": Linear decay w = max(0, r - d) (default, most common in topology optimization)
             - "gaussian": Gaussian decay w = exp(-(d/r)^2)
             - "constant": Constant weight within radius
-        batch_size: Number of nodes to process at once (smaller = less memory, slower)
 
     Returns:
-        Sparse weight matrix in BCOO format and row sums for normalization
+        Sparse weight matrix in BCOO format (row-major, every pair with
+        d <= radius, self included) and row sums for normalization
     """
     import numpy as onp
+    from scipy.spatial import cKDTree
 
-    # Convert to numpy for preprocessing
-    points_np = onp.array(points) if hasattr(points, 'shape') else points
+    if weight_type not in ("cone", "gaussian", "constant"):
+        raise ValueError(f"Unknown weight_type: {weight_type}")
+    points_np = onp.asarray(points, dtype=float)
     num_nodes = points_np.shape[0]
 
-    # Build sparse matrix in COO format using batch processing
-    rows = []
-    cols = []
-    data = []
+    tree = cKDTree(points_np)
+    pairs = tree.sparse_distance_matrix(tree, radius, output_type="ndarray")
+    order = onp.lexsort((pairs["j"], pairs["i"]))
+    rows = pairs["i"][order].astype(onp.int32)
+    cols = pairs["j"][order].astype(onp.int32)
+    dists = pairs["v"][order]
 
-    # Process nodes in batches to avoid memory issues
-    for start_idx in range(0, num_nodes, batch_size):
-        end_idx = min(start_idx + batch_size, num_nodes)
-        batch_points = points_np[start_idx:end_idx]
+    if weight_type == "cone":
+        data = onp.maximum(0.0, radius - dists)
+    elif weight_type == "gaussian":
+        data = onp.exp(-(dists / radius) ** 2)
+    else:
+        data = onp.ones_like(dists)
 
-        # Compute distances from batch to all nodes
-        # (batch_size, 1, dim) - (1, num_nodes, dim) -> (batch_size, num_nodes, dim)
-        diff = batch_points[:, onp.newaxis, :] - points_np[onp.newaxis, :, :]
-        distances = onp.linalg.norm(diff, axis=2)
-
-        # Find neighbors within radius and compute weights
-        for local_i, global_i in enumerate(range(start_idx, end_idx)):
-            dists = distances[local_i]
-            neighbors = onp.where(dists <= radius)[0]
-
-            if len(neighbors) > 0:
-                neighbor_dists = dists[neighbors]
-
-                # Compute raw weights based on distance
-                if weight_type == "cone":
-                    weights = onp.maximum(0.0, radius - neighbor_dists)
-                elif weight_type == "gaussian":
-                    weights = onp.exp(-(neighbor_dists / radius) ** 2)
-                elif weight_type == "constant":
-                    weights = onp.ones_like(neighbor_dists)
-                else:
-                    raise ValueError(f"Unknown weight_type: {weight_type}")
-
-                # Store COO entries
-                rows.extend([global_i] * len(neighbors))
-                cols.extend(neighbors.tolist())
-                data.extend(weights.tolist())
-
-    # Convert to JAX BCOO sparse matrix
-    rows = onp.array(rows, dtype=onp.int32)
-    cols = onp.array(cols, dtype=onp.int32)
-    data = onp.array(data)
     indices = onp.stack([rows, cols], axis=1)
-
-    # Create BCOO matrix
     sparse_matrix = jsparse.BCOO((np.array(data), np.array(indices)),
                                  shape=(num_nodes, num_nodes))
-
-    # Compute row sums for normalization and convert to dense array
-    row_sums = np.array(sparse_matrix.sum(axis=1).todense())
+    row_sums = np.asarray(onp.bincount(rows, weights=data, minlength=num_nodes))
 
     return sparse_matrix, row_sums
+
+
+@jax.tree_util.register_pytree_node_class
+class DensityFilter:
+    """The filter :func:`create_density_filter` returns: ``filt(rho)``.
+
+    A pytree whose leaves are the sparse weights, so it can be an *argument*
+    of a jitted function. Closed over instead, the weights (~10^7 entries at
+    10^5 nodes) are baked into the executable as constants, which makes XLA
+    compilation slow at scale; pass the filter in::
+
+        @jax.jit
+        def objective(X, filt):
+            rho = filt(X)
+            ...
+    """
+
+    def __init__(self, weights, row_sums):
+        self.weights = weights
+        self.row_sums = row_sums
+
+    def __call__(self, rho):
+        """Apply density filter to node-based design variables.
+
+        Args:
+            rho: Design variables at nodes (num_nodes,), or a batch (B, num_nodes)
+
+        Returns:
+            Filtered design variables, same shape
+        """
+        if rho.ndim == 2:
+            return jax.vmap(self)(rho)
+        # Sparse matrix-vector multiplication for weighted averaging,
+        # normalized by row sums
+        return (self.weights @ rho) / (self.row_sums + 1e-12)
+
+    def tree_flatten(self):
+        return (self.weights, self.row_sums), None
+
+    @classmethod
+    def tree_unflatten(cls, _aux, children):
+        return cls(*children)
 
 
 def create_density_filter(mesh, radius: float, weight_type: str = "cone",
@@ -287,8 +303,11 @@ def create_density_filter(mesh, radius: float, weight_type: str = "cone",
             needed coordinates.
 
     Returns:
-        filter_fn: A pure-JAX function (rho) -> rho_filtered; compose it
-            under the caller's ``jax.jit`` (feax.gene.optimizer does this)
+        filter_fn: A :class:`DensityFilter`, pure-JAX (rho) -> rho_filtered;
+            compose it under the caller's ``jax.jit`` (feax.gene.optimizer
+            does this). It is a pytree: on a large mesh pass it to the jitted
+            function as an argument rather than closing over it, so the
+            weights are not compiled in as constants.
                   Input: (num_nodes,) node-based density field, or a batch
                          of them, (B, num_nodes) (e.g. the designs of a
                          ``feax.vmap`` batch)
@@ -311,7 +330,8 @@ def create_density_filter(mesh, radius: float, weight_type: str = "cone",
     Notes:
         - This filter is linear and does not require solving a PDE
         - The cone weight function (default) is most common in literature
-        - For large meshes, pre-computation of weights may require significant memory
+        - The weights hold every neighbour pair within the radius: ~(4/3 pi (r/h)^3)
+          entries per node in 3-D
         - The filter preserves the integral of the density field (mass conservation)
     """
     if points is None:
@@ -319,25 +339,7 @@ def create_density_filter(mesh, radius: float, weight_type: str = "cone",
 
     # Pre-compute sparse filter weight matrix (done once at filter creation)
     weight_matrix, row_sums = _compute_density_filter_weights_sparse(points, radius, weight_type)
-
-    def filter_fn(rho: np.ndarray) -> np.ndarray:
-        """Apply density filter to node-based design variables.
-
-        Args:
-            rho: Design variables at nodes (num_nodes,), or a batch (B, num_nodes)
-
-        Returns:
-            Filtered design variables, same shape
-        """
-        if rho.ndim == 2:
-            return jax.vmap(filter_fn)(rho)
-        # Sparse matrix-vector multiplication for weighted averaging
-        rho_weighted = weight_matrix @ rho
-        # Normalize by row sums
-        rho_filtered = rho_weighted / (row_sums + 1e-12)
-        return rho_filtered
-
-    return filter_fn
+    return DensityFilter(weight_matrix, row_sums)
 
 
 def density_filter(rho_source, mesh, radius: float, weight_type: str = "cone") -> np.ndarray:
