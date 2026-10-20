@@ -40,6 +40,7 @@ from .solvers.options import (
     resolve_iterative_solver,
 )
 from .solvers.reduced import create_reduced_solver
+from .solvers.preconditioners import AMGPreconditioner
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +61,12 @@ class Solver:
     def __init__(self, fn, *, problem, bc, options, adjoint_options, linear,
                  symmetric_elimination, sample_params=None, traced_structure=None,
                  preconditioner=None, adjoint_preconditioner=None, projection=None,
-                 return_solution=True):
+                 return_solution=True, newton_options=None, traced_newton=False):
         self._fn = fn
+        self.newton_options = newton_options
+        # True when the Newton iteration is the standard traced loop (no extra
+        # residual, no host-side AMG rebuild): the path feax.vmap can batch.
+        self.traced_newton = traced_newton
         self.problem = problem
         self.bc = bc
         self.options = options
@@ -327,7 +332,11 @@ def create_solver(
             symmetric_elimination=symmetric_elimination, sample_params=traced_params,
             traced_structure=traced_structure, preconditioner=preconditioner,
             adjoint_preconditioner=adjoint_preconditioner, projection=projection,
-            return_solution=return_solution)
+            return_solution=return_solution,
+            newton_options=newton_options if newton_options is not None else NewtonOptions(),
+            traced_newton=(not linear and projection is None and extra_residual_fn is None
+                           and not (isinstance(preconditioner, AMGPreconditioner)
+                                    and preconditioner.rebuild_every != 0)))
 
     # SolverOptions is now deprecated
     if isinstance(linear_options, SolverOptions) or isinstance(adjoint_linear_options, SolverOptions):

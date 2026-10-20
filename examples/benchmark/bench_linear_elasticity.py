@@ -67,14 +67,17 @@ def parse_args(argv=None):
                    help="Fixed physical cantilever dimensions (scale-invariant).")
     p.add_argument("--solver", choices=["krylov", "direct", "amg"], default="krylov")
     p.add_argument("--modes", nargs="+",
-                   choices=["eager", "jit", "grad", "grad-eager", "vmap-lhs", "vmap-rhs"],
+                   choices=["eager", "jit", "grad", "grad-eager", "vmap-lhs", "vmap-rhs",
+                            "vmap-lhs-shared"],
                    default=["eager", "jit", "grad", "vmap-lhs", "vmap-rhs"],
                    help="grad: jit(value_and_grad) of 0.5*|u|^2 w.r.t. the nodal E "
                         "field (forward + adjoint solve). "
-                        "vmap-lhs: batch the material E (left-hand-side matrix A "
-                        "varies -> B factorizations). vmap-rhs: batch the "
-                        "load/traction (right-hand side b varies, A fixed -> "
-                        "factor once, multi-RHS solve).")
+                        "vmap-lhs: jax.vmap over the material E (left-hand-side matrix A "
+                        "varies -> B factorizations), the reference. vmap-rhs: fe.vmap "
+                        "over the load/traction (right-hand side b varies, A fixed -> "
+                        "factor once, multi-RHS solve). vmap-lhs-shared: fe.vmap over "
+                        "the material E (batched CG preconditioned by one shared "
+                        "factorization, fe.shared_factor).")
     p.add_argument("--batch", type=int, default=8, help="vmap batch size.")
     p.add_argument("--repeats", type=int, default=5, help="Timed repeats per point.")
     p.add_argument("--warmup", type=int, default=2, help="Untimed warmup runs.")
@@ -423,34 +426,56 @@ def main(argv=None):
         #           element -> B distinct cuDSS factorizations). vmap-rhs: batch
         #           the load/traction (right-hand side b varies, A FIXED -> ONE
         #           factorization + a single multi-RHS solve, factor-once/solve-many).
-        vmap_kinds = []
-        if "vmap-lhs" in args.modes:
-            vmap_kinds.append("lhs")
-        if "vmap-rhs" in args.modes:
-            vmap_kinds.append("rhs")
+        vmap_kinds = [k for k in ("lhs", "rhs", "lhs-shared") if f"vmap-{k}" in args.modes]
         for kind in vmap_kinds:
             label = f"vmap-{kind}"
             try:
                 B = args.batch
                 scales = jnp.linspace(0.8, 1.2, B)
+                traction = surf[0][0]                              # the load leaf
                 if kind == "lhs":
+                    # jax.vmap over the material: A varies per case, so a direct
+                    # solver factorizes B times (the reference the shared mode beats).
                     E_batch = E[None, :] * scales[:, None]         # (B, num_nodes)
 
                     def solve_one(E_field, s, p):
                         tpi = fe.TracedParams(volume_vars=(E_field,), surface_vars=surf)
                         return solver(tpi, initial, traced_structure=s, preconditioner=p)
+                    vfn = jax.jit(jax.vmap(solve_one, in_axes=(0, None, None)))
                     batched_arg = E_batch
-                else:                                              # kind == "rhs"
-                    traction = surf[0][0]                          # the load leaf
+                elif kind == "rhs":
+                    # fe.vmap over the load: detected as an rhs batch (A fixed) ->
+                    # jax.vmap of the solver, factor once / multi-RHS solve for direct.
                     tr_batch = traction[None] * scales.reshape((B,) + (1,) * traction.ndim)
+                    rhs_batched = fe.vmap(
+                        solver, in_axes=fe.TracedParams(volume_vars=(None,), surface_vars=[(0,)]))
+                    assert rhs_batched.kind == "rhs", rhs_batched
 
-                    def solve_one(tr_field, s, p):
-                        tpi = fe.TracedParams(volume_vars=(E,),
-                                              surface_vars=[(tr_field,)])
-                        return solver(tpi, initial, traced_structure=s, preconditioner=p)
+                    def vfn_rhs(tr_fields, s, p):
+                        tpi = fe.TracedParams(volume_vars=(E,), surface_vars=[(tr_fields,)])
+                        # P (AMG) is bound at creation for the batched solver, so the
+                        # per-call override is only used by the other modes.
+                        return rhs_batched(tpi, initial, s)
+                    vfn = jax.jit(vfn_rhs)
                     batched_arg = tr_batch
+                else:                                              # kind == "lhs-shared"
+                    # fe.vmap over the material: detected as an lhs batch -> batched
+                    # CG over the B assembled matrices, preconditioned by ONE shared
+                    # factorization of their mean (fe.shared_factor), for any solver.
+                    E_batch = E[None, :] * scales[:, None]
+                    lhs_batched = fe.vmap(
+                        solver, in_axes=fe.TracedParams(volume_vars=(0,), surface_vars=[(None,)]),
+                        options=fe.KrylovSolverOptions(solver="cg", tol=args.tol,
+                                                       atol=args.tol * 1e-3, maxiter=args.maxiter),
+                        preconditioner=fe.shared_factor() if fe.solvers.options.has_cudss() else fe.jacobi())
+                    assert lhs_batched.kind == "lhs", lhs_batched
 
-                vfn = jax.jit(jax.vmap(solve_one, in_axes=(0, None, None)))
+                    def vfn_lhs(E_fields, s, p):
+                        tpi = fe.TracedParams(volume_vars=(E_fields,), surface_vars=surf)
+                        return lhs_batched(tpi, initial, s)
+                    vfn = jax.jit(vfn_lhs)
+                    batched_arg = E_batch
+
                 compile_s, vrun = aot(vfn, batched_arg, ts, P)
                 record(label, dof, res, B, compile_s,
                        timed(lambda: vrun(batched_arg, ts, P), block, args.warmup, args.repeats))

@@ -19,8 +19,9 @@ downward point-like load. (Compliance is unchanged by ``t -> -t``, so half a tur
 covers every direction.)
 
 Why it is cheap: the stiffness matrix depends on the design only, not on the
-load. The K forward solves run as ``jax.vmap`` over the load (vmap-rhs), so the
-direct solver assembles and factorizes ONCE per design and back-substitutes K
+load. The K forward solves run as ``fe.vmap`` of the solver over the load: it
+detects an rhs batch (the loads do not change the operator), so the direct
+solver assembles and factorizes ONCE per design and back-substitutes K
 right-hand sides. Compliance is self-adjoint, so the gradient needs no adjoint
 solves: ``dc_k/drho = -u_k^T (dK/drho) u_k``, summed over the cases in chunks of
 ``--grad-chunk`` (autodiff through the solver would instead batch that
@@ -192,6 +193,11 @@ def main(argv=None):
         linear=True, traced_params=tparams(rho_vf, 0 * unit, 0 * unit, unit),
         traced_structure=ts, return_solution=False)
     u0 = fe.zero_like_initial_guess(problem, bc)
+    # fe.vmap over the three traction components (rho shared): detected as an
+    # rhs batch -> jax.vmap of the direct solver, factor once / solve K RHS.
+    load_batched = fe.vmap(
+        solver, in_axes=fe.TracedParams(volume_vars=(None,), surface_vars=[(0, 0, 0)]))
+    assert load_batched.kind == "rhs", load_batched
 
     # Load vectors F_j = -residual(u = 0) for the surface-map value e_j (rows of
     # Dirichlet DOFs are 0 there), i.e. for the applied traction -e_j. The load
@@ -223,11 +229,10 @@ def main(argv=None):
         return gene.heaviside_projection(density_filter(x, d), beta=beta)
 
     def solve_rho(rho, d):
-        """Displacements of all K load cases, (K, ndof): ONE vmap over the load,
-        so the direct solver factorizes once and back-substitutes K RHS."""
+        """Displacements of all K load cases, (K, ndof): fe.vmap over the load
+        (rhs batch), so the direct solver factorizes once and back-substitutes K RHS."""
         tx, ty, tz = d["loads"]
-        one = lambda a, b, c: solver(tparams(rho, a, b, c), d["u0"], traced_structure=d["ts"])
-        return jax.vmap(one)(tx, ty, tz)
+        return load_batched(tparams(rho, tx, ty, tz), d["u0"], d["ts"])
 
     def solve_cases(x, d):
         return solve_rho(project(x, d), d)

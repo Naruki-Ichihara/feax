@@ -23,6 +23,17 @@ class BatchedSolveInfo(NamedTuple):
     residual: jnp.ndarray       # (N,) float: final relative residual ||r|| / ||b||
 
 
+class BatchedNewtonInfo(NamedTuple):
+    """Per-case diagnostics of a batched Newton solve (:func:`feax.vmap` of a
+    Newton solver). Every case's final iterate is returned whether or not it
+    converged; these flags say which ones did."""
+    iterations: jnp.ndarray          # (N,) int32: Newton iterations taken by each case
+    converged: jnp.ndarray           # (N,) bool: residual reached tol / rel_tol
+    line_search_failed: jnp.ndarray  # (N,) bool: stopped because the Armijo search found no step
+    cg_iterations: jnp.ndarray       # (N,) int32: CG iterations summed over the Newton steps
+    residual: jnp.ndarray            # (N,) float: final ||r|| / ||r_0||
+
+
 def batched_spmv(values, indptr, indices):
     """``spmv(V, X) -> (N, n)`` for CSR values ``V`` of shape ``(N, nnz)`` (or
     ``(nnz,)``) on the pattern ``(indptr, indices)`` and vectors ``X`` ``(N, n)``."""
@@ -105,4 +116,4 @@ def batched_pcg(values, indptr, indices, b, M: Optional[Callable] = None, *,
     return X, BatchedSolveInfo(iterations=its, converged=done, residual=rel)
 
 
-__all__ = ["BatchedSolveInfo", "batched_pcg", "batched_spmv"]
+__all__ = ["BatchedNewtonInfo", "BatchedSolveInfo", "batched_pcg", "batched_spmv"]

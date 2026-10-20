@@ -4,9 +4,9 @@
 |---|---|
 | `bench_linear_elasticity.py` | One linear solve (and its gradient) per call, across solvers and execution modes |
 | `bench_topopt_gcmma.py` | A whole topology optimization driven by the in-house GCMMA |
-| `bench_topopt_multiload.py` | Topology optimization over many load cases, all solved per design with one factorization (direct, `vmap` over the load) |
-| `bench_shared_factor_pcg.py` | Many *different* stiffness matrices solved with one shared factorization (batched CG preconditioned by the factors of the mean matrix — the kernel behind `fe.vmap` / `fe.shared_factor`, hand-rolled) |
-| `bench_topopt_batched_shared.py` | B independent topology optimizations (one design per load case) with one shared factorization per evaluation |
+| `bench_topopt_multiload.py` | Topology optimization over many load cases, all solved per design with one factorization (direct, `fe.vmap` over the load: an rhs batch) |
+| `bench_shared_factor_pcg.py` | Many *different* stiffness matrices solved with one shared factorization: `fe.vmap` of the solver (lhs batch) with `fe.shared_factor` — batched CG preconditioned by the factors of the mean matrix |
+| `bench_topopt_batched_shared.py` | B independent topology optimizations (one design per load case) solved with `fe.vmap`: one shared factorization per evaluation (`shared`) vs. one factorization per case (`direct`) |
 | `bench_topopt_batched_oc.py` | The same at scale (100 designs at 500k DOF): the solves go through `fe.vmap` with `fe.shared_factor` (one factorization per `chunk`), OC updates, timing CSVs |
 
 ## `bench_linear_elasticity.py`
@@ -56,7 +56,7 @@ Key arguments (`--help` for the full list):
 | `--dofs N ...` | Target DOF counts; the mesh is refined to the closest achievable count. Default `20000 60000 150000 300000`; `run_guarded.sh` passes its own sweep. |
 | `--dims LX LY LZ` | Fixed physical cantilever dimensions (scale-invariant). |
 | `--solver` | `krylov` (matrix-free CG with `fe.jacobi()`, memory-lean — default), `direct` (cuDSS / host sparse), `amg` (CG preconditioned by `fe.amg(...)` with the rigid-body near-null-space). |
-| `--modes` | Subset of `eager jit grad vmap-lhs vmap-rhs` (default: all). |
+| `--modes` | Subset of `eager jit grad vmap-lhs vmap-rhs vmap-lhs-shared` (default: the first five). |
 | `--batch` | `vmap` batch size (independent cases). |
 | `--repeats` / `--warmup` | Timed repeats / untimed warmups per point. |
 | `--tol` / `--maxiter` | Krylov convergence controls. |
@@ -71,8 +71,9 @@ Key arguments (`--help` for the full list):
 | `eager` | `solver(tp, u0, traced_structure=ts)` op-by-op | no compile |
 | `jit` | `jax.jit` of the same call | |
 | `grad` | `jax.jit(jax.value_and_grad(J))`, `J = ½‖u‖²`, w.r.t. the nodal Young's modulus field | forward + adjoint solve; `grad / jit` at one DOF is the adjoint overhead |
-| `vmap-lhs` | `jax.jit(jax.vmap(...))` over the **material** `E` | `A` varies per case → `direct` factorizes `B` times |
-| `vmap-rhs` | the same over the **load** (traction) | `A` fixed → `direct` factors once and multi-RHS solves (`reuse_factorization=True`); iterative solvers run per-RHS iterations, kept for parity |
+| `vmap-lhs` | `jax.jit(jax.vmap(...))` over the **material** `E` | `A` varies per case → `direct` factorizes `B` times (the reference) |
+| `vmap-rhs` | `fe.vmap(solver)` over the **load** (traction) | detected as an rhs batch → `jax.vmap` of the solver: `direct` factors once and multi-RHS solves (`reuse_factorization=True`); iterative solvers run per-RHS iterations, kept for parity |
+| `vmap-lhs-shared` | `fe.vmap(solver)` over the **material** `E` (not in the default set) | detected as an lhs batch → batched CG over the `B` assembled matrices, preconditioned by **one** shared factorization of their mean (`fe.shared_factor`), for any `--solver` |
 
 All five modes apply to all three solvers. `amg` is a matrix-free Krylov solve
 (`KrylovSolverOptions(solver="cg")`) preconditioned by a fixed V-cycle: the
@@ -214,13 +215,15 @@ python bench_shared_factor_pcg.py                         # 100k / 254k / 500k D
 python bench_shared_factor_pcg.py --dofs 500000 --batch 100 --case-chunk 10
 ```
 
-`--case-chunk C` assembles and solves the cases in groups of `C`, one after
-another, all with the same factorization, so only one group of `K_i` is stored.
-
-The script drives the cuDSS factorization and the batched CG by hand (it predates
-the public API); the same solve is what `fe.vmap(solver)` does for a batch that
-changes the matrix, with `fe.shared_factor()` as its default preconditioner and
-`chunk=` in place of `--case-chunk` — see `bench_topopt_batched_oc.py`.
+The solve is `fe.vmap(solver, ...)` with `preconditioner=fe.shared_factor()`
+(`--precond jacobi|none` swaps it for `fe.jacobi()` / no preconditioner):
+`fe.vmap` detects that the modulus field changes the matrix (an lhs batch),
+assembles the `B` matrices on their shared pattern and runs batched CG with the
+chosen preconditioner, returning the per-case iteration counts. `--case-chunk C`
+is `chunk=C`: the cases are solved in groups of `C`, one after another, with
+one factorization of the group mean per group, so only one group of `K_i` is
+stored. The CSV splits the wall time of the `fe.vmap` call into its assembly
+and factorization parts (timed on their own) and the CG remainder.
 
 On A100 with `sigma = 0.3` CG needs ~27 iterations regardless of size, with a
 relative error ~1e-12 against a direct solve; only one factorization is ever
@@ -249,8 +252,10 @@ The preconditioner degrades as the designs diverge into different
 black-and-white topologies: at 100k DOF, B = 10, CG grows from tens to ~540
 iterations per solve by iteration 20, yet the shared mode still ran at 4.7 s
 per evaluation of all 10 cases.
-Like `bench_shared_factor_pcg.py` this script calls the cuDSS kernels directly;
-`bench_topopt_batched_oc.py` is the same optimization written on `fe.vmap`.
+Both modes are `fe.vmap` of the one direct solver over `(E_i, loads_i)`:
+`shared` with batched CG and `fe.shared_factor()`, `direct` with
+`options=DirectSolverOptions(), chunk=1` (one factorization at a time).
+`bench_topopt_batched_oc.py` is the same optimization at scale.
 
 ## `bench_topopt_batched_oc.py`
 
