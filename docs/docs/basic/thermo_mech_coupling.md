@@ -60,7 +60,7 @@ rho = flat.graph.create_lattice_density_field_nodal(
 ```
 
 :::note
-The void floor `RHO_VOID = 1e-2` (with `PENAL = 3` giving a $10^{-6}$ stiffness contrast) keeps the operators well-conditioned. Pairing the CG solver with `use_jacobi_preconditioner=True` handles the resulting diagonal scaling.
+The void floor `RHO_VOID = 1e-2` (with `PENAL = 3` giving a $10^{-6}$ stiffness contrast) keeps the operators well-conditioned. Pairing the CG solver with `preconditioner=fe.jacobi()` handles the resulting diagonal scaling (the Jacobi diagonal is assembled from each solve's operator, so it follows the SIMP contrast).
 :::
 
 ## Step 1: Thermal Conduction
@@ -82,8 +82,8 @@ bc_th = fe.DirichletBCConfig([
 
 solve_T = fe.create_solver(
     thermal, bc_th,
-    solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-10, atol=1e-12,
-                                          use_jacobi_preconditioner=True),
+    solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-10, atol=1e-12),
+    preconditioner=fe.jacobi(),
     linear=True)
 sol_T = solve_T(fe.TracedParams(volume_vars=(rho,)),
                 fe.zero_like_initial_guess(thermal, bc_th))
@@ -122,8 +122,8 @@ bc_me = fe.DirichletBCConfig([
 tp_me = fe.TracedParams(volume_vars=(rho, T_nodes))   # the coupling
 sol_u = fe.create_solver(
     mech, bc_me,
-    solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-10, atol=1e-12,
-                                          use_jacobi_preconditioner=True),
+    solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-10, atol=1e-12),
+    preconditioner=fe.jacobi(),
     linear=True)(tp_me, fe.zero_like_initial_guess(mech, bc_me))
 ```
 

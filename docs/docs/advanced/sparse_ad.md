@@ -178,10 +178,10 @@ Swapping `DirectSolverOptions()` for `KrylovSolverOptions(solver="cg", ...)` giv
 
 ## Path 2: Assembled Reduced Operator $\mathbf{P}^T \mathbf{J} \mathbf{P}$ (Periodic Problems)
 
-When `fe.create_solver(..., P=P)` is given a prolongation matrix (see [Periodic Boundary Conditions](periodic_boundary_conditions.md)), the solve happens in the reduced space. Two operator representations, chosen by `solver_options`:
+When `fe.create_solver(..., projection=P)` is given a prolongation matrix (see [Periodic Boundary Conditions](periodic_boundary_conditions.md)), the solve happens in the reduced space. Two operator representations, chosen by `solver_options`:
 
-- **`KrylovSolverOptions`** (matrix-free): the reduced operator is applied as three matvecs $\mathbf{P}^T(\mathbf{J}(\mathbf{P} v))$ — never assembled. Fully traced, jit/vmap/grad-friendly.
-- **`DirectSolverOptions` / `AMGSolverOptions`** (assembled): the reduced pattern comes from the boolean triple product `asd.reduced_operator_pattern(P, asd.connectivity_pattern(problem))`, and the operator is materialized from its matrix-free action by `asd.operator_assembler` — `num_colors` matvec probes per assembly (roughly the max row nnz of the reduced pattern). The assembled operator is then factorized directly, or used to build an AMG hierarchy.
+- **`KrylovSolverOptions`** (matrix-free): the reduced operator is applied as three matvecs $\mathbf{P}^T(\mathbf{J}(\mathbf{P} v))$ — never assembled. Fully traced, jit/vmap/grad-friendly. An AMG preconditioner for this solve, `fe.amg(problem, bc, tp, ..., projection=P)`, assembles the reduced operator once (as below) to build its hierarchy; the outer Krylov stays matrix-free.
+- **`DirectSolverOptions`** (assembled): the reduced pattern comes from the boolean triple product `asd.reduced_operator_pattern(P, asd.connectivity_pattern(problem))`, and the operator is materialized from its matrix-free action by `asd.operator_assembler` — `num_colors` matvec probes per assembly (roughly the max row nnz of the reduced pattern). The assembled operator is then factorized directly.
 
 Periodic operators are symmetric after symmetric Dirichlet elimination, so the adjoint reuses the same operator, assembled at the converged state (never stale).
 
@@ -213,12 +213,15 @@ tp = fe.TracedParams(volume_vars=(E_cells,))     # e.g. a heterogeneous field
 ig = fe.zero_like_initial_guess(problem, bc)
 
 # Assembled + direct factorization of PᵀJP:
-solver_direct = fe.create_solver(problem, bc, P=P,
+solver_direct = fe.create_solver(problem, bc, projection=P,
     solver_options=fe.DirectSolverOptions())
 
-# Assembled + AMG-preconditioned CG on PᵀJP (requires feax[amg]):
-solver_amg = fe.create_solver(problem, bc, P=P,
-    solver_options=fe.AMGSolverOptions(solver="cg", tol=1e-12, atol=1e-14))
+# AMG-preconditioned CG on PᵀJP (the hierarchy is built from the assembled
+# reduced operator; requires feax[amg]):
+P_amg = fe.amg(problem, bc, tp, fe.AMGOptions(near_nullspace="rigid_body"), projection=P)
+solver_amg = fe.create_solver(problem, bc, projection=P,
+    solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-12, atol=1e-14, maxiter=500),
+    preconditioner=P_amg)
 
 sol = solver_direct(tp, ig)
 grads = jax.grad(lambda tp_: jnp.sum(solver_direct(tp_, ig) ** 2))(tp)
@@ -234,23 +237,28 @@ The reduced path validates that no Dirichlet row lands on *part* of a periodic e
 The assembled reduced path runs eagerly (host orchestration) and re-materializes the current operator each solve — appropriate for the "few solves, many right-hand-side" style of homogenization workloads. Keep `KrylovSolverOptions` when you need the fully traced, `jax.vmap`-able reduced solve.
 :::
 
-## AMG Solver Options
+## The AMG Preconditioner
 
-`fe.AMGSolverOptions` is a third linear-solver family alongside `DirectSolverOptions` and `KrylovSolverOptions`: a matrix-free outer Krylov solve preconditioned by one smoothed-aggregation AMG cycle. A sample Jacobian is assembled once, a PyAMG hierarchy is built on the host, converted to a JAX-native `amjax.MultilevelSolver`, and one V-cycle serves as the preconditioner `M`. Requires the optional `feax[amg]` dependency (`amjax` + `pyamg`).
+AMG is not a third solver family: it is a *preconditioner* for the matrix-free `KrylovSolverOptions` solve, passed to `create_solver` as `preconditioner=`. `fe.amg(problem, bc, tp, fe.AMGOptions(...))` assembles one sample Jacobian at `tp`, builds a PyAMG smoothed-aggregation hierarchy on the host, converts it to a JAX-native `amjax.MultilevelSolver`, and one V-cycle serves as the preconditioner `M`. Requires the optional `feax[amg]` dependency (`amjax` + `pyamg`).
 
 ```python
-options = fe.AMGSolverOptions(
-    solver="cg",                  # outer Krylov: "auto", "cg", "gmres", "bicgstab"
-    tol=1e-10, atol=1e-12,        # outer Krylov tolerances
-    maxiter=500,
+P_amg = fe.amg(problem, bc, tp, fe.AMGOptions(
     near_nullspace="rigid_body",  # the key knob for elasticity
     cycle="V",                    # "V", "W", "F"
     smoother_omega=0.67,          # damped Jacobi (undamped diverges on elasticity)
     smoother_sweeps=2,
     coarse_solver="pinv",         # "pinv", "lu", "qr", "jacobi"
     rebuild_every=None,           # Newton-only: hierarchy rebuild policy
-)
+))
+solver = fe.create_solver(problem, bc,
+    solver_options=fe.KrylovSolverOptions(
+        solver="cg",              # outer Krylov: "cg", "gmres", "bicgstab"
+        tol=1e-10, atol=1e-12,    # outer Krylov tolerances
+        maxiter=500),
+    preconditioner=P_amg)
 ```
+
+The returned `fe.AMGPreconditioner` is a pytree, so a jitted caller can pass it per call (`solver(tp, ig, preconditioner=P_amg)`) and keep the hierarchy a traced argument instead of a baked-in constant; `P_amg.rebuild(J_csr)` returns a new preconditioner built from a concrete BC-applied CSR Jacobian.
 
 The single most important field is **`near_nullspace`** — the low-energy modes $\mathbf{B}$ that the coarse grid must represent:
 
@@ -262,7 +270,7 @@ The single most important field is **`near_nullspace`** — the low-energy modes
 
 On the reduced path, the near-null-space is automatically projected into the reduced space (a weighted pullback through $\mathbf{P}$, exact for the 0/1 master-slave prolongations from `feax.flat.pbc.prolongation_matrix`).
 
-For nonlinear (Newton) solves without `P`, **`rebuild_every`** controls how often the hierarchy is rebuilt from the current tangent: `None` (default) is adaptive lag — rebuild only when the lagged preconditioner degrades past `lag_tol`; `0` builds once and keeps the solve fully traced/jit/vmap/grad-able; `k >= 1` rebuilds every `k` iterations.
+For nonlinear (Newton) solves without `projection`, **`AMGOptions.rebuild_every`** controls how often the hierarchy is rebuilt from the current tangent: `None` (default) is adaptive lag — a host Newton loop that rebuilds only when the lagged preconditioner degrades past `lag_tol`; `0` keeps the hierarchy from `fe.amg` fixed and the solve fully traced/jit/vmap/grad-able; `k >= 1` rebuilds every `k` iterations (host loop).
 
 ## When to Use Which
 
@@ -270,7 +278,7 @@ For nonlinear (Newton) solves without `P`, **`rebuild_every`** controls how ofte
 |---|---|---|---|
 | Matrix-free Krylov | `KrylovSolverOptions` | Well-conditioned SPD systems, large problems, anything that must `jit`/`vmap`/scan | No assembly, lowest memory; convergence degrades with ill conditioning / high material contrast |
 | Assembled direct | `DirectSolverOptions` | Exact tangents, ill-conditioned systems, small-to-medium DOF counts, factor-reuse workflows | Factorization memory grows with fill-in; extra/reduced paths are host-driven (grad yes, vmap no) |
-| Assembled AMG | `AMGSolverOptions` | Large elasticity / periodic problems where direct factorization is too big and plain CG stalls | Needs the right `near_nullspace`; host hierarchy build; optional `feax[amg]` dependency |
+| AMG-preconditioned Krylov | `KrylovSolverOptions` + `preconditioner=fe.amg(...)` | Large elasticity / periodic problems where direct factorization is too big and plain CG stalls | Needs the right `near_nullspace`; host hierarchy build; optional `feax[amg]` dependency |
 
 Rules of thumb:
 
@@ -292,7 +300,7 @@ Rules of thumb:
 **Solver paths unlocked:**
 
 1. `extra_residual_fn` + `DirectSolverOptions` — exact merged tangent, direct factorization, merged-pattern adjoint
-2. `P` + `DirectSolverOptions` / `AMGSolverOptions` — assembled $\mathbf{P}^T \mathbf{J} \mathbf{P}$ for periodic problems
+2. `projection=P` + `DirectSolverOptions`, or `fe.amg(..., projection=P)` — assembled $\mathbf{P}^T \mathbf{J} \mathbf{P}$ for periodic problems
 
 ## Further Reading
 
@@ -300,4 +308,5 @@ Rules of thumb:
 - [Lattice Structure Homogenization](lattice_homogenization.md) — a full periodic workflow
 - `tests/test_asd.py` — complete working examples of every path on this page
 - [API: feax.asd](../api/reference/feax/asd.md) — full ASD module reference
-- [API: solver options](../api/reference/feax/solvers/options.md) — `DirectSolverOptions`, `KrylovSolverOptions`, `AMGSolverOptions`
+- [API: solver options](../api/reference/feax/solvers/options.md) — `DirectSolverOptions`, `KrylovSolverOptions`
+- [API: preconditioners](../api/reference/feax/solvers/preconditioners.md) — `jacobi`, `amg`, `AMGOptions`, `AMGPreconditioner`, `LinearOperator`

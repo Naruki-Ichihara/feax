@@ -7,7 +7,7 @@ Two operator representations:
 
 * **matrix-free** (``KrylovSolverOptions``): the reduced operator ``PᵀJP`` is
   applied as three matvecs ``Pᵀ(J(P v))`` — never assembled.
-* **assembled** (``DirectSolverOptions`` / ``AMGSolverOptions``): the reduced
+* **assembled** (``DirectSolverOptions`` / an AMG preconditioner that rebuilds): the reduced
   pattern is computed by a boolean triple product of the known ``P`` and
   connectivity patterns (:func:`feax.asd.reduced_operator_pattern`), and the
   operator is materialized from its matrix-free action by colored probing
@@ -33,7 +33,6 @@ from .common import (
     create_linear_solve_fn,
 )
 from .options import (
-    AMGSolverOptions,
     DirectSolverOptions,
     KrylovSolverOptions,
     MatrixProperty,
@@ -114,13 +113,14 @@ def _reduced_amg_options(options, problem, bc, P, n_red):
     return dataclasses.replace(options, near_nullspace=ns_red)
 
 
-def _make_reduced_side_solve(problem, bc, P, options, n_red, namespace):
+def _make_reduced_side_solve(problem, bc, P, options, n_red, namespace, preconditioner=None):
     """One side (forward/adjoint) of the reduced solve.
 
     Returns ``(solve, assembled)``: ``assembled=True`` means ``solve(K, b)``
     consumes the materialized reduced ``CSRMatrix``; ``False`` means
-    ``solve(matvec, b)`` runs matrix-free Krylov.
+    ``solve(op, b)`` runs matrix-free Krylov on a LinearOperator.
     """
+    from .preconditioners import AMGPreconditioner, LinearOperator
     if isinstance(options, DirectSolverOptions):
         # Explicit solver choices are trusted (as in create_solver); only
         # "auto" goes through backend detection.
@@ -128,63 +128,74 @@ def _make_reduced_side_solve(problem, bc, P, options, n_red, namespace):
             options, MatrixProperty.SPD, matrix_view=problem.matrix_view)
         fn = create_linear_solve_fn(resolved, cache_namespace=namespace)
         return (lambda K, b: fn(K, b, None)), True
-    if isinstance(options, AMGSolverOptions):
+    if isinstance(preconditioner, AMGPreconditioner) and preconditioner.rebuild_every != 0:
+        # AMG rebuilt from each solve's assembled reduced operator (host build).
         import jax.scipy.sparse.linalg as jsla
-        from .amg import build_amg_preconditioner
-        opts_red = _reduced_amg_options(options, problem, bc, P, n_red)
-        name = opts_red.solver if opts_red.solver != "auto" else "cg"
+        resolved = resolve_iterative_solver(options, MatrixProperty.SPD)
+        name = resolved.solver
         krylov = getattr(jsla, name)
 
         def solve(K, b):
-            M = build_amg_preconditioner(problem, bc, K, opts_red)
-            kw = dict(x0=np.zeros_like(b), M=M, tol=opts_red.tol,
-                      atol=opts_red.atol, maxiter=opts_red.maxiter)
+            M = preconditioner.rebuild(K)()
+            kw = dict(x0=np.zeros_like(b), M=M, tol=resolved.tol,
+                      atol=resolved.atol, maxiter=resolved.maxiter)
             if name == "gmres":
-                kw["restart"] = opts_red.restart or 50
+                kw["restart"] = resolved.restart or 50
             x, _ = krylov(lambda v: K @ v, b, **kw)
             return x
         return solve, True
-    # KrylovSolverOptions: matrix-free
+    # KrylovSolverOptions: matrix-free (the preconditioner, if any, is built
+    # from the LinearOperator the caller hands in)
     resolved = resolve_iterative_solver(options, MatrixProperty.SPD)
-    fn = create_iterative_solve_fn(resolved)
-    return (lambda matvec, b: fn(matvec, b, np.zeros_like(b))), False
+    fn = create_iterative_solve_fn(resolved, preconditioner=preconditioner)
+    return (lambda op, b: fn(op, b, np.zeros_like(b))), False
 
 
-def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options):
+def create_reduced_solver(problem, bc, projection, solver_options, adjoint_solver_options,
+                          preconditioner=None, adjoint_preconditioner=None):
     """Create the reduced solver for periodic boundary conditions.
 
     ``KrylovSolverOptions`` runs fully matrix-free (three matvecs per Krylov
-    iteration). ``DirectSolverOptions`` / ``AMGSolverOptions`` assemble the
-    reduced operator ``PᵀJP``: its sparsity is the boolean triple product of
-    the known patterns, its values come from colored probes of the matrix-free
-    action (``num_colors`` matvecs, once per solve) — see :mod:`feax.asd`.
-    Periodic operators are symmetric after symmetric elimination, so the
-    adjoint reuses the same (assembled or matrix-free) operator.
+    iteration); a ``preconditioner(op) -> M`` sees the reduced operator (its
+    values assembled on demand by colored probing). ``DirectSolverOptions``,
+    and an :class:`~feax.solvers.preconditioners.AMGPreconditioner` that
+    rebuilds its hierarchy, assemble the reduced operator ``PᵀJP``: its
+    sparsity is the boolean triple product of the known patterns, its values
+    come from colored probes of the matrix-free action (``num_colors`` matvecs,
+    once per solve) — see :mod:`feax.asd`. Periodic operators are symmetric
+    after symmetric elimination, so the adjoint reuses the same (assembled or
+    matrix-free) operator.
     """
-    if not isinstance(solver_options,
-                      (KrylovSolverOptions, DirectSolverOptions, AMGSolverOptions)):
-        raise TypeError(
-            "Reduced solver requires Krylov/Direct/AMG solver options for the "
-            f"forward solve, got {type(solver_options).__name__}.")
-    if not isinstance(adjoint_solver_options,
-                      (KrylovSolverOptions, DirectSolverOptions, AMGSolverOptions)):
-        raise TypeError(
-            "Reduced solver requires Krylov/Direct/AMG solver options for the "
-            f"adjoint solve, got {type(adjoint_solver_options).__name__}.")
+    from .preconditioners import AMGPreconditioner, LinearOperator
+    P = projection
+    for _role, _opts in (("forward", solver_options), ("adjoint", adjoint_solver_options)):
+        if not isinstance(_opts, (KrylovSolverOptions, DirectSolverOptions)):
+            raise TypeError(
+                f"Reduced solver requires Krylov/Direct solver options for the "
+                f"{_role} solve, got {type(_opts).__name__}.")
+    if preconditioner is not None and isinstance(solver_options, DirectSolverOptions):
+        raise ValueError("preconditioner has no effect with a direct forward solver.")
+    if adjoint_preconditioner is not None and isinstance(adjoint_solver_options, DirectSolverOptions):
+        raise ValueError("adjoint_preconditioner has no effect with a direct adjoint solver.")
+    if adjoint_preconditioner is None and isinstance(adjoint_solver_options, KrylovSolverOptions):
+        adjoint_preconditioner = preconditioner
 
     _validate_bc_pairing(P, bc)
 
-    _fwd_assembled_req = not isinstance(solver_options, KrylovSolverOptions)
-    _adj_assembled_req = not isinstance(adjoint_solver_options, KrylovSolverOptions)
-    if _fwd_assembled_req or _adj_assembled_req:
+    def _assembled_req(opts, pre):
+        return (isinstance(opts, DirectSolverOptions)
+                or (isinstance(pre, AMGPreconditioner) and pre.rebuild_every != 0))
+    if _assembled_req(solver_options, preconditioner) or \
+            _assembled_req(adjoint_solver_options, adjoint_preconditioner):
         return _create_assembled_reduced_solver(
-            problem, bc, P, solver_options, adjoint_solver_options)
+            problem, bc, P, solver_options, adjoint_solver_options,
+            preconditioner, adjoint_preconditioner)
 
-    # The reduced problem is always Krylov and never extracts a preconditioner
-    # from the operator, so the BC-applied tangent is supplied matrix-free (a
-    # residual JVP) — no Jacobian assembly. Periodic problems are SPD after
-    # symmetric Dirichlet elimination, so the same matvec serves the adjoint
-    # (Jᵀ = J).
+    # The reduced problem is Krylov, so the BC-applied tangent is supplied
+    # matrix-free (a residual JVP) — no Jacobian assembly unless a
+    # preconditioner reads the reduced operator's values. Periodic problems are
+    # SPD after symmetric Dirichlet elimination, so the same matvec serves the
+    # adjoint (Jᵀ = J).
     matfree_res_J = create_matfree_res_J_parametric(problem, symmetric=True)
     res_bc_parametric = create_res_bc_parametric(problem)
 
@@ -196,11 +207,25 @@ def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options
     else:
         resolved_adjoint_options = resolve_iterative_solver(adjoint_solver_options, MatrixProperty.SPD)
 
-    fwd_linear_solve_fn = create_iterative_solve_fn(resolved_solver_options)
-    if resolved_adjoint_options is resolved_solver_options:
+    fwd_linear_solve_fn = create_iterative_solve_fn(resolved_solver_options, preconditioner=preconditioner)
+    if resolved_adjoint_options is resolved_solver_options and adjoint_preconditioner is preconditioner:
         adj_linear_solve_fn = fwd_linear_solve_fn
     else:
-        adj_linear_solve_fn = create_iterative_solve_fn(resolved_adjoint_options)
+        adj_linear_solve_fn = create_iterative_solve_fn(
+            resolved_adjoint_options, preconditioner=adjoint_preconditioner)
+
+    # Lazy assembly of the reduced operator (colored probing), only built if a
+    # preconditioner asks the operator for its values.
+    _assemble = None
+    if preconditioner is not None or adjoint_preconditioner is not None:
+        from ..asd import connectivity_pattern, operator_assembler, reduced_operator_pattern
+        _assemble = operator_assembler(reduced_operator_pattern(P, connectivity_pattern(problem)))
+
+    def _reduced_operator(matvec, bc_arg, ts, transpose=False):
+        return LinearOperator(
+            matvec=matvec,
+            assemble=None if _assemble is None else (lambda: _assemble(matvec)),
+            structure=None, problem=None, bc=bc_arg, transpose=transpose)
 
     def reduced_solve_fn(traced_params, initial_guess_full, effective_bc, ts):
         # One matfree pass returns the BC-applied residual and the tangent
@@ -214,7 +239,8 @@ def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options
             return P.T @ J_matvec(P @ v_reduced)
 
         x0 = np.zeros(P.shape[1])
-        sol_reduced = fwd_linear_solve_fn(J_reduced_matvec, -res_reduced, x0)
+        sol_reduced = fwd_linear_solve_fn(
+            _reduced_operator(J_reduced_matvec, effective_bc, ts), -res_reduced, x0)
         sol_full = initial_guess_full + P @ sol_reduced
         return sol_full, None
 
@@ -238,7 +264,9 @@ def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options
             return P.T @ J_matvec(P @ adjoint_reduced)
 
         x0_reduced = np.zeros_like(rhs_reduced)
-        adjoint_reduced = adj_linear_solve_fn(adjoint_matvec, rhs_reduced, x0_reduced)
+        adjoint_reduced = adj_linear_solve_fn(
+            _reduced_operator(adjoint_matvec, effective_bc, ts, transpose=True),
+            rhs_reduced, x0_reduced)
 
         adjoint_full = P @ adjoint_reduced
 
@@ -273,8 +301,9 @@ def create_reduced_solver(problem, bc, P, solver_options, adjoint_solver_options
 
 
 def _create_assembled_reduced_solver(problem, bc, P, solver_options,
-                                     adjoint_solver_options):
-    """Reduced solver that ASSEMBLES ``PᵀJP`` (direct / AMG solves).
+                                     adjoint_solver_options,
+                                     preconditioner=None, adjoint_preconditioner=None):
+    """Reduced solver that ASSEMBLES ``PᵀJP`` (direct / rebuilt-AMG solves).
 
     Pattern: boolean triple product of the concrete ``P`` and the mesh
     connectivity (:func:`feax.asd.reduced_operator_pattern` — an exact
@@ -296,13 +325,19 @@ def _create_assembled_reduced_solver(problem, bc, P, solver_options,
     R_pat = reduced_operator_pattern(P, connectivity_pattern(problem))
     assemble = operator_assembler(R_pat)
 
+    from .preconditioners import LinearOperator
     fwd_solve, fwd_assembled = _make_reduced_side_solve(
-        problem, bc, P, solver_options, n_red, "reduced-forward")
-    if adjoint_solver_options is solver_options:
+        problem, bc, P, solver_options, n_red, "reduced-forward", preconditioner)
+    if adjoint_solver_options is solver_options and adjoint_preconditioner is preconditioner:
         adj_solve, adj_assembled = fwd_solve, fwd_assembled
     else:
         adj_solve, adj_assembled = _make_reduced_side_solve(
-            problem, bc, P, adjoint_solver_options, n_red, "reduced-adjoint")
+            problem, bc, P, adjoint_solver_options, n_red, "reduced-adjoint", adjoint_preconditioner)
+
+    def _as_op(matvec, assembled):
+        """Matrix-free side: a LinearOperator whose values are probed on demand."""
+        return assemble(matvec) if assembled else LinearOperator(
+            matvec=matvec, assemble=lambda: assemble(matvec))
 
     def _operator(sol_full, traced_params, effective_bc, ts):
         res_full, J_matvec = matfree_res_J(sol_full, traced_params, effective_bc, ts)
@@ -312,8 +347,7 @@ def _create_assembled_reduced_solver(problem, bc, P, solver_options,
     def reduced_solve_fn(traced_params, initial_guess_full, effective_bc, ts):
         res_full, matvec = _operator(initial_guess_full, traced_params, effective_bc, ts)
         res_reduced = P.T @ res_full
-        op = assemble(matvec) if fwd_assembled else matvec
-        sol_reduced = fwd_solve(op, -res_reduced)
+        sol_reduced = fwd_solve(_as_op(matvec, fwd_assembled), -res_reduced)
         return initial_guess_full + P @ sol_reduced, None
 
     @jax.custom_vjp
@@ -331,7 +365,7 @@ def _create_assembled_reduced_solver(problem, bc, P, solver_options,
         # forward operator (assembled at the converged state, never stale).
         _, matvec = _operator(sol, traced_params, effective_bc, ts)
         rhs_reduced = P.T @ v
-        op = assemble(matvec) if adj_assembled else matvec
+        op = _as_op(matvec, adj_assembled)
         adjoint_reduced = adj_solve(op, rhs_reduced)
         adjoint_full = P @ adjoint_reduced
 

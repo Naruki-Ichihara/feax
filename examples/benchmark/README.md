@@ -5,9 +5,9 @@
 | `bench_linear_elasticity.py` | One linear solve (and its gradient) per call, across solvers and execution modes |
 | `bench_topopt_gcmma.py` | A whole topology optimization driven by the in-house GCMMA |
 | `bench_topopt_multiload.py` | Topology optimization over many load cases, all solved per design with one factorization (direct, `vmap` over the load) |
-| `bench_shared_factor_pcg.py` | Many *different* stiffness matrices solved with one shared factorization (batched CG preconditioned by the factors of the mean matrix) |
+| `bench_shared_factor_pcg.py` | Many *different* stiffness matrices solved with one shared factorization (batched CG preconditioned by the factors of the mean matrix — the kernel behind `fe.vmap` / `fe.shared_factor`, hand-rolled) |
 | `bench_topopt_batched_shared.py` | B independent topology optimizations (one design per load case) with one shared factorization per evaluation |
-| `bench_topopt_batched_oc.py` | The same at scale (100 designs at 500k DOF): grouped solves, shared factorizations, OC updates, timing CSVs |
+| `bench_topopt_batched_oc.py` | The same at scale (100 designs at 500k DOF): the solves go through `fe.vmap` with `fe.shared_factor` (one factorization per `chunk`), OC updates, timing CSVs |
 
 ## `bench_linear_elasticity.py`
 
@@ -55,7 +55,7 @@ Key arguments (`--help` for the full list):
 |---|---|
 | `--dofs N ...` | Target DOF counts; the mesh is refined to the closest achievable count. Default `20000 60000 150000 300000`; `run_guarded.sh` passes its own sweep. |
 | `--dims LX LY LZ` | Fixed physical cantilever dimensions (scale-invariant). |
-| `--solver` | `krylov` (matrix-free CG, memory-lean — default), `direct` (cuDSS / host sparse), `amg` (rigid-body near-null-space). |
+| `--solver` | `krylov` (matrix-free CG with `fe.jacobi()`, memory-lean — default), `direct` (cuDSS / host sparse), `amg` (CG preconditioned by `fe.amg(...)` with the rigid-body near-null-space). |
 | `--modes` | Subset of `eager jit grad vmap-lhs vmap-rhs` (default: all). |
 | `--batch` | `vmap` batch size (independent cases). |
 | `--repeats` / `--warmup` | Timed repeats / untimed warmups per point. |
@@ -74,10 +74,13 @@ Key arguments (`--help` for the full list):
 | `vmap-lhs` | `jax.jit(jax.vmap(...))` over the **material** `E` | `A` varies per case → `direct` factorizes `B` times |
 | `vmap-rhs` | the same over the **load** (traction) | `A` fixed → `direct` factors once and multi-RHS solves (`reuse_factorization=True`); iterative solvers run per-RHS iterations, kept for parity |
 
-All five modes apply to all three solvers. With `linear=True`, `AMGSolverOptions`
-is lowered inside `create_solver` to a matrix-free Krylov solve preconditioned by a
-fixed V-cycle (the hierarchy is built once from a sample Jacobian), so the solve
-itself jits, vmaps and differentiates like the others.
+All five modes apply to all three solvers. `amg` is a matrix-free Krylov solve
+(`KrylovSolverOptions(solver="cg")`) preconditioned by a fixed V-cycle: the
+hierarchy is built once from a sample Jacobian by `fe.amg(problem, bc, tp, ...)`
+and is a pytree (`fe.AMGPreconditioner`), so the script passes it to every
+compiled solve as a jit argument (`solver(..., preconditioner=P)`) rather than a
+closure constant, and the solve itself jits, vmaps and differentiates like the
+others.
 
 ### What is measured
 
@@ -162,10 +165,12 @@ the script prints the difference. Per row: `total_s` for the whole optimization,
 `per_iter_s`, `evals` (value-and-gradient evaluations, i.e. forward + adjoint
 solves, including GCMMA's inner re-evaluations), `mean_inner`, the final scaled
 objective, compliance, volume fraction and KKT norm, and `const_mb`, the closure
-constants still captured by the traced program. The TracedStructure (with the
-AMG hierarchy), the initial guess, the filter's sparse weight matrix and the
-nodal volume weights travel as one pytree jit argument, so `const_mb` should stay small and flat across
-mesh sizes; a growing value means something mesh-sized is being closed over.
+constants still captured by the traced program. The TracedStructure, the initial
+guess, the filter's sparse weight matrix, the nodal volume weights and (for
+`--solver amg`) the AMG preconditioner `P` travel as one pytree jit argument, so
+`const_mb` should stay small and flat across mesh sizes; a growing value means
+something mesh-sized is being closed over. An AMG rebuild is `P = P.rebuild(J)`
+on the host, and the new `P` replaces the old one in that data pytree.
 Rows append to `bench_topopt.csv` (git-ignored).
 
 ## `bench_topopt_multiload.py`
@@ -212,6 +217,11 @@ python bench_shared_factor_pcg.py --dofs 500000 --batch 100 --case-chunk 10
 `--case-chunk C` assembles and solves the cases in groups of `C`, one after
 another, all with the same factorization, so only one group of `K_i` is stored.
 
+The script drives the cuDSS factorization and the batched CG by hand (it predates
+the public API); the same solve is what `fe.vmap(solver)` does for a batch that
+changes the matrix, with `fe.shared_factor()` as its default preconditioner and
+`chunk=` in place of `--case-chunk` — see `bench_topopt_batched_oc.py`.
+
 On A100 with `sigma = 0.3` CG needs ~27 iterations regardless of size, with a
 relative error ~1e-12 against a direct solve; only one factorization is ever
 held. At 500k DOF the cost per case is 0.80 s for B = 10 (6.9x lower than a
@@ -239,17 +249,26 @@ The preconditioner degrades as the designs diverge into different
 black-and-white topologies: at 100k DOF, B = 10, CG grows from tens to ~540
 iterations per solve by iteration 20, yet the shared mode still ran at 4.7 s
 per evaluation of all 10 cases.
+Like `bench_shared_factor_pcg.py` this script calls the cuDSS kernels directly;
+`bench_topopt_batched_oc.py` is the same optimization written on `fe.vmap`.
 
 ## `bench_topopt_batched_oc.py`
 
 The batched independent topology optimization scaled to B = 100 designs at 500k
-DOF. Cases are solved in groups of `--case-chunk` (only one group's `K_i` is
-stored); `--k0 group` factorizes the mean matrix of each group (neighbouring
-load angles give similar designs, so CG needs far fewer iterations than with one
-global `K_0`); designs are updated with optimality criteria, vectorized over the
-B designs (GCMMA on one stacked vector would need a dense 13 GB constraint
-Jacobian). Per-iteration timing goes to `bench_topopt_batched_oc_iters.csv`, a
-summary row to `bench_topopt_batched_oc.csv`, the B designs to one VTU.
+DOF. The B matrices differ (one design each), so the solves go through
+`fe.vmap` of the linear solver: it detects that the batched modulus fields
+change the operator (an lhs batch) and solves the cases with batched CG
+preconditioned by a shared factorization (`fe.shared_factor`, one cuDSS
+factorization of the mean matrix); the per-case CG iteration counts come back
+with `return_info=True`. `--case-chunk C` is `fe.vmap(..., chunk=C)`: the cases
+are solved in groups of `C`, only one group's `K_i` is stored, and `--k0 group`
+factorizes the mean matrix of each group (neighbouring load angles give similar
+designs, so CG needs far fewer iterations than with one global `K_0`), while
+`--k0 global` factorizes `K(mean_i E_i)` once for the whole batch. Designs are
+updated with optimality criteria, vectorized over the B designs (GCMMA on one
+stacked vector would need a dense 13 GB constraint Jacobian). Per-iteration
+timing goes to `bench_topopt_batched_oc_iters.csv`, a summary row to
+`bench_topopt_batched_oc.csv`, the B designs to one VTU.
 
 ```bash
 python bench_topopt_batched_oc.py                 # 500k DOF, B = 100, 10 iterations, group K0, tol 1e-6

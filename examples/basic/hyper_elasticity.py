@@ -3,10 +3,12 @@ Hyperelastic solver example using energy density formulation.
 Demonstrates solving nonlinear hyperelasticity problems with Neo-Hookean material model.
 A torsional surface traction is applied to the right face (load-controlled twist).
 
-This variant solves the Newton tangent systems with algebraic multigrid (AMG):
-an outer GMRES preconditioned by a smoothed-aggregation hierarchy (PyAMG -> AMJax)
-with the rigid-body near-null-space auto-generated from the mesh. See
-``AMGSolverOptions`` below. Requires the optional ``feax[amg]`` extra.
+The Newton tangent systems are solved with a direct factorization
+(``fe.DirectSolverOptions()``). For large meshes, switch to an outer GMRES
+preconditioned by a smoothed-aggregation AMG hierarchy (PyAMG -> AMJax) with the
+rigid-body near-null-space auto-generated from the mesh: see the commented
+``fe.amg(...)`` + ``fe.KrylovSolverOptions`` variant below. That variant
+requires the optional ``feax[amg]`` extra.
 """
 
 import os
@@ -78,14 +80,22 @@ bc = bc_config.create_bc(feax_problem)
 
 ts = fe.TracedStructure.from_problem(feax_problem)
 
-# Algebraic multigrid solver (smoothed aggregation via PyAMG -> AMJax) used as a
-# preconditioner for an outer GMRES. For this 3D elasticity (vec == dim) the
+# Direct factorization of each Newton tangent. For large meshes use algebraic
+# multigrid instead: a smoothed-aggregation hierarchy (PyAMG -> AMJax) as the
+# preconditioner of an outer GMRES. For this 3D elasticity (vec == dim) the
 # rigid-body near-null-space is generated automatically from the mesh node
 # coordinates -- this is what makes AMG effective on (hyper)elasticity. With
-# rebuild_every=None (default) the hierarchy is reused across Newton steps and
-# rebuilt only when the large torsional deformation makes it stale (adaptive
-# lag), so the AMG setup cost is amortized over the nonlinear iteration.
-# (Requires the optional `feax[amg]` extra: amjax + pyamg.)
+# AMGOptions(rebuild_every=None) (the default) the hierarchy is reused across
+# Newton steps and rebuilt only when the large torsional deformation makes it
+# stale (adaptive lag), so the AMG setup cost is amortized over the nonlinear
+# iteration. (Requires the optional `feax[amg]` extra: amjax + pyamg.)
+#
+#   P = fe.amg(feax_problem, bc, traced_params,
+#              fe.AMGOptions(near_nullspace="rigid_body", rebuild_every=None),
+#              traced_structure=ts)
+#   solver_options = fe.KrylovSolverOptions(solver="gmres", restart=50,
+#                                           tol=1e-8, atol=1e-10, maxiter=500)
+#   ... and pass preconditioner=P to fe.create_solver below.
 solver_options = fe.DirectSolverOptions()
 newton_options = fe.NewtonOptions(verbose=True)
 solver = fe.create_solver(

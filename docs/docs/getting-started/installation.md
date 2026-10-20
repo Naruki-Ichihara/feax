@@ -87,7 +87,7 @@ FEAX provides optional dependency groups via `pyproject.toml`:
 | `.[cuda12]` | cuDSS + cuBLAS + cuDNN for CUDA 12 | GPU acceleration (CUDA 12, without JAX) |
 | `.[cuda13]` | cuDSS + cuBLAS + cuDNN for CUDA 13 | GPU acceleration (CUDA 13, without JAX) |
 | `.[sksparse]` | `scikit-sparse` | CPU host-side direct solvers (`cholmod`, `umfpack`) |
-| `.[amg]` | `amjax` + `pyamg` | Algebraic multigrid solver (`AMGSolverOptions`) |
+| `.[amg]` | `amjax` + `pyamg` | Algebraic multigrid preconditioner (`fe.amg` / `fe.AMGOptions`) |
 | `.[matfree]` | `matfree` | Matrix-free eigensolver utilities (linear buckling) |
 | `.[gmsh]` | `gmsh` | `feax.gene` adaptive remeshing and SDF / density → volume-mesh extraction |
 | `.[cad]` | `cadjoint` (installed from GitHub, not PyPI) | Differentiable CAD front end used as a preprocessor; see `examples/experimental/sdf_shape_optimization.py` |

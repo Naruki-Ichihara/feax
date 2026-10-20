@@ -26,20 +26,21 @@ The returned `solver` is a callable with a `custom_vjp`, so it composes with `ja
 
 By default the solver returns a `fe.Solution` object rather than a bare array (`return_solution=True`). A `Solution` behaves like the flat DOF vector everywhere — arithmetic, `np.asarray`, passing as the next call's `initial_guess` — and adds structured accessors: `sol.dofs` (the raw flat vector), `sol.field(i)` (variable `i` as `(num_nodes, vec)`, replacing `problem.unflatten_fn_sol_list(sol)[i]`), and `sol.node_var(component=...)` (a `(num_nodes,)` node variable ready to feed the next solve's `TracedParams`). Pass `return_solution=False` for the raw flat vector.
 
-`create_solver` has two orthogonal choices:
+`create_solver` has two orthogonal choices, plus an optional preconditioner:
 
-- **How to solve the linear system** — `solver_options`: a **direct** factorization (`DirectSolverOptions`), a **Krylov** iterative method (`KrylovSolverOptions`), or **algebraic multigrid** (`AMGSolverOptions`).
+- **How to solve the linear system** — `solver_options`: a **direct** factorization (`DirectSolverOptions`) or a **Krylov** iterative method (`KrylovSolverOptions`).
 - **Linear or nonlinear** — the `linear` flag: a single linear solve (`linear=True`) or an adaptive Newton iteration (`linear=False`, the default).
+- **How to precondition a Krylov solve** — `preconditioner=`: one callable, `fe.jacobi()`, `fe.amg(...)` (algebraic multigrid) or your own `preconditioner(op) -> M`.
 
 ## Solver Options
 
-FEAX has three solver-option classes for `create_solver`, plus a dedicated geometric-multigrid solver class for structured grids:
+FEAX has two solver-option classes for `create_solver` — direct and Krylov — with preconditioners for the Krylov one passed as a single callable (`preconditioner=`), plus a dedicated geometric-multigrid solver class for structured grids:
 
 | Option class | Method | Operator | Best for |
 |---|---|---|---|
 | `fe.DirectSolverOptions()` | Sparse direct factorization (cuDSS on GPU; cholmod / umfpack / spsolve on CPU) | Assembled CSR matrix | Default choice; robust and fast when memory permits |
 | `fe.KrylovSolverOptions()` | Krylov iterative (CG / BiCGSTAB / GMRES) | **Matrix-free** (residual JVP) | Memory-bound problems, periodic BCs with `P`, custom residual terms |
-| `fe.AMGSolverOptions()` | Krylov preconditioned by smoothed-aggregation **AMG** ([AMJax](https://github.com/vboussange/AMJax) + [PyAMG](https://github.com/pyamg/pyamg)) | Assembled CSR (for the AMG hierarchy) + matrix-free outer Krylov | Large scalar-elliptic problems (Poisson / thermal / diffusion); elasticity via a rigid-body near-null-space. Requires `feax[amg]` |
+| `fe.KrylovSolverOptions()` + `preconditioner=fe.amg(...)` | Krylov preconditioned by smoothed-aggregation **AMG** ([AMJax](https://github.com/vboussange/AMJax) + [PyAMG](https://github.com/pyamg/pyamg)) | Assembled CSR (for the AMG hierarchy) + matrix-free outer Krylov | Large scalar-elliptic problems (Poisson / thermal / diffusion); elasticity via a rigid-body near-null-space. Requires `feax[amg]` |
 | `feax.experimental.NarrowBandCMG` ([GMG](#geometric-multigrid-gmg--narrowbandcmg)) | CG preconditioned by **geometric multigrid** (grid-coarsening transfers, MGPCG) | **Matrix-free** on a `StructuredGrid` band (element matrices from a pluggable `Material`) | Very large voxel domains / moving narrow bands (giga-voxel topology optimization). Not a `create_solver` route — a dedicated (experimental) solver class |
 
 This page focuses on **configuring** the solvers and **choosing** between them. For how each one works under the hood — the cuDSS factorization phases, the AMG V-cycle, the matrix-free GMG operator — see [Solver Internals](../solver_internals.mdx).
@@ -47,8 +48,8 @@ This page focuses on **configuring** the solvers and **choosing** between them. 
 The distinction is the operator representation:
 
 - **Direct** solvers need the matrix entries (to factorize), so the Jacobian is assembled straight into a deduplicated CSR matrix.
-- **Krylov** solvers need only a matrix–vector product, so FEAX never assembles the Jacobian — the tangent action `J · v` is a forward-mode `jax.jvp` of the residual. This keeps memory low (no element Jacobian is ever materialized) at the cost of having no matrix entries for an entry-based preconditioner.
-- **AMG** is an outer Krylov method preconditioned by a smoothed-aggregation multigrid hierarchy. The hierarchy is built (on the host, via PyAMG) from an *assembled* sample Jacobian and run on the GPU through AMJax; the outer Krylov applies the current operator. Its near-linear scaling makes it the fastest option for large scalar-elliptic systems, where it overtakes a direct factorization as the problem grows.
+- **Krylov** solvers need only a matrix–vector product, so FEAX never assembles the Jacobian for the iteration itself — the tangent action `J · v` is a forward-mode `jax.jvp` of the residual. This keeps memory low (no element Jacobian is ever materialized). A preconditioner that needs matrix entries (`fe.jacobi()`, `fe.amg(...)`) asks the solve's operator for them, and the assembly happens on demand — once per solve for the Jacobi diagonal, once at setup for the AMG hierarchy.
+- **AMG** is a *preconditioner* of that Krylov solve, not a third solver: a smoothed-aggregation multigrid hierarchy built (on the host, via PyAMG) from an *assembled* sample Jacobian and run on the GPU through AMJax; the outer Krylov applies the current operator. Its near-linear scaling makes it the fastest option for large scalar-elliptic systems, where it overtakes a direct factorization as the problem grows.
 
 ### Direct Solvers
 
@@ -107,21 +108,60 @@ Available backends: `"auto"`, `"cg"`, `"bicgstab"`, `"gmres"`.
 
 Use `"cg"` for SPD matrices (symmetric problems), `"bicgstab"` or `"gmres"` for general matrices.
 
-Because the Krylov path is matrix-free, there is no assembled matrix to draw a Jacobi (diagonal) preconditioner from on the standard path; convergence relies on the conditioning of the system itself. Reach for a direct solver when the problem is well-conditioned and fits in memory, and Krylov when memory is the binding constraint.
+Unpreconditioned, convergence relies on the conditioning of the system itself. Add a preconditioner with `preconditioner=` — `fe.jacobi()` scales by the diagonal of each solve's operator (assembled on demand, so it follows e.g. a SIMP stiffness contrast), and `fe.amg(...)` applies a multigrid cycle:
 
-### AMG Solvers
+```python
+solver = fe.create_solver(problem, bc,
+    solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-10),
+    preconditioner=fe.jacobi(),          # or fe.jacobi(shift=1e-8)
+    linear=True, traced_params=traced_params)
+```
 
-`fe.AMGSolverOptions()` runs an outer Krylov method preconditioned by a smoothed-aggregation algebraic-multigrid (AMG) hierarchy. The hierarchy is built once from an assembled sample Jacobian via [PyAMG](https://github.com/pyamg/pyamg) and executed on the GPU through [AMJax](https://github.com/vboussange/AMJax). It is the fastest option for **large scalar-elliptic problems** (Poisson, steady heat conduction, implicit diffusion, the pressure-Poisson step of a flow solver), where its near-linear scaling overtakes a direct factorization as the mesh grows.
+Reach for a direct solver when the problem is well-conditioned and fits in memory, and Krylov when memory is the binding constraint.
+
+### Preconditioners
+
+A preconditioner is **one callable** passed to `create_solver(preconditioner=...)` (and `adjoint_preconditioner=` for the backward-pass solve; it defaults to the forward one). It is called *inside* each Krylov solve with that solve's operator and returns the preconditioner action:
+
+```python
+def preconditioner(op: fe.LinearOperator):   # called once per solve, under tracing
+    ...                                      # build whatever you need from op
+    return lambda r: z                       # M: approximate A⁻¹ applied to r
+```
+
+`op` exposes the operator of the current solve: `op.matvec` (always available, matrix-free), `op.values` / `op.indptr` / `op.indices` (the assembled BC-applied CSR triple, assembled on first access) and `op.diag` (its diagonal), plus `op.structure` (the `TracedStructure` or `None`), `op.problem` and `op.bc`. Because the callable runs under tracing, anything built from `op` is rebuilt for every solve and never goes stale. Built-ins:
+
+| Preconditioner | What it builds from `op` |
+|---|---|
+| `fe.jacobi(shift=1e-12)` | `M = diag(A)⁻¹` from `op.diag` |
+| `fe.amg(problem, bc, tp, fe.AMGOptions(...))` | nothing per solve — a fixed AMG V-cycle built once at setup (see below) |
+| `lambda op: M` | a fixed `M` you already have |
+
+**Per-call override.** The preconditioner can also be given per call, `solver(tp, u0, preconditioner=P)`, which takes precedence over the one from `create_solver` (`None` keeps it). This is how a pytree preconditioner such as `fe.AMGPreconditioner` becomes a *traced argument* of a jitted solve instead of a closure constant — otherwise every AMG level would be baked into the executable:
+
+```python
+P = fe.amg(problem, bc, tp, fe.AMGOptions(near_nullspace="rigid_body"), traced_structure=ts)
+solve = jax.jit(lambda tp, ts, P: solver(tp, u0, traced_structure=ts, preconditioner=P))
+u = solve(tp, ts, P)
+```
+
+It works on `linear=True` solvers and on the standard (traced) Newton path.
+
+### AMG
+
+`fe.amg(problem, bc, traced_params, fe.AMGOptions(...))` builds a smoothed-aggregation algebraic-multigrid (AMG) hierarchy once, from the Jacobian assembled at `traced_params`, via [PyAMG](https://github.com/pyamg/pyamg), and converts it to a JAX-native V-cycle executed on the GPU through [AMJax](https://github.com/vboussange/AMJax). Used as the preconditioner of a `KrylovSolverOptions` solve it is the fastest option for **large scalar-elliptic problems** (Poisson, steady heat conduction, implicit diffusion, the pressure-Poisson step of a flow solver), where its near-linear scaling overtakes a direct factorization as the mesh grows.
 
 Requires the optional dependency: `pip install feax[amg]` (pulls in `amjax` + `pyamg`).
 
 ```python
+P = fe.amg(problem, bc, traced_params, fe.AMGOptions())
 solver = fe.create_solver(problem, bc,
-    solver_options=fe.AMGSolverOptions(),
+    solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-8, atol=1e-10, maxiter=500),
+    preconditioner=P,
     linear=True, traced_params=traced_params)
 ```
 
-The outer Krylov method is set by `solver` (`"auto"` → `cg` for SPD, else `gmres`; or `"cg"` / `"bicgstab"` / `"gmres"`).
+The outer Krylov method and its tolerances are set by the `KrylovSolverOptions` (`"cg"` for SPD, `"gmres"` for a non-symmetric tangent); the hierarchy — near-null-space, cycle, smoother, coarse solver, rebuild policy — by `fe.AMGOptions`. Pass the same `traced_structure=ts` the solver uses (`fe.amg(..., traced_structure=ts)`), and `projection=P` for a reduced (periodic) solve.
 
 #### Near-null-space (`near_nullspace`)
 
@@ -137,35 +177,43 @@ AMG quality hinges on the operator's **near-null-space** — the low-energy mode
 
 ```python
 # Elasticity: rigid-body modes are auto-generated for vec == dim
+P = fe.amg(problem, bc, traced_params, fe.AMGOptions(near_nullspace="rigid_body"))
 solver = fe.create_solver(problem, bc,
-    solver_options=fe.AMGSolverOptions(near_nullspace="rigid_body", solver="gmres"),
+    solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-8, atol=1e-10, maxiter=500),
+    preconditioner=P,
     linear=True, traced_params=traced_params)
 ```
 
 #### Nonlinear solves and `rebuild_every`
 
-For Newton solves (`linear=False`) the tangent changes each iteration, so a hierarchy built from the initial tangent can go stale. `rebuild_every` controls how the hierarchy is refreshed (the near-null-space is always reused):
+For Newton solves (`linear=False`) the tangent changes each iteration, so a hierarchy built from the initial tangent can go stale. `AMGOptions.rebuild_every` controls how the hierarchy is refreshed (the near-null-space is always reused):
 
 | `rebuild_every` | Behavior |
 |---|---|
 | `None` (default) | **Adaptive lag**: reuse the hierarchy across Newton steps and rebuild only when a step's linear residual exceeds `lag_tol`. Few rebuilds, robust for strong nonlinearity. Runs as a host Newton loop (the per-step assembly and solve are individually JIT-compiled). |
-| `0` | Build the hierarchy once and reuse it as a fixed preconditioner. Cheapest, and fully traced — composes with `jax.jit` / `jax.vmap` / `jax.grad`. Best when the operator changes little. |
-| `k >= 1` | Rebuild every `k` Newton iterations (fixed lag). |
+| `0` | Keep the hierarchy built by `fe.amg` as a fixed preconditioner for every Newton step. Cheapest, and fully traced — composes with `jax.jit` / `jax.vmap` / `jax.grad`. Best when the operator changes little. |
+| `k >= 1` | Rebuild every `k` Newton iterations (fixed lag). Host Newton loop. |
 
 ```python
 # Large-deformation hyperelasticity: adaptive lag (default) keeps the
 # preconditioner fresh as the tangent changes.
+P = fe.amg(problem, bc, traced_params,
+           fe.AMGOptions(near_nullspace="rigid_body", rebuild_every=None))
 solver = fe.create_solver(problem, bc,
-    solver_options=fe.AMGSolverOptions(near_nullspace="rigid_body", solver="gmres"),
+    solver_options=fe.KrylovSolverOptions(solver="gmres", restart=50,
+                                          tol=1e-8, atol=1e-10, maxiter=500),
+    preconditioner=P,
     newton_options=fe.NewtonOptions(),
     traced_params=traced_params)
 ```
 
+Nothing else is needed: a Newton solver given an AMG preconditioner whose `rebuild_every` is not `0` runs the host loop itself. Outside the Newton loop, `P.rebuild(J_csr)` returns a new preconditioner with a hierarchy rebuilt on the host from a concrete BC-applied CSR Jacobian (e.g. at the current design of a topology optimization).
+
 :::note JIT / vmap with AMG
-`rebuild_every=0` lowers to a matrix-free Krylov solve with a fixed AMG preconditioner and is fully traced (`jit` / `vmap` / `grad`). The adaptive-lag and fixed-period Newton paths run a host loop (PyAMG setup cannot be traced) — they JIT each per-iteration kernel and are meant for concrete (non-`vmap`) calls; the adjoint still builds its preconditioner from the converged tangent.
+`rebuild_every=0` is a matrix-free Krylov solve with a fixed AMG preconditioner and is fully traced (`jit` / `vmap` / `grad`). The adaptive-lag and fixed-period Newton paths run a host loop (PyAMG setup cannot be traced) — they JIT each per-iteration kernel and are meant for concrete (non-`vmap`) calls; the adjoint still builds its preconditioner from the converged tangent. Linear solves always use the fixed hierarchy.
 :::
 
-AMG is never chosen by auto-selection — it must be requested explicitly with `AMGSolverOptions`.
+AMG is never chosen by auto-selection — it must be requested explicitly with `preconditioner=fe.amg(...)`.
 
 ### Geometric Multigrid (GMG) — `NarrowBandCMG`
 
@@ -188,7 +236,7 @@ The MGPCG iteration is jittable and differentiable (implicit-diff `custom_vjp`),
 
 | Situation | Use |
 |---|---|
-| Unstructured mesh | `Direct` / `Krylov` / `AMG` options above |
+| Unstructured mesh | `Direct` / `Krylov` (optionally `preconditioner=fe.amg(...)`) above |
 | Structured grid, moderate size | `Direct` (cuDSS) is usually simplest |
 | Structured grid, very large / moving active band (topology optimization) | `NarrowBandCMG` — see the [Narrow-Band & Giga-Voxel tutorial](../advanced/narrowband_topology_optimization.md) |
 
@@ -267,10 +315,10 @@ With `KrylovSolverOptions(solver="auto")`, the iterative method is chosen by mat
 | Situation | Recommendation |
 |---|---|
 | Problem too large for a direct solver (out of memory) | `KrylovSolverOptions()` |
-| Large scalar-elliptic problem (Poisson / thermal / diffusion) | `AMGSolverOptions()` |
-| Large elasticity / structural problem | `AMGSolverOptions(near_nullspace="rigid_body")` |
+| Large scalar-elliptic problem (Poisson / thermal / diffusion) | `KrylovSolverOptions(solver="cg")` + `preconditioner=fe.amg(problem, bc, tp)` |
+| Large elasticity / structural problem | `KrylovSolverOptions(solver="cg")` + `preconditioner=fe.amg(problem, bc, tp, fe.AMGOptions(near_nullspace="rigid_body"))` |
 | Need a symmetric solver but using `symmetric_elimination=False` | `DirectSolverOptions(solver="spsolve")` or `"umfpack"` |
-| Periodic BCs with prolongation matrix `P` | `KrylovSolverOptions()` (matrix-free) or `DirectSolverOptions()` / `AMGSolverOptions()` (assembled `PᵀJP`) |
+| Periodic BCs with prolongation matrix `P` | `KrylovSolverOptions()` (matrix-free, optionally `preconditioner=fe.amg(..., projection=P)`) or `DirectSolverOptions()` (assembled `PᵀJP`), with `projection=P` |
 | Structured voxel grid too large even for matrix-free Krylov / moving narrow band | [`feax.experimental.NarrowBandCMG`](#geometric-multigrid-gmg--narrowbandcmg) (GMG, O(band)) |
 | Extra residual term (e.g. cohesive interface) | `KrylovSolverOptions()` (hybrid matrix-free) or `DirectSolverOptions()` (assembled sparse tangent) with `extra_residual_fn` |
 | Extreme stiffness contrast (ill-conditioned Jacobian) | `DirectSolverOptions(solver="spsolve")` on CPU |
@@ -457,22 +505,22 @@ $$
 
 With `DirectSolverOptions`, the extra term's sparsity is detected once via automatic sparse differentiation (asdex), colored, and assembled onto the merged (bulk ∪ extra) CSR pattern — the direct solver then factorizes the exact combined tangent.
 
-Requirements: `extra_residual_fn` needs the nonlinear path (`linear=False`) and either `KrylovSolverOptions` or `DirectSolverOptions`; it cannot be combined with `P`. Dirichlet rows of the extra residual are zeroed automatically.
+Requirements: `extra_residual_fn` needs the nonlinear path (`linear=False`) and either `KrylovSolverOptions` or `DirectSolverOptions`; it cannot be combined with `projection`. Dirichlet rows of the extra residual are zeroed automatically.
 
 ## Periodic Boundary Conditions: the reduced solver
 
-Periodic constraints are imposed with a prolongation matrix `P` that maps a reduced (independent) DOF vector to the full DOF vector, `u = P · u_reduced`. Pass it via `P=`:
+Periodic constraints are imposed with a prolongation matrix `P` that maps a reduced (independent) DOF vector to the full DOF vector, `u = P · u_reduced`. Pass it via `projection=`:
 
 ```python
 solver = fe.create_solver(problem, bc,
     solver_options=fe.KrylovSolverOptions(solver='cg'),
-    linear=True, P=P)
+    linear=True, projection=P)
 ```
 
 The reduced solver solves the reduced system `Pᵀ J P · u_reduced = -Pᵀ r` and supports two operator representations:
 
-- **`KrylovSolverOptions`** — fully matrix-free: three matvecs (`P`, `J`, `Pᵀ`) per Krylov iteration, no assembled matrix.
-- **`DirectSolverOptions` / `AMGSolverOptions`** — the reduced operator `PᵀJP` is *assembled* into a sparse matrix (pattern from a boolean triple product, values from colored probes of the matrix-free action, via asdex) and handed to the direct factorization or AMG hierarchy.
+- **`KrylovSolverOptions`** — fully matrix-free: three matvecs (`P`, `J`, `Pᵀ`) per Krylov iteration, no assembled matrix. To precondition it with AMG, build the hierarchy from the reduced operator: `preconditioner=fe.amg(problem, bc, tp, projection=P)`.
+- **`DirectSolverOptions`** — the reduced operator `PᵀJP` is *assembled* into a sparse matrix (pattern from a boolean triple product, values from colored probes of the matrix-free action, via asdex) and handed to the direct factorization.
 
 A Dirichlet BC that pins only *part* of a periodic equivalence class (e.g. one node of a tied pair) is contradictory and now raises a `ValueError` at build time — constrain either interior nodes only or the entire class. See [Periodic Boundary Conditions](../advanced/periodic_boundary_conditions.md) for building `P`.
 
@@ -576,10 +624,32 @@ grads     = jax.vmap(jax.grad(loss))(vals_batch)
 The `vmap` wall-clock then stays almost flat in the batch size `B` — one factorization amortized over `B` cheap solves, instead of `B` independent factor-and-solve calls. On a ~50k-DOF elasticity problem this is ≈15–25× faster at `B = 32` for both the forward solve and `value_and_grad`. No new API is needed; the reuse happens transparently inside `jax.vmap`.
 
 :::note Only when the matrix is shared across the batch
-This fast path needs the matrix to be **invariant** across the batch (load / BC-value / source-term studies). If the batched parameter changes the matrix itself — per-sample material or density, as in topology optimization — each sample needs its own factorization, and FEAX falls back to factorizing per batch element automatically. See [Factorization reuse](#factorization-reuse-reuse_factorization).
+This fast path needs the matrix to be **invariant** across the batch (load / BC-value / source-term studies). If the batched parameter changes the matrix itself — per-sample material or density, as in topology optimization — each sample needs its own factorization, and FEAX falls back to factorizing per batch element automatically. See [Factorization reuse](#factorization-reuse-reuse_factorization), or use `fe.vmap` below, which solves such a batch with one shared factorization instead.
 :::
 
 Without `reuse_factorization`, `jax.vmap` still works but re-factorizes each batch element, so a batch of same-matrix load cases sees little speedup — the flag is what turns `vmap` into factor-once / solve-many.
+
+### Batching: load cases vs designs (`fe.vmap`)
+
+`jax.vmap` does not know what a batch means. If the batched parameters change only the right-hand side (load cases on one design), a direct solver should factorize once and back-substitute every case; if they change the stiffness matrix (one design per case), `jax.vmap` of a direct solver factorizes every case and holds all `N` factorizations at once — an A100 runs out of memory at `N = 10` for 254k DOF. `fe.vmap` batches a *linear* solver over its `TracedParams`, detects which of the two it is (a JVP of the assembled matrix with respect to the batched leaves at the solver's sample parameters) and picks the solve:
+
+- **rhs batch** (same matrix): plain `jax.vmap` of the solver — with a direct solver, one factorization and a multi-RHS solve.
+- **lhs batch** (one matrix per case): all `N` matrices are assembled on the shared sparsity pattern and solved together by batched conjugate gradients, preconditioned by one shared cuDSS factorization of their mean (`fe.shared_factor()`, or `fe.jacobi()` without cuDSS). `chunk=C` bounds the memory to `C` matrices at a time, and `return_info=True` reports the CG iterations of every case.
+
+```python
+solver = fe.create_solver(problem, bc, fe.DirectSolverOptions(), linear=True,
+                          traced_params=tp0, traced_structure=ts)
+
+# same design, N tractions -> rhs: factorize once, solve N right-hand sides
+loads_batch = fe.vmap(solver, in_axes=fe.TracedParams(volume_vars=(None,), surface_vars=[(0,)]))
+U = loads_batch(fe.TracedParams(volume_vars=(E,), surface_vars=[(loads,)]), u0, ts)       # (N, n)
+
+# N modulus fields -> lhs: batched CG with one shared factorization per group of 10
+designs = fe.vmap(solver, in_axes=0, chunk=10, return_info=True)
+U, info = designs(fe.TracedParams(volume_vars=(E_batch,), surface_vars=[(loads,)]), u0, ts)
+```
+
+The returned callable is differentiable (the adjoint batch is solved the same way) and jit-able. It takes the `fe.Solver` object from `create_solver(..., linear=True, traced_params=tp)`; Newton solves still go through `jax.vmap`. See [Batched Solves: feax.vmap](../advanced/batched_solves.md) for `in_axes`, the options, custom batch-level preconditioners and the limitations.
 
 ### Gradients with `jax.grad`
 
@@ -628,9 +698,10 @@ for i in range(len(bc_vals)):
 | Nonlinear, fixed BCs | `False` | `True` | `DirectSolverOptions()` |
 | Nonlinear, incremental loading | `False` | `False` | `DirectSolverOptions(solver="spsolve")` |
 | Large / memory-bound problem | `True`/`False` | `True` | `KrylovSolverOptions()` |
-| Large scalar-elliptic (Poisson / thermal) | `True`/`False` | `True` | `AMGSolverOptions()` |
-| Large elasticity / structural | `True`/`False` | `True` | `AMGSolverOptions(near_nullspace="rigid_body")` |
-| Periodic BCs (prolongation `P`) | `True` | `True` | `KrylovSolverOptions()` (or `DirectSolverOptions()` / `AMGSolverOptions()`) with `P` |
+| Large scalar-elliptic (Poisson / thermal) | `True`/`False` | `True` | `KrylovSolverOptions()` + `preconditioner=fe.amg(problem, bc, tp)` |
+| Large elasticity / structural | `True`/`False` | `True` | `KrylovSolverOptions()` + `preconditioner=fe.amg(..., fe.AMGOptions(near_nullspace="rigid_body"))` |
+| Periodic BCs (prolongation `P`) | `True` | `True` | `KrylovSolverOptions()` (or `DirectSolverOptions()`) with `projection=P` |
 | Extra residual term (cohesive) | `False` | — | `KrylovSolverOptions()` or `DirectSolverOptions()` with `extra_residual_fn` |
 | Batched parameter study | `True`/`False` | `True` | any (all paths vmap) |
 | Many load cases (same matrix), `vmap` | `True` | `True` | `DirectSolverOptions(solver="cudss", reuse_factorization=True)` |
+| Many designs (one matrix each), batched | `True` | `True` | `fe.vmap(solver, chunk=C)` — batched CG with `fe.shared_factor()` (see [Batched Solves](../advanced/batched_solves.md)) |

@@ -4,13 +4,16 @@ Same problem as ``bench_topopt_batched_shared.py`` -- one design per load case,
 the 0.2 x 0.2 top-face patch at the free end loaded at ``180 k / B`` degrees from
 down in the y-z plane -- but built to reach B = 100 at 500k DOF:
 
-* Solves: the B matrices differ (one design each), so they are solved with
-  batched CG preconditioned by a SHARED factorization. Cases are processed in
-  groups of ``--case-chunk`` (only one group's ``K_i`` is stored at a time).
-  ``--k0 global`` factorizes ``K(mean_i E_i)`` once per evaluation for all B
-  cases; ``--k0 group`` factorizes the mean of each group instead (B / chunk
-  factorizations, but neighbouring load angles give similar designs, so the
-  preconditioner stays close and CG needs far fewer iterations).
+* Solves: the B matrices differ (one design each), so the batch goes through
+  ``fe.vmap`` of the linear solver: it detects that the batched modulus fields
+  change the operator (an lhs batch) and solves all cases with batched CG
+  preconditioned by a SHARED factorization (``fe.shared_factor``: one cuDSS
+  factorization of the mean matrix). ``--k0 group`` processes the cases in
+  groups of ``--case-chunk`` (``chunk=``: one factorization per group, only one
+  group's ``K_i`` in memory at a time; neighbouring load angles give similar
+  designs, so the group mean is a close preconditioner and CG needs few
+  iterations). ``--k0 global`` factorizes ``K(mean_i E_i)`` once for all B
+  cases (all ``K_i`` assembled at once).
 * Sensitivities: compliance is self-adjoint, ``dc_i/drho_i = -u_i^T dK u_i``.
 * Updates: optimality criteria (OC) with a per-case bisection on the volume
   multiplier, vectorized over the B designs (GCMMA on one stacked vector would
@@ -114,8 +117,7 @@ def main(argv=None):
     import numpy as onp
     import feax as fe
     import feax.gene as gene
-    from feax.assembler import create_J_bc_csr_parametric, create_res_bc_parametric
-    from feax.solvers._cudss_compat import factorize, solve_with
+    from feax.assembler import create_res_bc_parametric
 
     _, device = device_info(jax, args.device_name)
     out_path = args.output or os.path.join(HERE, "bench_topopt_batched_oc.csv")
@@ -170,12 +172,23 @@ def main(argv=None):
     theta = onp.pi * onp.arange(B) / B
     t_applied = onp.stack([onp.zeros(B), onp.sin(theta), -onp.cos(theta)], 1) * TOTAL_FORCE / area
     F = jnp.asarray(-t_applied) @ F_unit                                # (B, n) load vectors
+    # the same loads as batched surface variables (the map returns minus the traction)
+    T = tuple(jnp.asarray(-t_applied[:, j]).reshape((B,) + (1,) * unit.ndim) * unit[None]
+              for j in range(3))                                         # 3 x (B, *unit.shape)
 
-    J_fn = create_J_bc_csr_parametric(problem, symmetric=True)
-    J_s = jax.jit(J_fn)(u0, tparams(E_ref), bc, ts)
-    indptr, indices = J_s.indptr, J_s.indices
-    rows = jnp.repeat(jnp.arange(n), jnp.diff(indptr), total_repeat_length=indices.shape[0])
-    del J_s
+    # The batched solve: fe.vmap over the per-case modulus fields and loads.
+    # The modulus changes the operator, so fe.vmap solves the batch with
+    # batched CG preconditioned by one shared factorization (per group of
+    # --case-chunk cases with --k0 group, or of the whole batch with --k0 global).
+    solver = fe.create_solver(problem, bc, fe.DirectSolverOptions(solver="cudss"), linear=True,
+                              traced_params=tparams(E_ref), traced_structure=ts,
+                              return_solution=False)
+    batched_solve = fe.vmap(
+        solver, in_axes=0, return_info=True,
+        options=fe.KrylovSolverOptions(solver="cg", tol=args.tol, atol=0.0, maxiter=args.maxiter),
+        preconditioner=fe.shared_factor(),
+        chunk=None if args.k0 == "global" else C)
+    assert batched_solve.kind == "lhs", batched_solve
     radius = args.filter_radius_cells * spacing[0]
     filt_W, filt_rowsum = filter_weights(mesh.points, radius)
     vol_w = jax.grad(gene.create_volume_fn(problem))(jnp.zeros((n_nodes,)))
@@ -188,8 +201,7 @@ def main(argv=None):
 
     # Padding the last group repeats its final case; padded results are dropped.
     idx = onp.arange(G * C).clip(max=B - 1)
-    data = dict(ts=ts, u0=u0, F=F, filter=(filt_W, filt_rowsum), vol_w=vol_w, dV=dV,
-                indptr=indptr, indices=indices, rows=rows)
+    data = dict(ts=ts, u0=u0, F=F, T=T, filter=(filt_W, filt_rowsum), vol_w=vol_w, dV=dV)
 
     def filt(X, d):                                                     # (B, n_nodes)
         Wm, rs = d["filter"]
@@ -198,57 +210,11 @@ def main(argv=None):
     def simp(rho):
         return E0 * (SIMP_EPSILON + (1.0 - SIMP_EPSILON) * rho ** penal)
 
-    # ---------- batched PCG for one group, preconditioned by a factor token ------
-    def pcg_group(datas, Fg, token, d):
-        M = jax.vmap(lambda r: solve_with(token, r))
-        spmv = jax.vmap(lambda a, x: jax.ops.segment_sum(
-            a * x[d["indices"]], d["rows"], num_segments=n))
-        bnorm = jnp.linalg.norm(Fg, axis=1)
-        Z = M(Fg)
-        state = (jnp.zeros_like(Fg), Fg, Z, jnp.sum(Fg * Z, 1),
-                 jnp.zeros(Fg.shape[0], bool), jnp.zeros(Fg.shape[0], jnp.int32), 0)
-
-        def cond(s):
-            return (s[6] < args.maxiter) & ~jnp.all(s[4])
-
-        def body(s):
-            X, R, P, rz, done, its, k = s
-            AP = spmv(datas, P)
-            alpha = jnp.where(done, 0.0, rz / jnp.sum(P * AP, 1))
-            X = X + alpha[:, None] * P
-            R = R - alpha[:, None] * AP
-            now = jnp.linalg.norm(R, axis=1) <= args.tol * bnorm
-            its = jnp.where(done, its, k + 1)
-            Z = M(R)
-            rz_new = jnp.sum(R * Z, 1)
-            fin = done | now
-            beta_ = jnp.where(fin, 0.0, rz_new / rz)
-            P = jnp.where(fin[:, None], P, Z + beta_[:, None] * P)
-            return X, R, P, jnp.where(fin, rz, rz_new), fin, its, k + 1
-
-        U, _, _, _, _, its, _ = jax.lax.while_loop(cond, body, state)
-        return U, its
-
-    def assemble(E, d):
-        return J_fn(d["u0"], tparams(E), bc, d["ts"]).data
-
-    def fact(E_mean, d):
-        return factorize(assemble(E_mean, d), d["indptr"], d["indices"], mtype_id=3, mview_id=0)
-
     def solve_all(Es, d):
         """(B, n_nodes) moduli -> (B, n) displacements, PCG iteration counts."""
-        Eg = Es[idx].reshape(G, C, -1)
-        Fg = d["F"][idx].reshape(G, C, -1)
-        token = fact(Es.mean(0), d) if args.k0 == "global" else None
-
-        def group(a):
-            E_c, F_c = a
-            tok = token if args.k0 == "global" else fact(E_c.mean(0), d)
-            datas = jax.lax.map(lambda E: assemble(E, d), E_c)
-            return pcg_group(datas, F_c, tok, d)
-
-        U, its = jax.lax.map(group, (Eg, Fg))
-        return U.reshape(G * C, -1)[:B], its.reshape(-1)[:B]
+        tp = fe.TracedParams(volume_vars=(Es,), surface_vars=[d["T"]])
+        U, info = batched_solve(tp, d["u0"], d["ts"])
+        return U, info.iterations
 
     @jax.custom_vjp
     def compliance(Es, d):

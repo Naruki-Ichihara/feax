@@ -70,11 +70,13 @@
             },
             "reference/feax/solvers/_cudss_compat",
             "reference/feax/solvers/amg",
+            "reference/feax/solvers/batched",
             "reference/feax/solvers/common",
             "reference/feax/solvers/eigen",
             "reference/feax/solvers/linear",
             "reference/feax/solvers/newton",
             "reference/feax/solvers/options",
+            "reference/feax/solvers/preconditioners",
             "reference/feax/solvers/reduced",
             "reference/feax/solvers/time_solver"
           ],
@@ -97,7 +99,8 @@
         "reference/feax/spgrid",
         "reference/feax/traced_params",
         "reference/feax/traced_structure",
-        "reference/feax/utils"
+        "reference/feax/utils",
+        "reference/feax/vmap"
       ],
       "label": "feax",
       "type": "category"

@@ -111,7 +111,7 @@ def create_helmholtz_filter(mesh, radius, P=None, solver_options=None):
     solver = fe.solver.create_solver(
         problem, bc, solver_options,
         linear=True,  # Linear problem
-        P=P,  # Optional periodic boundary conditions
+        projection=P,  # Optional periodic boundary conditions
         traced_structure=ts,
         return_solution=False,  # internal: raw flat field
     )

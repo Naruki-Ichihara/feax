@@ -10,8 +10,9 @@ selection logic for solving systems of the form A x = b arising
 in finite element analysis.
 
 Key Features:
-- Jacobi (diagonal) preconditioner
 - Solver selection: cg, bicgstab, gmres, spsolve, umfpack, cholmod, cudss
+- Preconditioning through one callable, ``preconditioner(op) -&gt; M``
+  (see :mod:`feax.solvers.preconditioners`)
 - Convergence checking for ill-conditioned problems
 - Adjoint linear solve for gradient computation
 - create_linear_solver: high-level differentiable solver for linear problems
@@ -24,7 +25,8 @@ def linear_solve_adjoint(A,
                          solver_options: AbstractSolverOptions,
                          matrix_view: MatrixView,
                          bc=None,
-                         linear_solve_fn: Optional[Callable] = None)
+                         linear_solve_fn: Optional[Callable] = None,
+                         preconditioner=None)
 ```
 
 Solve linear system for adjoint problem.
@@ -37,6 +39,7 @@ Parameters
 - **matrix_view** (*MatrixView*): Matrix storage format from the problem
 - **bc** (*DirichletBC, optional*): Boundary conditions for computing initial guess
 - **linear_solve_fn** (*callable, optional*): Pre-created linear solve function. If None, one is created from solver_options internally.
+- **preconditioner** (*callable, optional*): ``preconditioner(op) -&gt; M`` for a Krylov adjoint solve.
 
 
 Returns
@@ -78,7 +81,10 @@ def create_linear_solver(
         adjoint_solver_options: Optional[AbstractSolverOptions] = None,
         traced_params=None,
         symmetric_elimination: bool = True,
-        traced_structure=None) -> Callable[[Any, np.ndarray], np.ndarray]
+        traced_structure=None,
+        preconditioner=None,
+        adjoint_preconditioner=None
+) -> Callable[[Any, np.ndarray], np.ndarray]
 ```
 
 Create a differentiable solver for linear FE problems.
@@ -96,11 +102,13 @@ Parameters
 - **adjoint_solver_options** (*DirectSolverOptions or KrylovSolverOptions, optional*): Options for the adjoint solve used in the backward pass. Defaults to the same options as the forward solve.
 - **traced_params** (*TracedParams, optional*): Sample internal variables used to pre-warm cuDSS with concrete CSR structure before any JAX tracing. Recommended when using cuDSS and composing ``jax.jit`` with ``jax.grad``.
 - **symmetric_elimination** (*bool, default True*): Use symmetric Dirichlet elimination (zero BC rows *and* columns). Linear FE operators are symmetric after symmetric elimination, so the Krylov adjoint reuses the forward matvec (``Jᵀ = J``).
+- **preconditioner** (*callable, optional*): ``preconditioner(op) -&gt; M`` for a Krylov forward solve, called with the operator of each solve (:class:``2): :func:``3, :func:``4, a fixed ``lambda op: M``, or your own. An error with a direct solver. It can also be given (or overridden) per call, ``solver(tp, u0, preconditioner=P)`` — the way to make a pytree preconditioner such as :class:``9 a traced argument of a jitted solve rather than a closure constant.
+- **adjoint_preconditioner** (*callable, optional*): The same for the adjoint solve. Defaults to ``preconditioner`` (and to its per-call override) when the adjoint solve is Krylov.
 
 
 Returns
 -------
-- **differentiable_solve** (*callable*): A function with signature ``(traced_params, initial_guess) -&gt; solution`` that is differentiable w.r.t. ``traced_params`` via ``jax.grad``.
+- **differentiable_solve** (*callable*): ``solver(traced_params, initial_guess=None, bc=None, traced_structure=None, preconditioner=None) -&gt; solution``, differentiable w.r.t. ``traced_params`` (and ``bc``) via ``jax.grad``.
 
 
 Notes
@@ -109,7 +117,8 @@ The operator representation follows the solve method: ``DirectSolverOptions``
 assembles the Jacobian straight into CSR (for factorization), while
 ``KrylovSolverOptions`` (cg/bicgstab/gmres) is fully **matrix-free** — the
 forward and adjoint matvecs are residual JVPs, so the element Jacobian is
-never materialized.
+never materialized (a preconditioner that reads ``op.values`` / ``op.diag``
+triggers one assembly per solve).
 
 Forward pass performs a single linear solve:
 

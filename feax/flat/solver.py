@@ -415,7 +415,7 @@ def create_homogenization_solver(
     _verbose = solver_options.verbose
 
     # Internal: the raw flat vector feeds average_stress / vmapped strain cases.
-    fluctuation_solver = create_solver(problem, bc, solver_options, P=P,
+    fluctuation_solver = create_solver(problem, bc, solver_options, projection=P,
                                        return_solution=False)
 
     def _single_case(unit_strain, traced_params):

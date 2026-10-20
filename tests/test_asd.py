@@ -190,9 +190,9 @@ def test_reduced_direct_assembled():
     grid, problem, P, bc, E_cells, tp, L = _make_periodic()
     ig = fe.zero_like_initial_guess(problem, bc)
 
-    s_cg = fe.create_solver(problem, bc, P=P,
+    s_cg = fe.create_solver(problem, bc, projection=P,
         solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-12, atol=1e-14))
-    s_dir = fe.create_solver(problem, bc, P=P,
+    s_dir = fe.create_solver(problem, bc, projection=P,
         solver_options=fe.DirectSolverOptions(solver="spsolve"))
 
     sol_cg, sol_dir = s_cg(tp, ig), s_dir(tp, ig)
@@ -226,10 +226,11 @@ def test_reduced_amg_assembled():
     _, problem, P, bc, _, tp, _ = _make_periodic()
     ig = fe.zero_like_initial_guess(problem, bc)
 
-    s_cg = fe.create_solver(problem, bc, P=P,
+    s_cg = fe.create_solver(problem, bc, projection=P,
         solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-12, atol=1e-14))
-    s_amg = fe.create_solver(problem, bc, P=P,
-        solver_options=fe.AMGSolverOptions(solver="cg", tol=1e-12, atol=1e-14))
+    s_amg = fe.create_solver(problem, bc, projection=P,
+        solver_options=fe.KrylovSolverOptions(solver="cg", tol=1e-12, atol=1e-14),
+        preconditioner=fe.amg(problem, bc, tp, projection=P))
 
     sol_cg, sol_amg = s_cg(tp, ig), s_amg(tp, ig)
     ref = float(jnp.max(jnp.abs(sol_cg)))

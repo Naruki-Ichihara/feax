@@ -540,12 +540,6 @@ class SolverOptions(AbstractSolverOptions):
         - GPU backend: "cudss" (cuDSS direct solver, requires CUDA)
         - CPU backend: "cg" (Conjugate Gradient, JAX-native)
         Manual options: "cg", "bicgstab", "gmres", "spsolve", "cudss"
-    preconditioner : callable, optional
-        Preconditioner function for linear solver
-    use_jacobi_preconditioner : bool, default False
-        Whether to use Jacobi (diagonal) preconditioner automatically
-    jacobi_shift : float, default 1e-12
-        Regularization parameter for Jacobi preconditioner
     linear_solver_tol : float, default 1e-10
         Tolerance for linear solver
     linear_solver_atol : float, default 1e-10
@@ -568,9 +562,6 @@ class SolverOptions(AbstractSolverOptions):
     rel_tol: float = 1e-8
     max_iter: int = 100
     linear_solver: Optional[str] = None  # Auto-detected based on backend if not specified
-    preconditioner: Optional[Callable] = None
-    use_jacobi_preconditioner: bool = False
-    jacobi_shift: float = 1e-12
     linear_solver_tol: float = 1e-10
     linear_solver_atol: float = 1e-10
     linear_solver_maxiter: int = 10000
@@ -803,25 +794,22 @@ class KrylovSolverOptions(AbstractSolverOptions):
         Absolute tolerance for the iterative solver.
     maxiter : int, default 10000
         Maximum number of iterations.
-    preconditioner : callable, optional
-        Custom preconditioner function M(x) -> y.
-    use_jacobi_preconditioner : bool, default False
-        Whether to auto-create Jacobi (diagonal) preconditioner.
-    jacobi_shift : float, default 1e-12
-        Regularization parameter for Jacobi preconditioner.
     restart : int, optional
         Restart parameter for GMRES. Only used when solver='gmres'.
         If None, defaults to min(200, n) where n is the system size.
     x0_fn : callable, optional
         Custom function to compute initial guess: f(current_sol) -> x0.
+
+    Notes
+    -----
+    The preconditioner is not an option: pass it to :func:`feax.create_solver`
+    as ``preconditioner=`` (e.g. :func:`feax.jacobi`, :func:`feax.amg`, or any
+    ``preconditioner(op) -> M`` callable); see :mod:`feax.solvers.preconditioners`.
     """
     solver: str = "auto"
     tol: float = 1e-10
     atol: float = 1e-10
     maxiter: int = 10000
-    preconditioner: Optional[Callable] = None
-    use_jacobi_preconditioner: bool = False
-    jacobi_shift: float = 1e-12
     restart: Optional[int] = None
     x0_fn: Optional[Callable] = None
 
@@ -877,9 +865,7 @@ def resolve_iterative_solver(
         tol=options.tol,
         atol=options.atol,
         maxiter=options.maxiter,
-        preconditioner=options.preconditioner,
-        use_jacobi_preconditioner=options.use_jacobi_preconditioner,
-        jacobi_shift=options.jacobi_shift,
+        restart=options.restart,
         x0_fn=options.x0_fn,
         check_convergence=options.check_convergence,
         convergence_threshold=options.convergence_threshold,
@@ -893,121 +879,24 @@ def resolve_iterative_solver(
 
 
 # ============================================================================
-# Algebraic Multigrid (AMG) Solver Options
+# Algebraic Multigrid (AMG): moved to feax.solvers.preconditioners
 # ============================================================================
 
-@dataclass(frozen=True)
-class AMGSolverOptions(AbstractSolverOptions):
-    """Matrix-free outer Krylov preconditioned by smoothed-aggregation AMG.
+class AMGSolverOptions:
+    """Removed. AMG is a preconditioner, not a solver option.
 
-    A third linear-solver family alongside :class:`DirectSolverOptions` and
-    :class:`KrylovSolverOptions`. At solver-build time a *sample* Jacobian is
-    assembled once and a smoothed-aggregation AMG hierarchy is built on the host
-    (PyAMG) — with a **rigid-body near-null-space auto-generated from the mesh**
-    for vector problems (elasticity/structural), which is what makes AMG
-    effective there. The hierarchy is converted to a JAX-native
-    ``amjax.MultilevelSolver`` and one V-cycle is used as the preconditioner
-    ``M`` for a matrix-free outer Krylov solve (cg/gmres/bicgstab). The hierarchy
-    is fixed; the outer Krylov applies the current operator matrix-free, so it
-    stays robust as the operator changes between solves (Newton / sweeps).
+    Build it with :func:`feax.amg` (configured by :class:`feax.AMGOptions`) and
+    pass it to :func:`feax.create_solver` together with the outer Krylov
+    settings::
 
-    Requires the optional ``feax[amg]`` dependency (``amjax`` + ``pyamg``). The
-    import is deferred to solver construction.
-
-    Parameters
-    ----------
-    solver : str, default "auto"
-        Outer Krylov method: "auto" (cg for SPD, else gmres), "cg", "gmres",
-        or "bicgstab".
-    tol, atol : float
-        Outer Krylov relative / absolute tolerances.
-    maxiter : int, default 500
-        Maximum outer Krylov iterations.
-    restart : int, optional
-        GMRES restart length.
-    near_nullspace : array, str, or None, default None
-        The AMG near-null-space ``B`` — the low-energy modes the coarse grid must
-        represent. Accepts three kinds of input:
-
-        - **array** ``(n_dof, k)``: a user-defined near-null-space, used verbatim.
-        - **str preset** of a known physics:
-            - ``"rigid_body"``: rigid body modes built from the mesh node
-              coordinates (6 in 3D, 3 in 2D); the right choice for continuum
-              elasticity (single ``vec == dim`` field).
-            - ``"constant"``: the constant near-null-space (PyAMG default; correct
-              for scalar elliptic problems like Poisson/heat).
-            - ``"adaptive_sa"``: *estimate* the near-null-space numerically via
-              adaptive smoothed aggregation — relax the homogeneous system
-              ``A x = 0`` from random starts (PyAMG ``adaptive_sa_solver``).
-              Expensive (builds the candidates by repeated relaxation); worth it
-              mainly when the same operator is solved for many right-hand sides
-              and no analytic near-null-space is known. ``num_nullspace`` sets
-              how many.
-        - **None** (default): smart default — rigid body modes for a single
-          ``vec == dim`` field (elasticity), else the constant near-null-space.
-    num_nullspace : int, optional
-        Number of candidate vectors for ``near_nullspace="adaptive_sa"``. Defaults
-        to the rigid-body count (6 in 3D / 3 in 2D for vector problems, else 1).
-    cycle : str, default "V"
-        Multigrid cycle type for the preconditioner ("V", "W", "F").
-    smoother_omega : float, default 0.67
-        Damped-Jacobi relaxation factor (undamped Jacobi diverges on elasticity).
-    smoother_sweeps : int, default 2
-        Jacobi sweeps per pre/post smoothing.
-    coarse_solver : str, default "pinv"
-        AMJax coarse-grid solver ("pinv", "lu", "qr", "jacobi").
-    strength : float, optional
-        SA strength-of-connection threshold (PyAMG default when None).
-    rebuild_every : int or None, default None
-        Newton-only: how often to rebuild the AMG hierarchy from the *current*
-        tangent during a nonlinear solve (the near-null-space is always reused).
-
-        - ``None`` (default): **adaptive lag** — reuse the hierarchy across Newton
-          steps and rebuild it only when it has gone stale, detected by the linear
-          solve failing to reach ``lag_tol`` (then rebuild + re-solve that step).
-          This is the standard "rebuild on degradation" practice: few host builds,
-          robust for strong nonlinearity. Host Newton loop (eager, not jit/vmap).
-        - ``0``: build the hierarchy ONCE from the initial tangent and reuse it as
-          a fixed preconditioner for every Newton step. Cheapest and fully
-          traced/jit/vmap/grad-able; best when the operator changes little.
-        - ``k >= 1``: host Newton loop, rebuild every ``k`` iterations (fixed lag).
-
-        The adjoint always builds its preconditioner from the converged tangent.
-    lag_tol : float, default 1e-3
-        Adaptive-lag trigger (``rebuild_every=None``): rebuild the hierarchy when
-        the per-step linear solve's relative residual exceeds this, i.e. the
-        current (lagged) preconditioner can no longer solve the tangent to this
-        accuracy within ``maxiter``.
+        P = fe.amg(problem, bc, tp, fe.AMGOptions(near_nullspace="rigid_body"))
+        solver = fe.create_solver(problem, bc, fe.KrylovSolverOptions(solver="cg", tol=1e-8),
+                                  preconditioner=P, ...)
     """
-    solver: str = "auto"
-    tol: float = 1e-8
-    atol: float = 1e-10
-    maxiter: int = 500
-    restart: Optional[int] = None
-    near_nullspace: Optional[object] = None
-    num_nullspace: Optional[int] = None
-    cycle: str = "V"
-    smoother_omega: float = 0.67
-    smoother_sweeps: int = 2
-    coarse_solver: str = "pinv"
-    strength: Optional[float] = None
-    rebuild_every: Optional[int] = None
-    lag_tol: float = 1e-3
 
-    def __post_init__(self):
-        valid = ("auto", "cg", "gmres", "bicgstab")
-        if self.solver not in valid:
-            raise ValueError(
-                f"Invalid AMG outer solver: {self.solver}. Choose from {valid}"
-            )
-        if isinstance(self.near_nullspace, str):
-            valid_ns = ("rigid_body", "constant", "adaptive_sa")
-            if self.near_nullspace.lower() not in valid_ns:
-                raise ValueError(
-                    f"Invalid near_nullspace preset: {self.near_nullspace!r}. "
-                    f"Choose from {valid_ns}, or pass an (n_dof, k) array."
-                )
-
-    def uses_x0(self) -> bool:
-        """The outer Krylov consumes an initial iterate."""
-        return True
+    def __init__(self, *args, **kwargs):
+        raise TypeError(
+            "AMGSolverOptions was removed: AMG is now a preconditioner. Use "
+            "fe.create_solver(..., KrylovSolverOptions(solver=..., tol=..., maxiter=...), "
+            "preconditioner=fe.amg(problem, bc, tp, fe.AMGOptions(...)))."
+        )

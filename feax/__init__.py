@@ -178,17 +178,19 @@ from .spgrid import SparseDesign, StructuredGrid, voxelize_mesh
 from .narrowband import NarrowBand, SupersetBand
 from .problem import MatrixView, Problem
 from .solver import (
+    Solver,
     create_solver,
 )
+from .vmap import BatchedSolver, vmap
 from .solvers.common import (
     check_convergence,
     create_direct_solve_fn,
     create_iterative_solve_fn,
-    create_jacobi_preconditioner,
     create_linear_solve_fn,
     create_x0,
 )
-from .solvers.amg import build_amg_preconditioner, rigid_body_modes
+from .solvers.amg import rigid_body_modes
+from .solvers.preconditioners import AMGOptions, AMGPreconditioner, LinearOperator, amg, jacobi, shared_factor
 from .solvers.eigen import (
     BucklingConvergenceError,
     create_linear_buckling_solver,
@@ -207,7 +209,7 @@ from .solvers.time_solver import (
 )
 from .solvers.options import (
     AbstractSolverOptions,
-    AMGSolverOptions,
+    AMGSolverOptions,  # removed: a migration stub that raises
     Backend,
     CUDSSMatrixType,
     CUDSSMatrixView,

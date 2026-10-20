@@ -31,7 +31,6 @@ from .solvers.newton import (
 )
 from .solvers.options import (
     AbstractSolverOptions,
-    AMGSolverOptions,
     DirectSolverOptions,
     KrylovSolverOptions,
     NewtonOptions,
@@ -45,6 +44,71 @@ from .solvers.reduced import create_reduced_solver
 logger = logging.getLogger(__name__)
 
 
+class Solver:
+    """The callable :func:`create_solver` returns.
+
+    Calling it runs the solve, ``solver(traced_params, initial_guess=None,
+    bc=None, traced_structure=None, preconditioner=None)``, and (by default)
+    wraps the result in a :class:`feax.Solution`. It also carries what it was
+    built from — ``problem``, ``bc``, ``options``, ``adjoint_options``,
+    ``sample_params``, ``traced_structure``, ``preconditioner``, ``linear``,
+    ``symmetric_elimination``, ``projection`` — and can assemble its own
+    operator (:meth:`assemble`) and residual (:meth:`residual`); this is what
+    :func:`feax.vmap` uses to batch it.
+    """
+
+    def __init__(self, fn, *, problem, bc, options, adjoint_options, linear,
+                 symmetric_elimination, sample_params=None, traced_structure=None,
+                 preconditioner=None, adjoint_preconditioner=None, projection=None,
+                 return_solution=True):
+        self._fn = fn
+        self.problem = problem
+        self.bc = bc
+        self.options = options
+        self.adjoint_options = adjoint_options
+        self.linear = linear
+        self.symmetric_elimination = symmetric_elimination
+        self.sample_params = sample_params
+        self.traced_structure = traced_structure
+        self.preconditioner = preconditioner
+        self.adjoint_preconditioner = adjoint_preconditioner
+        self.projection = projection
+        self.return_solution = return_solution
+        self.layout = tuple((fe_.num_total_nodes, int(v_))
+                            for fe_, v_ in zip(problem.fes, problem.vec))
+        self._res_fn = None
+        self._J_fn = None
+
+    def __call__(self, *args, **kwargs):
+        from .solution import Solution
+        args = tuple(a.dofs if isinstance(a, Solution) else a for a in args)
+        kwargs = {k: (v.dofs if isinstance(v, Solution) else v) for k, v in kwargs.items()}
+        out = self._fn(*args, **kwargs)
+        return Solution(out, self.layout) if self.return_solution else out
+
+    def residual(self, sol, traced_params, bc=None, traced_structure=None):
+        """The BC-applied residual ``r(sol; traced_params)`` (flat)."""
+        if self._res_fn is None:
+            from .assembler import create_res_bc_parametric
+            self._res_fn = create_res_bc_parametric(self.problem)
+        return self._res_fn(sol, traced_params, bc if bc is not None else self.bc,
+                            traced_structure if traced_structure is not None else self.traced_structure)
+
+    def assemble(self, sol, traced_params, bc=None, traced_structure=None):
+        """The BC-applied tangent at ``sol`` as a :class:`feax.csr.CSRMatrix`."""
+        if self._J_fn is None:
+            from .assembler import create_J_bc_csr_parametric
+            self._J_fn = create_J_bc_csr_parametric(self.problem, symmetric=self.symmetric_elimination)
+        return self._J_fn(sol, traced_params, bc if bc is not None else self.bc,
+                          traced_structure if traced_structure is not None else self.traced_structure)
+
+    def __repr__(self):
+        kind = "linear" if self.linear else "newton"
+        return (f"Solver({kind}, options={type(self.options).__name__}"
+                f"({getattr(self.options, 'solver', '?')}), "
+                f"preconditioner={getattr(self.preconditioner, '__name__', self.preconditioner)!r})")
+
+
 def create_solver(
     problem: Problem,
     bc: DirichletBC,
@@ -52,12 +116,14 @@ def create_solver(
     adjoint_solver_options: Optional[AbstractSolverOptions] = None,
     newton_options: Optional[NewtonOptions] = None,
     linear: bool = False,
-    P: Optional[BCOO] = None,
+    projection: Optional[BCOO] = None,
     traced_params=None,
     extra_residual_fn: Optional[Callable] = None,
     symmetric_elimination: bool = True,
     traced_structure=None,
     return_solution: bool = True,
+    preconditioner=None,
+    adjoint_preconditioner=None,
 ) -> Callable:
     """Create a differentiable solver with custom VJP for gradient computation.
 
@@ -98,8 +164,10 @@ def create_solver(
         (the Newton forward is a traced ``jax.lax.while_loop`` — one Newton step
         per loop body, no ``pure_callback`` node — so it jits and vmaps natively;
         batched solves use a block-diagonal direct solve).
-    P : BCOO matrix, optional
-        Prolongation matrix for periodic boundary conditions.
+    projection : BCOO matrix, optional
+        Prolongation (projection) matrix of a reduced solve, e.g. periodic
+        boundary conditions: the system is solved for the reduced DOFs of
+        ``PᵀJP``.
     traced_params : TracedParams, optional
         Sample internal variables for auto solver selection and cuDSS
         pre-warming. Required when ``solver="auto"`` or cuDSS is used.
@@ -181,6 +249,24 @@ def create_solver(
         next call's ``initial_guess``). Pass ``False`` for the raw flat DOF
         vector.
 
+    preconditioner : callable, optional
+        The preconditioner of a Krylov forward solve, as one callable
+        ``preconditioner(op) -> M`` that is called inside each solve with that
+        solve's operator (a :class:`feax.LinearOperator`: matvec, and the
+        assembled values / diagonal on demand) and returns ``M(r) -> z``.
+        Built-ins: :func:`feax.jacobi` (diagonal of the current operator) and
+        :func:`feax.amg` (a smoothed-aggregation hierarchy built from a sample
+        operator); a fixed ``M`` is ``lambda op: M``. An error with a direct
+        solver. It can be overridden per call,
+        ``solver(tp, u0, preconditioner=P)``, which is how a pytree
+        preconditioner (:class:`feax.AMGPreconditioner`) becomes a traced
+        argument of a jitted solve instead of a closure constant. With the
+        Newton solver, an AMG preconditioner whose ``rebuild_every`` is not 0
+        runs a host loop that rebuilds the hierarchy from the current tangent.
+    adjoint_preconditioner : callable, optional
+        The same for the adjoint (backward-pass) solve. Defaults to
+        ``preconditioner`` when the adjoint solve is Krylov.
+
     Returns
     -------
     callable
@@ -229,25 +315,19 @@ def create_solver(
     ...     bc_step = bc.replace_vals(new_vals)  # update prescribed values
     ...     sol = solver(traced_params, sol, bc=bc_step)
     """
-    def _wrap(solver_fn):
-        """Opt-in Solution wrapper: unwraps Solution inputs (so a previous
-        result can be the next initial_guess) and wraps the flat output."""
-        if not return_solution:
-            return solver_fn
-        from .solution import Solution
-        _layout = tuple((fe_.num_total_nodes, int(v_))
-                        for fe_, v_ in zip(problem.fes, problem.vec))
-
-        def wrapped(*args, **kwargs):
-            args = tuple(a.dofs if isinstance(a, Solution) else a for a in args)
-            kwargs = {k: (v.dofs if isinstance(v, Solution) else v)
-                      for k, v in kwargs.items()}
-            return Solution(solver_fn(*args, **kwargs), _layout)
-        wrapped.preconditioner_state = getattr(solver_fn, "preconditioner_state", None)
-        return wrapped
-
     linear_options = solver_options
     adjoint_linear_options = adjoint_solver_options
+
+    def _wrap(solver_fn):
+        """Wrap the solve function in a :class:`Solver` carrying its metadata
+        (the resolved options are read when this is called)."""
+        return Solver(
+            solver_fn, problem=problem, bc=bc, options=linear_options,
+            adjoint_options=adjoint_linear_options, linear=bool(linear or projection is not None),
+            symmetric_elimination=symmetric_elimination, sample_params=traced_params,
+            traced_structure=traced_structure, preconditioner=preconditioner,
+            adjoint_preconditioner=adjoint_preconditioner, projection=projection,
+            return_solution=return_solution)
 
     # SolverOptions is now deprecated
     if isinstance(linear_options, SolverOptions) or isinstance(adjoint_linear_options, SolverOptions):
@@ -262,34 +342,37 @@ def create_solver(
             raise ValueError(
                 "extra_residual_fn requires the nonlinear Newton solver (linear=False)."
             )
-        if P is not None:
+        if projection is not None:
             raise ValueError(
-                "extra_residual_fn cannot be combined with P (prolongation matrix). "
+                "extra_residual_fn cannot be combined with projection (prolongation matrix). "
                 "Use one or the other."
             )
 
     # 1) Reduced path. KrylovSolverOptions runs matrix-free (Pᵀ(J(Pv))
-    # matvecs); DirectSolverOptions / AMGSolverOptions assemble the reduced
-    # operator PᵀJP via ASD (pattern = boolean triple product, values = colored
-    # probes of the matrix-free action) — see feax.solvers.reduced / feax.asd.
-    if P is not None:
+    # matvecs); DirectSolverOptions (and a rebuilt AMG preconditioner) assemble
+    # the reduced operator PᵀJP via ASD (pattern = boolean triple product,
+    # values = colored probes of the matrix-free action) — see
+    # feax.solvers.reduced / feax.asd.
+    if projection is not None:
         if linear_options is None:
             linear_options = KrylovSolverOptions()
         if adjoint_linear_options is None:
             adjoint_linear_options = linear_options
 
-        _reduced_ok = (DirectSolverOptions, KrylovSolverOptions, AMGSolverOptions)
+        _reduced_ok = (DirectSolverOptions, KrylovSolverOptions)
         if not isinstance(linear_options, _reduced_ok):
             raise ValueError(
-                "solver_options must be Krylov/Direct/AMG solver options when P "
+                "solver_options must be Krylov/Direct solver options when projection "
                 f"(prolongation matrix) is provided, got {type(linear_options).__name__}."
             )
         if not isinstance(adjoint_linear_options, _reduced_ok):
             raise ValueError(
-                "adjoint_solver_options must be Krylov/Direct/AMG solver options when "
-                f"P is provided, got {type(adjoint_linear_options).__name__}."
+                "adjoint_solver_options must be Krylov/Direct solver options when "
+                f"projection is provided, got {type(adjoint_linear_options).__name__}."
             )
-        return _wrap(create_reduced_solver(problem, bc, P, linear_options, adjoint_linear_options))
+        return _wrap(create_reduced_solver(
+            problem, bc, projection, linear_options, adjoint_linear_options,
+            preconditioner=preconditioner, adjoint_preconditioner=adjoint_preconditioner))
 
     # Non-reduced paths (Newton / linear): normalize missing options.
     # Default to DirectSolverOptions (direct solvers are preferred for
@@ -303,9 +386,6 @@ def create_solver(
 
     # Resolve "auto" solvers using detect_matrix_property
     _shared_opts = adjoint_linear_options is linear_options
-    # Only Direct/Krylov options carry a resolvable "auto" solver. AMGSolverOptions
-    # is lowered (and its outer Krylov resolved) inside create_linear_solver /
-    # create_newton_solver, so create_solver must not try to resolve it here.
     def _is_resolvable_auto(o):
         return (isinstance(o, (DirectSolverOptions, KrylovSolverOptions))
                 and o.solver == "auto")
@@ -323,16 +403,29 @@ def create_solver(
                 "or specify the solver explicitly (e.g. KrylovSolverOptions(solver='cg'))."
             )
 
-    if not isinstance(linear_options, (DirectSolverOptions, KrylovSolverOptions, AMGSolverOptions)):
-        raise TypeError(
-            "Unsupported solver_options type. Expected DirectSolverOptions, "
-            f"KrylovSolverOptions, or AMGSolverOptions, got {type(linear_options).__name__}."
-        )
-    if not isinstance(adjoint_linear_options, (DirectSolverOptions, KrylovSolverOptions, AMGSolverOptions)):
-        raise TypeError(
-            "Unsupported adjoint_solver_options type. Expected DirectSolverOptions, "
-            f"KrylovSolverOptions, or AMGSolverOptions, got {type(adjoint_linear_options).__name__}."
-        )
+    from .solvers.preconditioners import AMGOptions
+    for _role, _opts in (("solver_options", linear_options),
+                         ("adjoint_solver_options", adjoint_linear_options)):
+        if isinstance(_opts, AMGOptions):
+            raise TypeError(
+                f"{_role} got AMGOptions. AMG is a preconditioner: pass "
+                "KrylovSolverOptions as the options and preconditioner=fe.amg(problem, "
+                "bc, tp, AMGOptions(...)).")
+        if not isinstance(_opts, (DirectSolverOptions, KrylovSolverOptions)):
+            raise TypeError(
+                f"Unsupported {_role} type. Expected DirectSolverOptions or "
+                f"KrylovSolverOptions, got {type(_opts).__name__}."
+            )
+    for _role, _pre, _opts in (("preconditioner", preconditioner, linear_options),
+                               ("adjoint_preconditioner", adjoint_preconditioner, adjoint_linear_options)):
+        if _pre is not None and isinstance(_opts, DirectSolverOptions):
+            raise ValueError(
+                f"{_role} has no effect with a direct solver ({_opts.solver}); "
+                "use KrylovSolverOptions with it, or drop it.")
+        if _pre is not None and not callable(_pre):
+            raise TypeError(
+                f"{_role} must be callable, preconditioner(op) -> M (e.g. fe.jacobi(), "
+                f"fe.amg(...)), got {type(_pre).__name__}.")
 
     # Assemble sample Jacobian (CSR-direct) and resolve "auto" only when needed.
     if _needs_auto:
@@ -401,6 +494,8 @@ def create_solver(
             adjoint_solver_options=adjoint_linear_options,
             traced_params=traced_params,
             traced_structure=traced_structure,
+            preconditioner=preconditioner,
+            adjoint_preconditioner=adjoint_preconditioner,
         ))
 
     # 3) Nonlinear Newton path
@@ -414,4 +509,6 @@ def create_solver(
         extra_residual_fn=extra_residual_fn,
         symmetric_elimination=symmetric_elimination,
         traced_structure=traced_structure,
+        preconditioner=preconditioner,
+        adjoint_preconditioner=adjoint_preconditioner,
     ))

@@ -90,11 +90,14 @@ levels, which is why AMG's per-solve cost is low and its `eager → jit` speedup
 (Undamped Jacobi diverges on elasticity, so FEAX defaults to a damped sweep,
 $\omega=0.67$.)
 
-**Wiring.** `amg_to_krylov_options` assembles the sample Jacobian, builds the V-cycle `M`,
-and returns a plain `KrylovSolverOptions` with `preconditioner=M`. The **outer** CG/GMRES
-then applies the *current* operator matrix-free while reusing the fixed `M` — so the
-hierarchy stays valid as the operator drifts between Newton steps or parameter sweeps
-(refresh policy: `rebuild_every`).
+**Wiring.** `fe.amg(problem, bc, tp, fe.AMGOptions(...))` assembles the sample Jacobian
+and builds the V-cycle; the result is an `AMGPreconditioner` — a pytree callable
+`preconditioner(op) -> M` — that you hand to `create_solver(KrylovSolverOptions(...),
+preconditioner=P)` or to a single call, `solver(tp, u0, preconditioner=P)`, so inside
+`jax.jit` the hierarchy is a traced argument rather than a baked-in constant. The
+**outer** CG/GMRES then applies the *current* operator matrix-free while reusing the fixed
+`M` — so the hierarchy stays valid as the operator drifts between Newton steps or parameter
+sweeps (refresh policy: `AMGOptions.rebuild_every`; `P.rebuild(J_csr)` on demand).
 
 **Takeaway.** Approximate (stops at `tol`). The dominant cost (the hierarchy) is built once
 and *reused as values change*, so it belongs at setup; each solve is a handful of
