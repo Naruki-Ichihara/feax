@@ -249,4 +249,4 @@ thermax/
 # slides
 #  open-slide deck workspace developed alongside feax. Separate project, never
 #  tracked here (same treatment as thermax/ above).
-slides/
+/slides/

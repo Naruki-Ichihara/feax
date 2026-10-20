@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="/feax/slides/assets/favicon-CiLACtJO.ico" sizes="32x32" />
+    <link rel="icon" href="/feax/slides/assets/favicon-29jEF2vw.svg" type="image/svg+xml" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>open-slide</title>
+    <style>html{background-color:oklch(99% 0 0)}html.dark{background-color:oklch(14.5% 0 0)}</style>
+    <script>
+      // Apply the stored theme before first paint; next-themes only runs
+      // after the bundle loads, which flashes white for dark-mode users.
+      let stored = null;
+      try {
+        stored = localStorage.getItem('theme');
+      } catch (_) {}
+      const dark =
+        stored === 'dark' ||
+        (stored !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.classList.toggle('dark', dark);
+      document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+    </script>
+    <script type="module" crossorigin src="/feax/slides/assets/index-C5uZLOwA.js"></script>
+    <link rel="stylesheet" crossorigin href="/feax/slides/assets/index-AoK_H7Tx.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
