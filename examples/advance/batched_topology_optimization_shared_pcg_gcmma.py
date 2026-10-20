@@ -76,7 +76,8 @@ MAX_INNER = 3              # GCMMA inner (conservativity) iterations: each one i
 TRACTION = 1e-2
 REORDER_EVERY = _env("REORDER_EVERY", 0)   # also re-sort (and re-factorize) every this many iterations (0: only when regrouping)
 CG_THRESHOLD = _env("CG_THRESHOLD", 200)   # when the mean CG count exceeds this: regroup by similarity, halve SHARE, re-factorize (0: never)
-MAX_GROUPS = _env("MAX_GROUPS", 0)         # cap on the number of groups the halving may create (0: down to one design per group)
+MAX_GROUPS = _env("MAX_GROUPS", 0)         # cap on the number of groups (0: down to one design per group)
+SPLIT = os.environ.get("SPLIT", "halve")   # on CG_THRESHOLD: "halve" SHARE (again at every crossing), or "max": split once straight into MAX_GROUPS groups
 REPORT_EVERY = _env("REPORT_EVERY", 5)     # print a progress line every this many iterations
 METHOD = "gcmma"
 OUT_DIR = os.environ.get("OUT_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "output_batched_topopt_shared_pcg_gcmma")
@@ -138,7 +139,8 @@ def make_batched(share):
         solver, in_axes=in_axes,
         options=cg,
         preconditioner=fe.shared_factor() if cudss else fe.jacobi(),
-        chunk=CHUNK, share=(share or B) if cudss else None, return_info=True)
+        chunk=CHUNK, share=(share or B) if cudss else None, return_info=True,
+        self_adjoint=True)   # compliance: the adjoint solution is the forward one
 
 
 share = SHARE
@@ -256,6 +258,18 @@ class CsvLog:
     def __init__(self, path, columns):
         self.path, self.columns = path, columns
         new = not os.path.exists(path) or os.path.getsize(path) == 0
+        if not new:
+            # A file written with other columns (an earlier version of this
+            # script) is rewritten in the current layout before appending --
+            # appending as is would put this run's values under the old names.
+            with open(path, newline="") as f:
+                reader = csv.DictReader(f)
+                if reader.fieldnames != columns:
+                    rows = list(reader)
+                    with open(path, "w", newline="") as g:
+                        w = csv.DictWriter(g, fieldnames=columns)
+                        w.writeheader()
+                        w.writerows({k: r.get(k, "") or "" for k in columns} for r in rows)
         self.fh = open(path, "a", newline="")
         self.w = csv.DictWriter(self.fh, fieldnames=columns)
         if new:
@@ -345,13 +359,14 @@ for k in range(1, ITERS + 1):
     state, times["eval"] = timed(step, state, beta, order, factors, mesh_args)
     c, v, its = state.aux
     log_share, log_order = share, order
-    if CG_THRESHOLD and float(its.mean()) > CG_THRESHOLD:
+    min_share = -(-B // MAX_GROUPS) if MAX_GROUPS else 1
+    can_split = (share or B) > min_share
+    if CG_THRESHOLD and float(its.mean()) > CG_THRESHOLD and (SPLIT == "halve" or can_split):
         # the preconditioner is losing its grip: regroup the designs by operator
         # similarity and, down to MAX_GROUPS groups, halve the group size (more,
         # closer factorizations beat hundreds of CG iterations).
         new_order, times["regroup"] = timed(similarity_order, state.x, beta)
-        min_share = -(-B // MAX_GROUPS) if MAX_GROUPS else 1
-        new_share = max(min_share, (share or B) // 2)
+        new_share = min_share if SPLIT == "max" else max(min_share, (share or B) // 2)
         regrouped = True
     share, order = log_share, log_order
     log_iteration(k, beta, c, v, its, times=times, reordered=reordered, regrouped=regrouped,

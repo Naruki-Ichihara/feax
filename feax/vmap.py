@@ -35,7 +35,7 @@ import jax.numpy as jnp
 import numpy as onp
 
 from .solver import Solver
-from .solvers.batched import BatchedNewtonInfo, BatchedSolveInfo, batched_pcg
+from .solvers.batched import BatchedNewtonInfo, BatchedSolveInfo, batched_pcg, batched_spmv
 from .solvers.common import _safe_negate
 from .solvers.options import DirectSolverOptions, KrylovSolverOptions, has_cudss
 from .solvers.preconditioners import AMGPreconditioner, LinearOperator, jacobi, shared_factor
@@ -244,7 +244,7 @@ class BatchedSolver:
 def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
          options: Optional[Any] = None, preconditioner: Optional[Callable] = None,
          chunk: Optional[int] = None, share: Optional[int] = None,
-         return_info: bool = False) -> BatchedSolver:
+         return_info: bool = False, self_adjoint: bool = False) -> BatchedSolver:
     """Batch a feax solver over ``traced_params``, solving the batch well.
 
     Parameters
@@ -298,6 +298,14 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
         Default: ``chunk`` (a preconditioner per chunk). Typical use: start
         with the whole batch while the cases are alike and lower ``share`` as
         the CG counts grow.
+    self_adjoint : bool
+        The objective is self-adjoint (compliance, ``c_i = f_i . u_i``): its
+        adjoint right-hand side is the forward one, so ``λ_i = u_i``. The
+        adjoint CG then starts from ``α_i (u_i - u0)`` with ``α_i = (u_i -
+        u0)ᵀ g_i / (u_i - u0)ᵀ K_i (u_i - u0)`` (one SpMV), which is the exact
+        solution and converges at iteration 0. Only a starting guess: for an
+        objective that is not self-adjoint CG continues from there and the
+        gradient stays exact. Linear lhs batches only.
     return_info : bool
         Also return a :class:`feax.solvers.batched.BatchedSolveInfo` with the
         per-case CG iteration counts (``rhs``: zeros).
@@ -344,6 +352,9 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
         kind = "lhs" if (not solver.linear or
                          _operator_depends_on(solver, axes_tree, u0_default)) else "rhs"
 
+    if self_adjoint and (kind == "rhs" or isinstance(options, DirectSolverOptions)
+                         or not solver.linear):
+        raise NotImplementedError("self_adjoint applies to the linear lhs batch solved by CG.")
     if share is not None and (kind == "rhs" or isinstance(options, DirectSolverOptions)
                               or not solver.linear):
         raise NotImplementedError(
@@ -463,17 +474,26 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
         return LinearOperator(values=values, indptr=indptr, indices=indices, structure=ts,
                               problem=problem, bc=bc, batched=True)
 
-    def _solve_group(tp_g, u0, ts, rhs):
-        """One group: assemble its operators, build M, batched CG. ``rhs`` is
-        None (forward: b = -r(u0)) or the (C, n) adjoint right-hand sides."""
-        values = jax.vmap(lambda t: solver.assemble(u0, t, traced_structure=ts).data,
-                          in_axes=(front,))(tp_g)
+    def _cg(values, tp_c, u0, ts, rhs, M):
+        """Batched CG of one chunk. ``rhs`` is None (forward: b = -r(u0)), the
+        (C, n) adjoint right-hand sides, or ``(rhs, guess)``: start from the
+        best multiple of ``guess`` (self-adjoint mode)."""
+        indptr, indices = pattern(ts)
+        x0 = None
         if rhs is None:
             rhs = -jax.vmap(lambda t: solver.residual(u0, t, traced_structure=ts),
-                            in_axes=(front,))(tp_g)
-        M = preconditioner(_operator(values, ts))
-        indptr, indices = pattern(ts)
-        return batched_pcg(values, indptr, indices, rhs, M, tol=tol, atol=atol, maxiter=maxiter)
+                            in_axes=(front,))(tp_c)
+        elif isinstance(rhs, tuple):
+            rhs, guess = rhs
+            x0 = _projected_guess(values, indptr, indices, guess, rhs)
+        return batched_pcg(values, indptr, indices, rhs, M, tol=tol, atol=atol, maxiter=maxiter,
+                           x0=x0)
+
+    def _solve_group(tp_g, u0, ts, rhs):
+        """One group: assemble its operators, build M, batched CG."""
+        values = jax.vmap(lambda t: solver.assemble(u0, t, traced_structure=ts).data,
+                          in_axes=(front,))(tp_g)
+        return _cg(values, tp_g, u0, ts, rhs, preconditioner(_operator(values, ts)))
 
     def _grouped(tp, N, u0, ts, rhs=None, reverse=False):
         """The batch laid out in groups of ``share`` cases, ``chunk`` at a
@@ -491,7 +511,7 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
         leaves, treedef = jax.tree_util.tree_flatten(tp)
         axes = _axis_leaves(front)
         scanned = [jnp.asarray(leaf)[src] for leaf, ax in zip(leaves, axes) if ax is not None]
-        g_rhs = None if rhs is None else jnp.asarray(rhs)[src]
+        g_rhs = None if rhs is None else jax.tree_util.tree_map(lambda a: jnp.asarray(a)[src], rhs)
         indptr, indices = pattern(ts)
 
         def rebuild(group_leaves):
@@ -517,10 +537,7 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
             def solve_chunk(a):
                 c_leaves, c_rhs = a
                 tp_c = rebuild(c_leaves)
-                b = c_rhs if c_rhs is not None else -jax.vmap(
-                    lambda t: solver.residual(u0, t, traced_structure=ts), in_axes=(front,))(tp_c)
-                return batched_pcg(values_of(tp_c), indptr, indices, b, M,
-                                   tol=tol, atol=atol, maxiter=maxiter)
+                return _cg(values_of(tp_c), tp_c, u0, ts, c_rhs, M)
             return jax.lax.map(solve_chunk, (g_leaves, g_rhs_))
 
         flat = jnp.asarray(dst).reshape(-1)                               # padding -> N, dropped
@@ -592,6 +609,10 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
             return _solve_group(tp, u0, ts, rhs)
         if rhs is None:
             return _chunked(lambda c: _solve_group(c, u0, ts, None), tp, front, N, group)
+        if isinstance(rhs, tuple):                                        # chunk both together
+            RG = jnp.concatenate([rhs[0][..., None], rhs[1][..., None]], axis=-1)
+            return _chunked(lambda c, r: _solve_group(c, u0, ts, (r[..., 0], r[..., 1])),
+                            tp, front, N, group, extra=RG)
         return _chunked(lambda c, r: _solve_group(c, u0, ts, r), tp, front, N, group, extra=rhs)
 
     def _batch_size(tp):
@@ -623,13 +644,15 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
         tp, U, u0, ts, factors, token = res
         gU, _ = g
         N = gU.shape[0]
-        # adjoint: K_i λ_i = v_i (symmetric operators), solved like the forward batch
+        # adjoint: K_i λ_i = v_i (symmetric operators), solved like the forward
+        # batch; self-adjoint: started from the forward solution's direction
+        rhs = (gU, U - u0) if self_adjoint else gU
         if factors is not None:
-            lam, _ = _solve_factored(tp, N, u0, ts, factors, rhs=gU)
+            lam, _ = _solve_factored(tp, N, u0, ts, factors, rhs=rhs)
         elif chained:
-            lam, _, _ = _solve_chained(tp, N, u0, ts, rhs=gU, token=token)
+            lam, _, _ = _solve_chained(tp, N, u0, ts, rhs=rhs, token=token)
         else:
-            lam, _ = _solve_batch(tp, N, u0, ts, rhs=gU)
+            lam, _ = _solve_batch(tp, N, u0, ts, rhs=rhs)
         return _residual_cotangents(solver, U, lam, tp, ts, front, chunk), None, None, None
 
     solve_lhs.defvjp(fwd, bwd)
@@ -651,6 +674,17 @@ def vmap(solver: Solver, in_axes: Any = 0, *, batch: str = "auto",
     return BatchedSolver(solve, solver=solver, kind="lhs", in_axes=in_axes, options=options,
                          preconditioner=preconditioner, chunk=chunk, share=share,
                          return_info=return_info, factorize_fn=factorize if chained else None)
+
+
+def _projected_guess(values, indptr, indices, x, b):
+    """``α_i x_i`` with ``α_i = x_iᵀ b_i / x_iᵀ K_i x_i``: the best multiple of
+    ``x_i`` in the energy norm (Galerkin on span{x_i}); exactly ``K_i⁻¹ b_i``
+    when ``b_i`` is a multiple of ``K_i x_i``."""
+    Kx = batched_spmv(values, indptr, indices)(values, x)
+    xKx = jnp.sum(x * Kx, axis=1)
+    ok = xKx > 0
+    alpha = jnp.where(ok, jnp.sum(x * b, axis=1) / jnp.where(ok, xKx, 1.0), 0.0)
+    return alpha[:, None] * x
 
 
 def _share_layout(N, share, chunk):
