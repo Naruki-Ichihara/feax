@@ -1,4 +1,4 @@
-import{a as e,d as t,o as n}from"./index-C5uZLOwA.js";var r=2,i=3e6,a=.92,o=`os-pptx-isolate`,s=`data-os-raster-target`,c=2;function l(e){let t=Math.max(1,e.w*e.h);return Math.min(r,Math.max(1,Math.sqrt(i/t)))}var u=`
+import{a as e,d as t,o as n}from"./index--ebTRosC.js";var r=2,i=3e6,a=.92,o=`os-pptx-isolate`,s=`data-os-raster-target`,c=2;function l(e){let t=Math.max(1,e.w*e.h);return Math.min(r,Math.max(1,Math.sqrt(i/t)))}var u=`
 .${o} { background: transparent !important; }
 .${o} * { visibility: hidden !important; }
 .${o} [${s}], .${o} [${s}] * { visibility: visible !important; }
