@@ -47,6 +47,7 @@ Parameters
 - **gauss_order** (*Union[int, List[int]], optional*): Gaussian quadrature order(s). Default determined by element type
 - **location_fns** (*Optional[List[Callable]], optional*): Functions defining boundary locations for surface integrals
 - **matrix_view** (*Union[MatrixView, str], optional*): Matrix storage format: &#x27;FULL&#x27; (default), &#x27;UPPER&#x27;, or &#x27;LOWER&#x27;. Use UPPER for symmetric problems to reduce memory by ~50%.
+- **with_jxw** (*Union[bool, List[bool]], optional*): Per-variable switch for computing the physical geometry (shape-function gradients, ``JxW``, face Jacobians) of that variable&#x27;s space. Default True for every variable. A variable with ``with_jxw=False`` is a *DOF-only* space (see :class:`~feax.fe.FiniteElement`): it contributes DOFs, connectivity and sparsity but no geometry, so its mesh points may be placeholders and its cells degenerate. Typical use is an XFEM-style enrichment space that lives on a subset of the nodes (plus one phantom node for the unenriched slots). Variable 0 must keep ``with_jxw=True``.
 - **additional_info** (*Tuple[Any, ...], optional*): Additional problem-specific information passed to custom_init()
 
 

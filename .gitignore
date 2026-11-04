@@ -10,6 +10,8 @@ spineax/
 *.vtk
 *.h5
 *.xdmf
+*.pvd
+*.vtp
 *.trace.json.gz
 *.xplane.pb
 examples/private/
