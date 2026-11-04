@@ -121,6 +121,9 @@ const sidebars: SidebarsConfig = {
         'api/reference/feax/experimental/cmg',
         'api/reference/feax/experimental/narrowband',
         'api/reference/feax/experimental/mma',
+        'api/reference/feax/experimental/xfem',
+        'api/reference/feax/experimental/xfem_crack',
+        'api/reference/feax/experimental/stripe',
       ],
     },
     {

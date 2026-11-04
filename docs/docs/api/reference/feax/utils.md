@@ -40,6 +40,25 @@ Save mesh and solution data to VTK format.
 
 - `ValueError` - If neither cell_infos nor point_infos is provided.
 
+#### write\_pvd
+
+```python
+def write_pvd(pvd_file: str, frames: List[Tuple[float, str]]) -> None
+```
+
+Write a ParaView ``.pvd`` collection indexing a series of VTU files.
+
+Use it when the mesh changes between frames (so :class:`XDMFWriter`,
+which stores one fixed mesh, does not apply), e.g. the sub-cell
+visualization mesh of a growing XFEM crack.  ParaView opens the ``.pvd``
+as one time series.
+
+Parameters
+----------
+- **pvd_file** (*str*): Output path (``.pvd``).
+- **frames** (*list of (time, vtu_path)*): Frame times (monotonic) and the VTU files, absolute or relative to the ``.pvd`` directory.
+
+
 ## XDMFWriter Objects
 
 ```python

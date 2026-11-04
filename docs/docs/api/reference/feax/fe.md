@@ -29,6 +29,8 @@ Parameters
 - **dim** (*int*): Spatial dimension of the problem (2D or 3D)
 - **ele_type** (*str, optional*): Element type identifier (default: &#x27;HEX8&#x27;) Supported: &#x27;TET4&#x27;, &#x27;TET10&#x27;, &#x27;HEX8&#x27;, &#x27;HEX20&#x27;, &#x27;HEX27&#x27;, &#x27;TRI3&#x27;, &#x27;TRI6&#x27;, &#x27;QUAD4&#x27;, &#x27;QUAD8&#x27;
 - **gauss_order** (*Optional[int], optional*): Gaussian quadrature order (default: determined by element type)
+- **hess** (*bool, optional*): Also compute second derivatives of the shape functions (default False)
+- **with_jxw** (*bool, optional*): Compute the physical geometry of this space: shape-function gradients, ``JxW`` and face Jacobians (default True). ``False`` makes a *DOF-only* space: the reference shape functions, node/cell counts and DOF layout are set up as usual, but ``shape_grads``, ``JxW`` and ``v_grads_JxW`` are all-zero arrays of the standard shape and nothing is inverted, so ``mesh.points`` may be placeholders and cells may be degenerate (e.g. an XFEM enrichment space whose cells point at a phantom node where a node is not enriched). Such a space must not be variable 0 of a ``Problem``: the quadrature points, boundary faces and surface geometry are always taken from variable 0.
 
 
 Attributes

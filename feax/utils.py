@@ -19,6 +19,7 @@ from feax.mesh import Mesh
 # feax element type -> VTK cell type id (meshio/VTK share node ordering for
 # all of these, which is the ordering feax stores cells in).
 _VTK_CELL_TYPE_ID = {
+    'LINE2': 3,   # VTK_LINE (polylines, e.g. a crack path)
     'TRI3': 5,    # VTK_TRIANGLE
     'QUAD4': 9,   # VTK_QUAD
     'TET4': 10,   # VTK_TETRA
@@ -65,7 +66,9 @@ def save_sol(
     n_nodes_per_element = mesh.cells.shape[1]
     n_dim = mesh.points.shape[1]  # 2D or 3D
 
-    if n_nodes_per_element == 3:
+    if n_nodes_per_element == 2:
+        element_type = 'LINE2'
+    elif n_nodes_per_element == 3:
         element_type = 'TRI3'
     elif n_nodes_per_element == 4:
         element_type = 'QUAD4' if n_dim == 2 else 'TET4'
@@ -140,6 +143,35 @@ def save_sol(
 
     # Write the mesh (format inferred from extension: .vtu, .vtk, ...)
     grid.save(sol_file)
+
+
+def write_pvd(pvd_file: str, frames: List[Tuple[float, str]]) -> None:
+    """Write a ParaView ``.pvd`` collection indexing a series of VTU files.
+
+    Use it when the mesh changes between frames (so :class:`XDMFWriter`,
+    which stores one fixed mesh, does not apply), e.g. the sub-cell
+    visualization mesh of a growing XFEM crack.  ParaView opens the ``.pvd``
+    as one time series.
+
+    Parameters
+    ----------
+    pvd_file : str
+        Output path (``.pvd``).
+    frames : list of (time, vtu_path)
+        Frame times (monotonic) and the VTU files, absolute or relative to
+        the ``.pvd`` directory.
+    """
+    pvd_dir = os.path.dirname(os.path.abspath(pvd_file))
+    os.makedirs(pvd_dir, exist_ok=True)
+    lines = ['<?xml version="1.0"?>',
+             '<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">',
+             '  <Collection>']
+    for t, path in frames:
+        rel = os.path.relpath(os.path.abspath(path), pvd_dir)
+        lines.append(f'    <DataSet timestep="{float(t)}" group="" part="0" file="{rel}"/>')
+    lines += ['  </Collection>', '</VTKFile>', '']
+    with open(pvd_file, "w") as f:
+        f.write("\n".join(lines))
 
 
 def _normalize_field(name: str, data, expected_n: int):

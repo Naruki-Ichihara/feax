@@ -60,6 +60,15 @@ class Problem:
     matrix_view : Union[MatrixView, str], optional
         Matrix storage format: 'FULL' (default), 'UPPER', or 'LOWER'.
         Use UPPER for symmetric problems to reduce memory by ~50%.
+    with_jxw : Union[bool, List[bool]], optional
+        Per-variable switch for computing the physical geometry (shape-function
+        gradients, ``JxW``, face Jacobians) of that variable's space. Default
+        True for every variable. A variable with ``with_jxw=False`` is a
+        *DOF-only* space (see :class:`~feax.fe.FiniteElement`): it contributes
+        DOFs, connectivity and sparsity but no geometry, so its mesh points may
+        be placeholders and its cells degenerate. Typical use is an XFEM-style
+        enrichment space that lives on a subset of the nodes (plus one phantom
+        node for the unenriched slots). Variable 0 must keep ``with_jxw=True``.
     additional_info : Tuple[Any, ...], optional
         Additional problem-specific information passed to custom_init()
 
@@ -95,6 +104,7 @@ class Problem:
     matrix_view: Union[MatrixView, str] = MatrixView.FULL
     additional_info: Tuple[Any, ...] = ()
     hess: bool = False
+    with_jxw: Union[bool, List[bool]] = True
 
     def __post_init__(self) -> None:
         """Initialize all state data for the finite element problem.
@@ -126,6 +136,18 @@ class Problem:
 
         self.num_vars = len(self.mesh)
 
+        # Per-variable geometry switch (a bare bool applies to every variable).
+        if type(self.with_jxw) != type([]):
+            self.with_jxw = [bool(self.with_jxw)] * self.num_vars
+        if len(self.with_jxw) != self.num_vars:
+            raise ValueError(
+                f"with_jxw has {len(self.with_jxw)} entries but the problem has "
+                f"{self.num_vars} variables.")
+        if not self.with_jxw[0]:
+            raise ValueError(
+                "Variable 0 must have with_jxw=True: the quadrature points, "
+                "boundary faces and surface geometry are taken from it.")
+
         # Build FiniteElement objects with deduplication.
         # When two variables share the same mesh object, vec, ele_type, and
         # gauss_order the expensive JAX operations (shape_grads, linalg.inv)
@@ -136,7 +158,8 @@ class Problem:
             go_i = (self.gauss_order[i]
                     if type(self.gauss_order) == type([])
                     else self.gauss_order)
-            cache_key = (id(self.mesh[i]), self.vec[i], self.ele_type[i], go_i, self.hess)
+            cache_key = (id(self.mesh[i]), self.vec[i], self.ele_type[i], go_i, self.hess,
+                         self.with_jxw[i])
             if cache_key not in _fe_cache:
                 _fe_cache[cache_key] = FiniteElement(
                     mesh=self.mesh[i],
@@ -145,6 +168,7 @@ class Problem:
                     ele_type=self.ele_type[i],
                     gauss_order=go_i,
                     hess=self.hess,
+                    with_jxw=self.with_jxw[i],
                 )
             fes.append(_fe_cache[cache_key])
         self.fes = fes
@@ -811,6 +835,7 @@ class Problem:
             'matrix_view': self.matrix_view,
             'additional_info': self.additional_info,
             'hess': self.hess,
+            'with_jxw': self.with_jxw,
         }
         return dynamic, static
 
@@ -841,6 +866,7 @@ class Problem:
             matrix_view=static.get('matrix_view', MatrixView.FULL),  # Default for backward compatibility
             additional_info=static['additional_info'],
             hess=static.get('hess', False),
+            with_jxw=static.get('with_jxw', True),
         )
 
         return instance

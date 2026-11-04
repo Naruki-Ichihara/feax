@@ -14,7 +14,10 @@
             "reference/feax/experimental/cadjoint_backend",
             "reference/feax/experimental/cmg",
             "reference/feax/experimental/mma",
-            "reference/feax/experimental/narrowband"
+            "reference/feax/experimental/narrowband",
+            "reference/feax/experimental/stripe",
+            "reference/feax/experimental/xfem",
+            "reference/feax/experimental/xfem_crack"
           ],
           "label": "feax.experimental",
           "type": "category"

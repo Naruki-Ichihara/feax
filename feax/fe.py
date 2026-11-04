@@ -38,7 +38,20 @@ class FiniteElement:
         Supported: 'TET4', 'TET10', 'HEX8', 'HEX20', 'HEX27', 'TRI3', 'TRI6', 'QUAD4', 'QUAD8'
     gauss_order : Optional[int], optional
         Gaussian quadrature order (default: determined by element type)
-        
+    hess : bool, optional
+        Also compute second derivatives of the shape functions (default False)
+    with_jxw : bool, optional
+        Compute the physical geometry of this space: shape-function gradients,
+        ``JxW`` and face Jacobians (default True). ``False`` makes a *DOF-only*
+        space: the reference shape functions, node/cell counts and DOF layout
+        are set up as usual, but ``shape_grads``, ``JxW`` and ``v_grads_JxW``
+        are all-zero arrays of the standard shape and nothing is inverted, so
+        ``mesh.points`` may be placeholders and cells may be degenerate (e.g.
+        an XFEM enrichment space whose cells point at a phantom node where a
+        node is not enriched). Such a space must not be variable 0 of a
+        ``Problem``: the quadrature points, boundary faces and surface
+        geometry are always taken from variable 0.
+
     Attributes
     ----------
     num_cells : int
@@ -64,6 +77,7 @@ class FiniteElement:
     ele_type: str = 'HEX8'
     gauss_order: Optional[int] = None
     hess: bool = False
+    with_jxw: bool = True
 
     def __post_init__(self) -> None:
         self.points = self.mesh.points
@@ -78,7 +92,13 @@ class FiniteElement:
         self.num_quads = self.shape_vals.shape[0]
         self.num_nodes = self.shape_vals.shape[1]
         self.num_faces = self.face_shape_vals.shape[0]
-        self.shape_grads, self.JxW = self.get_shape_grads()
+        if self.with_jxw:
+            self.shape_grads, self.JxW = self.get_shape_grads()
+        else:
+            # DOF-only space: no physical geometry. Zero arrays keep every
+            # consumer's shapes valid without touching mesh.points.
+            self.shape_grads = np.zeros((self.num_cells, self.num_quads, self.num_nodes, self.dim))
+            self.JxW = np.zeros((self.num_cells, self.num_quads))
         # Initialize empty BC lists - these are no longer used since BC is handled separately
         self.node_inds_list = []
         self.vec_inds_list = []
@@ -90,8 +110,15 @@ class FiniteElement:
 
         # Optional: second derivatives of shape functions in physical coordinates
         self.shape_hessians = None
-        if self.hess:
+        if self.hess and self.with_jxw:
             self.shape_hessians = self._compute_shape_hessians()
+
+    def _require_geometry(self, what: str) -> None:
+        if not self.with_jxw:
+            raise ValueError(
+                f"{what} needs the physical geometry of this space, but it was "
+                f"built with with_jxw=False (DOF-only). Use variable 0 of the "
+                f"Problem (a with_jxw=True space) for geometry.")
 
     def get_shape_grads(self) -> Tuple[Array, Array]:
         """Compute shape function gradients in physical coordinates.
@@ -199,6 +226,10 @@ class FiniteElement:
             Surface integration scaling factor (Jacobian * weights).
             Shape: (num_selected_faces, num_face_quads)
         """
+        if not self.with_jxw:
+            n_sel = boundary_inds.shape[0]
+            return (np.zeros((n_sel, self.num_face_quads, self.num_nodes, self.dim)),
+                    np.zeros((n_sel, self.num_face_quads)))
         physical_coos = np.take(self.points, self.cells, axis=0)  # (num_cells, num_nodes, dim)
         selected_coos = physical_coos[boundary_inds[:, 0]]  # (num_selected_faces, num_nodes, dim)
         selected_f_shape_grads_ref = self.face_shape_grads_ref[boundary_inds[:, 1]]  # (num_selected_faces, num_face_quads, num_nodes, dim)
@@ -233,6 +264,7 @@ class FiniteElement:
             Physical coordinates of quadrature points.
             Shape: (num_cells, num_quads, dim)
         """
+        self._require_geometry("get_physical_quad_points")
         physical_coos = np.take(self.points, self.cells, axis=0)
         # (1, num_quads, num_nodes, 1) * (num_cells, 1, num_nodes, dim) -> (num_cells, num_quads, dim)
         physical_quad_points = np.sum(self.shape_vals[None, :, :, None] * physical_coos[:, None, :, :], axis=2)
@@ -256,6 +288,7 @@ class FiniteElement:
             Physical coordinates of surface quadrature points.
             Shape: (num_selected_faces, num_face_quads, dim)
         """
+        self._require_geometry("get_physical_surface_quad_points")
         physical_coos = np.take(self.points, self.cells, axis=0)
         selected_coos = physical_coos[boundary_inds[:, 0]]  # (num_selected_faces, num_nodes, dim)
         selected_face_shape_vals = self.face_shape_vals[boundary_inds[:, 1]]  # (num_selected_faces, num_face_quads, num_nodes)
@@ -291,6 +324,7 @@ class FiniteElement:
         """
 
         # TODO: assume this works for all variables, and return the same result
+        self._require_geometry("get_boundary_conditions_inds")
         cell_points = np.take(self.points, self.cells, axis=0)  # (num_cells, num_nodes, dim)
         cell_face_points = np.take(cell_points, self.face_inds, axis=1)  # (num_cells, num_faces, num_face_vertices, dim)
         cell_face_inds = np.take(self.cells, self.face_inds, axis=1) # (num_cells, num_faces, num_face_vertices)

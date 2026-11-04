@@ -16,11 +16,29 @@ Currently provides:
 * :mod:`feax.experimental.narrowband` — the moving-band topology
   optimization loop (OC, or MMA with full-grid state) and multires bootstrap
   built on cmg, plus the O(band) sensitivity filter.
+* :mod:`feax.experimental.stripe` — stripe patterns aligned with a nodal line
+  field on planar TRI3 meshes (2D port of Knöppel et al. 2015): print paths /
+  filament layouts as a phase ``α`` (:class:`StripePattern`), with ``cos α``
+  and the ``sin α`` interface level set for XFEM, plus line-field smoothing;
+  :class:`DifferentiableStripes` gives gradients through the eigenproblem.
+* :mod:`feax.experimental.xfem_crack` — LEFM crack growth with XFEM: the
+  crack polyline drives traced (fixed-shape) level sets, enrichment masks and
+  sub-cell quadrature, Heaviside + branch-function enrichment, and the
+  J-vector by autodiff of a virtual crack extension (:class:`CrackSpace`).
+* :mod:`feax.experimental.xfem` — XFEM on a fixed mesh: a nodal level set
+  selects the cut cells, their nodes get enriched DOFs on a DOF-only second
+  space (:class:`XFEMSpace`), and :class:`XFEMProblem` integrates a user
+  constitutive law on the interface-conforming sub-cell quadrature with a
+  pluggable enrichment (:class:`ShiftedHeaviside`, :class:`Heaviside`,
+  :class:`ShiftedAbs`, :class:`ModifiedAbs`).
 """
 
 from . import cmg
 from . import mma
 from . import narrowband
+from . import stripe
+from . import xfem
+from . import xfem_crack
 from .cmg import (
     KernelMaterial,
     Material,
@@ -41,11 +59,40 @@ from .narrowband import (
     run_narrowband_multires,
     run_narrowband_oc,
 )
+from .stripe import (
+    DifferentiableStripes,
+    StripePattern,
+    field_index,
+    line_field_angle,
+    smooth_line_field,
+)
+from .xfem_crack import (
+    CrackProblem,
+    CrackSpace,
+    crack_problem,
+    plane_strain_energy,
+)
+from .xfem import (
+    CohesiveZone,
+    Enrichment,
+    Heaviside,
+    ModifiedAbs,
+    ShiftedAbs,
+    ShiftedHeaviside,
+    XFEMProblem,
+    XFEMSpace,
+    bilinear_tsl,
+    exponential_tsl,
+    xfem_problem,
+)
 
 __all__ = [
     'cmg',
     'mma',
     'narrowband',
+    'stripe',
+    'xfem',
+    'xfem_crack',
     # cmg
     'NarrowBandCMG',
     'Material',
@@ -67,4 +114,27 @@ __all__ = [
     'run_narrowband_mma',
     'run_narrowband_multires',
     'create_sensitivity_filter',
+    # xfem
+    'Enrichment',
+    'ShiftedHeaviside',
+    'Heaviside',
+    'ShiftedAbs',
+    'ModifiedAbs',
+    'XFEMSpace',
+    'XFEMProblem',
+    'xfem_problem',
+    'CohesiveZone',
+    'bilinear_tsl',
+    'exponential_tsl',
+    # stripe
+    'StripePattern',
+    'DifferentiableStripes',
+    'line_field_angle',
+    'field_index',
+    'smooth_line_field',
+    # xfem_crack
+    'CrackSpace',
+    'CrackProblem',
+    'crack_problem',
+    'plane_strain_energy',
 ]
