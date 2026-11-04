@@ -86,9 +86,10 @@ gmsh = [
 # examples/experimental/sdf_shape_optimization.py. Not on PyPI; installed from
 # source. Only cadjoint's CAD layer is needed -- its own `fem` extra (jax-fem,
 # gmsh, petsc4py) is not, and is deliberately not pulled in here.
-cad = [
-    "cadjoint @ git+https://github.com/andrinr/cadjoint.git",
-]
+#
+# It is deliberately NOT declared as an extra: PyPI rejects any distribution
+# whose metadata carries a direct URL dependency ("pkg @ git+..."), even inside
+# an extra (upload fails with 400 Bad Request). Install it by hand.
 # CUDA runtime libraries only. JAX itself is not pinned by any extra: install
 # jax / jax[cuda12] / jax[cuda13] first (or use the NVCR container's JAX).
 cuda12 = [
