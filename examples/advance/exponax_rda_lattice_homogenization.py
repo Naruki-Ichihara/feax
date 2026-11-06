@@ -262,16 +262,21 @@ b_max, b_min = int(onp.argmax(A_U)), int(onp.argmin(A_U))
 fig = plt.figure(figsize=(15, 5.2), layout="constrained")
 gs = fig.add_gridspec(1, 3, width_ratios=(1.6, 1, 1))
 
+# x axis: similarity rank of the structures -- gene.similarity_order sorts the
+# snapshots along the principal direction of their density fields, so
+# neighbouring ranks are similar lattices (the rank carries no physical unit)
+sim_rank = onp.empty(N_SNAP, dtype=int)
+sim_rank[onp.asarray(gene.similarity_order(rho))] = onp.arange(N_SNAP)
+
 ax = fig.add_subplot(gs[0])
-sc = ax.scatter(rel_density, A_U, c=times, cmap=cmap, norm=norm, s=34, edgecolors="k", linewidths=0.4, zorder=2)
+sc = ax.scatter(sim_rank, A_U, c=times, cmap=cmap, norm=norm, s=34, edgecolors="k", linewidths=0.4, zorder=2)
 for b, lab in ((b_max, "max $A^U$"), (b_min, "min $A^U$")):
-    ax.scatter(rel_density[b], A_U[b], s=160, facecolors="none", edgecolors="r", linewidths=1.5, zorder=3)
-    ax.annotate(lab, (rel_density[b], A_U[b]), textcoords="offset points", xytext=(10, -4), fontsize=9, color="r")
-ax.set_xlim(0.0, 0.5)
+    ax.scatter(sim_rank[b], A_U[b], s=160, facecolors="none", edgecolors="r", linewidths=1.5, zorder=3)
+    ax.annotate(lab, (sim_rank[b], A_U[b]), textcoords="offset points", xytext=(10, -4), fontsize=9, color="r")
 ax.set_ylim(bottom=0.0)
-ax.set_xlabel("relative density")
+ax.set_xlabel("structure similarity rank (gene.similarity_order on the density field)")
 ax.set_ylabel("universal anisotropy index $A^U$  (0 = isotropic)")
-ax.set_title("density vs anisotropy")
+ax.set_title("structure similarity vs anisotropy")
 ax.grid(alpha=0.3)
 fig.colorbar(sc, ax=ax, label="time under ABC flow")
 
