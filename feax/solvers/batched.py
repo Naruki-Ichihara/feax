@@ -49,7 +49,8 @@ def batched_spmv(values, indptr, indices):
 
 
 def batched_pcg(values, indptr, indices, b, M: Optional[Callable] = None, *,
-                tol: float = 1e-6, atol: float = 0.0, maxiter: int = 1000, x0=None):
+                tol: float = 1e-6, atol: float = 0.0, maxiter: int = 1000, x0=None,
+                spmv: Optional[Callable] = None):
     """Solve ``K_i x_i = b_i`` for ``i = 1..N`` with preconditioned CG.
 
     Parameters
@@ -70,6 +71,11 @@ def batched_pcg(values, indptr, indices, b, M: Optional[Callable] = None, *,
         Iteration cap for the batch (a converged case stops updating).
     x0 : array (N, n), optional
         Initial iterates (zeros by default).
+    spmv : callable, optional
+        ``spmv(values, X) -> (N, n)``, replacing the default batched CSR
+        product -- e.g. several right-hand sides per matrix (``values`` of
+        shape ``(B, nnz)`` applied to ``N = B * K`` vectors) without
+        replicating the matrix ``K`` times.
 
     Returns
     -------
@@ -80,7 +86,8 @@ def batched_pcg(values, indptr, indices, b, M: Optional[Callable] = None, *,
     if b.ndim != 2:
         raise ValueError(f"b must be (N, n), got shape {b.shape}.")
     N, n = b.shape
-    spmv = batched_spmv(values, indptr, indices)
+    if spmv is None:
+        spmv = batched_spmv(values, indptr, indices)
     apply_M = (lambda R: R) if M is None else M
     bnorm = jnp.linalg.norm(b, axis=1)
     threshold = jnp.maximum(tol * bnorm, atol)

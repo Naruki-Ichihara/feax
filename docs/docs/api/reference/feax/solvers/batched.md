@@ -85,7 +85,8 @@ def batched_pcg(values,
                 tol: float = 1e-6,
                 atol: float = 0.0,
                 maxiter: int = 1000,
-                x0=None)
+                x0=None,
+                spmv: Optional[Callable] = None)
 ```
 
 Solve ``K_i x_i = b_i`` for ``i = 1..N`` with preconditioned CG.
@@ -97,6 +98,7 @@ Parameters
 - **M** (*callable, optional*): Batched preconditioner ``M(R) -&gt; Z`` on ``(N, n)`` arrays (an approximate inverse applied to every case at once). ``None`` is plain CG.
 - **maxiter** (*int*): Iteration cap for the batch (a converged case stops updating).
 - **x0** (*array (N, n), optional*): Initial iterates (zeros by default).
+- **spmv** (*callable, optional*): ``spmv(values, X) -&gt; (N, n)``, replacing the default batched CSR product -- e.g. several right-hand sides per matrix (``values`` of shape ``(B, nnz)`` applied to ``N = B * K`` vectors) without replicating the matrix ``K`` times.
 
 
 Returns

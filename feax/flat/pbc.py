@@ -14,6 +14,7 @@ import jax
 import jax.numpy as np
 import numpy as onp
 from jax.experimental.sparse import BCOO
+from scipy.spatial import cKDTree
 
 from feax.mesh import Mesh
 
@@ -104,54 +105,23 @@ def prolongation_matrix(
         4. Results in a rectangular matrix for DoF space transformation
         5. Returns JAX BCOO sparse matrix for JAX transformations compatibility
     """
-    p_node_inds_list_A = []
-    p_node_inds_list_B = []
-    p_vec_inds_list = []
+    points = onp.asarray(mesh.points)
+    EPS = 1e-5
 
+    inds_A_list = []
+    inds_B_list = []
     for bc in periodic_pairings:
-        node_inds_A = onp.argwhere(jax.vmap(bc.location_master)(mesh.points)).reshape(
-            -1
-        )
-        node_inds_B = onp.argwhere(jax.vmap(bc.location_slave)(mesh.points)).reshape(-1)
-        points_set_B = mesh.points[node_inds_B]
-
-        EPS = 1e-5
-        node_inds_B_ordered = []
-        for node_ind in node_inds_A:
-            point_A = mesh.points[node_ind]
-            dist = onp.linalg.norm(bc.mapping(point_A)[None, :] - points_set_B, axis=-1)
-            node_ind_B_ordered = node_inds_B[onp.argwhere(dist < EPS)].reshape(-1)
-            node_inds_B_ordered.append(node_ind_B_ordered)
-
-        node_inds_B_ordered = onp.array(node_inds_B_ordered).reshape(-1)
-        vec_inds = onp.ones_like(node_inds_A, dtype=onp.int32) * bc.vec
-
-        p_node_inds_list_A.append(node_inds_A)
-        p_node_inds_list_B.append(node_inds_B_ordered)
-        p_vec_inds_list.append(vec_inds)
+        node_inds_A = onp.flatnonzero(onp.asarray(jax.vmap(bc.location_master)(points)))
+        node_inds_B = onp.flatnonzero(onp.asarray(jax.vmap(bc.location_slave)(points)))
+        node_inds_B_ordered = _match_slave_nodes(bc.mapping, points, node_inds_A, node_inds_B, EPS)
         assert len(node_inds_A) == len(
             node_inds_B_ordered
         ), f"Mismatch in node pairing: {len(node_inds_A)} master nodes vs {len(node_inds_B_ordered)} slave nodes. Check your mapping."
+        inds_A_list.append(onp.asarray(node_inds_A * vec + bc.vec + offset, dtype=onp.int32))
+        inds_B_list.append(onp.asarray(node_inds_B_ordered * vec + bc.vec + offset, dtype=onp.int32))
 
-    offset = 0
-    inds_A_list = []
-    inds_B_list = []
-    for i in range(len(p_node_inds_list_A)):
-        inds_A_list.append(
-            onp.array(
-                p_node_inds_list_A[i] * vec + p_vec_inds_list[i] + offset,
-                dtype=onp.int32,
-            )
-        )
-        inds_B_list.append(
-            onp.array(
-                p_node_inds_list_B[i] * vec + p_vec_inds_list[i] + offset,
-                dtype=onp.int32,
-            )
-        )
-
-    inds_A = onp.hstack(inds_A_list)
-    inds_B = onp.hstack(inds_B_list)
+    inds_A = onp.hstack(inds_A_list) if inds_A_list else onp.zeros(0, dtype=onp.int32)
+    inds_B = onp.hstack(inds_B_list) if inds_B_list else onp.zeros(0, dtype=onp.int32)
 
     num_total_nodes = len(mesh.points)
     num_total_dofs = num_total_nodes * vec
@@ -169,24 +139,38 @@ def prolongation_matrix(
         )
     reduced_inds_map[mask] = onp.arange(M)
 
-    I = []
-    J = []
-    V = []
-    for i in range(num_total_dofs):
-        I.append(i)
-        V.append(1.0)
-        if reduced_inds_map[i] < 0:
-            J.append(reduced_inds_map[-reduced_inds_map[i] - 1])
-        else:
-            J.append(reduced_inds_map[i])
+    # row i of P: slave DoFs point at the reduced index of their master DoF
+    J = reduced_inds_map.copy()
+    slave = J < 0
+    J[slave] = reduced_inds_map[-J[slave] - 1]
+    I = onp.arange(N, dtype=onp.int32)
 
     # Create JAX BCOO sparse matrix for compatibility with FEAX ecosystem
     # BCOO format: (values, indices) where indices shape is (nnz, 2)
-    indices = np.stack([np.array(I), np.array(J)], axis=1)
-    values = np.array(V)
+    indices = np.asarray(onp.stack([I, J], axis=1))
+    values = np.ones(N)
     P_mat = BCOO((values, indices), shape=(N, M))
 
     return P_mat
+
+
+def _match_slave_nodes(mapping, points, node_inds_A, node_inds_B, eps):
+    """Slave node index of every master node (in master order): the slave
+    node(s) within ``eps`` of ``mapping(master point)``, via a KD-tree.
+
+    Vectorized on the host: no per-node device dispatch, so the cost is the
+    same on CPU and GPU."""
+    if len(node_inds_A) == 0 or len(node_inds_B) == 0:
+        return onp.zeros(0, dtype=node_inds_A.dtype)
+    pts_A = points[node_inds_A]
+    try:
+        mapped = onp.asarray(jax.vmap(mapping)(pts_A))
+    except Exception:  # mapping not vmappable: evaluate point by point
+        mapped = onp.stack([onp.asarray(mapping(p)) for p in pts_A])
+    tree = cKDTree(points[node_inds_B])
+    matches = tree.query_ball_point(mapped, r=eps)
+    hits = [node_inds_B[onp.asarray(m, dtype=onp.int64)] for m in matches]
+    return onp.concatenate(hits) if hits else onp.zeros(0, dtype=node_inds_A.dtype)
 
 
 def cyclic_prolongation_matrix(

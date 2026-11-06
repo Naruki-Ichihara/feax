@@ -53,8 +53,10 @@ import os
 from time import perf_counter
 
 # spineax keeps its last SPINEAX_FACTOR_CACHE factorizations (default 8) on the
-# GPU and cannot free them under jit; every group and adjoint solve mints one,
-# and only one is in use at a time. Must be set before spineax is imported.
+# GPU and cannot free them under jit. Without reused factors the groups
+# re-factorize one entry in place, so one is enough; with factors from
+# batched.factorize() every group keeps its own, and the cache is raised to
+# the group count before factorizing. Must be set before spineax is imported.
 os.environ.setdefault("SPINEAX_FACTOR_CACHE", "1")
 
 import jax

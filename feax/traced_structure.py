@@ -94,6 +94,14 @@ class TracedStructure:
     csr_face_perm: np.ndarray
     csr_face_sorted_slots: np.ndarray
 
+    # --- fan-in segment structure of every reduction site (see
+    #     assembler.segment_sum_fanin): tuples (uids, ustart, ulen) ---
+    res_seg: Tuple
+    res_vol_seg: Tuple
+    res_face_seg: Tuple
+    csr_vol_seg: Tuple
+    csr_face_seg: Tuple
+
     @classmethod
     def from_problem(cls, problem, free_scratch: bool = True) -> "TracedStructure":
         """Collect the structural arrays of ``problem`` into a pytree.
@@ -114,10 +122,12 @@ class TracedStructure:
             ``problem`` afterward (e.g. a linear-buckling ``K`` / ``K_g`` build),
             which still reads those arrays.
         """
-        from feax.assembler import _res_vol_slot_sort, _vol_slot_sort
+        from feax.assembler import _res_vol_slot_sort, _vol_slot_sort, seg_structure
 
         vol_perm, vol_sorted = _vol_slot_sort(problem)
         res_vol_perm, res_vol_sorted = _res_vol_slot_sort(problem)
+        seg = {name: seg_structure(problem, name)[0]
+               for name in ('res', 'res_vol', 'res_face', 'csr_vol', 'csr_face')}
 
         def arr(x):
             return np.asarray(x)
@@ -153,6 +163,8 @@ class TracedStructure:
             nanson_scale=tuple(arr(x) for x in problem.nanson_scale),
             csr_face_perm=arr(problem.csr_face_perm),
             csr_face_sorted_slots=arr(problem.csr_face_sorted_slots),
+            res_seg=seg['res'], res_vol_seg=seg['res_vol'], res_face_seg=seg['res_face'],
+            csr_vol_seg=seg['csr_vol'], csr_face_seg=seg['csr_face'],
         )
 
         # The slot sorts above are now device leaves of ``result``; the host

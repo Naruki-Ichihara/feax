@@ -44,6 +44,18 @@ def factorize(csr_values,
 
 Analyze + numerically factorize a CSR matrix, returning a solve-ready token.
 
+#### refactorize
+
+```python
+def refactorize(token, csr_values)
+```
+
+Numerically re-factorize ``token``&#x27;s matrix with new values on the same
+pattern, keeping its symbolic analysis (reordering) and its memory.
+
+The returned token replaces ``token`` (spineax renames the entry; using
+the old token afterwards re-factorizes it from scratch).
+
 #### solve\_with
 
 ```python

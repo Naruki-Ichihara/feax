@@ -445,6 +445,62 @@ Returns ``(x_mid, jump)``: (num_cut, 2) physical points and
 ``u⁻`` are the limits from ``phi &gt; 0`` / ``phi &lt; 0``, evaluated by
 calling the enrichment with ``phi = ±eps``.
 
+#### remesh
+
+```python
+def remesh(problem: Problem,
+           sol,
+           *extra,
+           split: str = "all",
+           delta_max=None,
+           damage_threshold: float = 1.0,
+           nudge: float = 1e-6) -> dict
+```
+
+Crack-aware conforming remesh of the XFEM solution.
+
+Every cell crossed by the interface is split along it (the same
+sub-triangulation as the quadrature); vertices are shared between
+neighbouring triangles *except* across the interface, where they are
+duplicated — one copy per side — so the displacement jump becomes a
+real gap in the mesh.  ``split`` selects where the mesh is opened:
+
+* ``&quot;all&quot;``: along every interface (default);
+* ``&quot;damaged&quot;``: only along chords whose cohesive damage
+  (``max δmax / δf`` over the chord&#x27;s Gauss points, needs a cohesive
+  zone and ``delta_max``) reaches ``damage_threshold`` — i.e. the
+  cracks; intact interfaces stay connected (their vertices take the
+  average of the two sides);
+* ``&quot;none&quot;``: a plain conforming refinement.
+
+Fields are evaluated at the vertices nudged by ``nudge`` toward the
+sub-triangle centroid (picks the correct side on the interface).
+
+Returns host numpy arrays: ``points`` (P, 2), ``cells`` (T, 3),
+``u`` (P, vec), ``phi`` (P,), ``parent`` (T,), ``side`` (T,),
+``grad_u`` (T, 2, 2) at the centroids, ``damage`` (T,) of the parent
+chord (0 where none), ``opened`` (T,) bool, and ``crack_lines``
+(L, 2) vertex pairs along the opened interface (both faces).
+Write it with :func:``6 on ``Mesh(points, cells, &quot;TRI3&quot;)``.
+
+#### save\_remesh\_vtu
+
+```python
+def save_remesh_vtu(filename: str,
+                    problem: Problem,
+                    sol,
+                    material: Optional[Callable] = None,
+                    crack_filename: Optional[str] = None,
+                    **kwargs) -> dict
+```
+
+Write :meth:`remesh` with :func:`feax.utils.save_sol`: point data ``u``
+(3 components, for Warp By Vector) and ``phi``; cell data ``parent``,
+``side``, ``damage``, ``opened`` and, if ``material(u_grad, phi, x)`` is
+given, ``stress`` (3x3, plane) at the sub-triangle centroids.  With
+``crack_filename`` the opened interface faces are written as ``LINE2``
+cells.  ``kwargs`` go to :meth:`remesh`.  Returns the remesh dict.
+
 #### quad\_fields
 
 ```python

@@ -103,7 +103,7 @@ Attributes
 ----------
 - **mesh** (*Mesh*): The (CCW-oriented copy of the) input mesh.
 - **angle** (*(N,)*): The nodal line-field angle used.
-- **frequency** (*float*): ``λ``: stripe phase advance per unit length (spacing ``2π/λ``).
+- **frequency** (*float or (N,) array*): ``λ``: stripe phase advance per unit length (spacing ``2π/λ``).
 - **psi** (*(N,) complex*): Unit complex field ``e^{`iα`}`` at the nodes.
 - **psi_raw** (*(N,) complex*): The eigenvector before the per-node normalisation: smooth through the branch points (where it vanishes), hence the better level set.
 - **corner_phase** (*(F, 3)*): Unwrapped phase at the three corners of each triangle (consistent within the triangle; triangles are independent &quot;islands&quot;).
@@ -122,7 +122,8 @@ def compute(cls,
             angle,
             frequency: float,
             shift: float = 1e-4,
-            oriented: bool = False) -> "StripePattern"
+            oriented: bool = False,
+            weight=None) -> "StripePattern"
 ```
 
 Compute the stripe pattern.
@@ -131,9 +132,10 @@ Parameters
 ----------
 - **mesh** (*Mesh*): Planar ``TRI3`` mesh.
 - **angle** (*(N,) array*): Nodal field angle in radians.  By default a *line* field (only ``angle mod π`` matters; use :func:`line_field_angle` for a vector field).  With ``oriented=True`` the angle is a *direction* (mod 2π): no sheet crossings are introduced, the phase ``α`` is globally consistent and ``sin α`` is single-valued — use this when the field has a consistent orientation (e.g. a print direction) and the interface level set is needed.
-- **frequency** (*float*): ``λ`` (radians per unit length): the stripe spacing is ``2π / λ``.
+- **frequency** (*float or (N,) array*): ``λ`` (radians per unit length): the stripe spacing is ``2π / λ``. A nodal array lets the spacing vary in space; where the number of stripes then has to change, the pattern inserts branch points (edge dislocations).
 - **shift** (*float*): Positive diagonal shift that keeps the stripe energy definite (does not change the eigenvector).
 - **oriented** (*bool*): Treat ``angle`` as an oriented direction field (see above).
+- **weight** (*(N,) array, optional*): Nodal multiplier of the stripe energy (edge weight = mean of its two nodes).  The *number* of branch points is fixed by the field and the frequency, their *position* by the energy: lowering the weight in a region (e.g. ``1 − 0.9 exp(−r²/r0²)`` around a point) makes it the cheapest place for a branch point and pins it there.
 
 
 #### orientable
@@ -165,7 +167,7 @@ Well defined for any line field (invariant under ``α → −α``).
 #### level\_set
 
 ```python
-def level_set(raw: bool = False) -> onp.ndarray
+def level_set(raw: bool = False, shift: float = 0.0) -> onp.ndarray
 ```
 
 Nodal ``sin α``: zero on the filament boundaries ``α = kπ`` with
@@ -178,6 +180,12 @@ zero set, but smooth through the stripe branch points, where the
 normalised phase is undefined — use it when the pattern has
 ``zero_index != 0`` triangles and the level set feeds an interface
 model.
+
+``shift`` (radians) moves the interfaces to ``α = shift + kπ``: the
+level set is ``Im(ψ e^{`−i shift`}) = |ψ| sin(α − shift)``.  Note the
+zero set has period π, so ``shift = π`` gives the same interfaces;
+``shift = π/2`` moves them from the stripe centre lines (``cos α = ±1``)
+to the stripe edges (``cos α = 0``).
 
 #### phase
 

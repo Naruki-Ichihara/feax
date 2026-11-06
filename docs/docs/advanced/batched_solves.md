@@ -8,8 +8,9 @@ sidebar_label: Batched Solves (feax.vmap)
 
 ```python
 batched = fe.vmap(solver, in_axes=0, *, batch="auto", options=None,
-                  preconditioner=None, chunk=None, return_info=False)
-U = batched(traced_params, initial_guess=None, traced_structure=None)
+                  preconditioner=None, chunk=None, share=None, return_info=False)
+U = batched(traced_params, initial_guess=None, traced_structure=None, factors=None)
+factors = batched.factorize(traced_params, initial_guess=None, traced_structure=None)
 ```
 
 ## Why not `jax.vmap`?
@@ -105,9 +106,49 @@ Any callable of the same contract can be passed — see [Writing a batch-level p
 - `fe.KrylovSolverOptions(solver="cg", tol=..., atol=..., maxiter=...)` configures the batched CG. Case `i` has converged when `‖r_i‖ ≤ max(tol · ‖b_i‖, atol)`. Only `solver="cg"` (or `"auto"`) is accepted: the batched solve is conjugate gradients, for SPD operators, so the solver must use `symmetric_elimination=True` (the default). The default is the solver's own `KrylovSolverOptions` if it has them, otherwise `cg` with `tol=1e-8`, `atol=1e-10`, `maxiter=1000`.
 - `fe.DirectSolverOptions(...)` instead factorizes **every** case (`jax.vmap` of a direct solver, built from the batched solver's problem if the solver is not itself direct). Without `chunk=` all `N` factorizations are held at once and `fe.vmap` warns; with `chunk=` the memory is bounded by one group of factorizations. `preconditioner=` is an error with a direct solver.
 
-### `chunk`
+### `chunk` and `share`
 
-`chunk=C` processes the batch in groups of `C` cases with `jax.lax.map` over the groups (the last group is padded by repeating the last case; the padded results are dropped). Each group builds its own preconditioner — with `fe.shared_factor()` that is one factorization per group of the mean of that group — and only one group's operators are in memory at a time, so the memory bound is `C` operators (plus one factorization) regardless of `N`. Grouping similar cases together makes the group mean a closer preconditioner: in the batched topology-optimization benchmark, neighbouring load angles give similar designs, and one factorization per group of 10 needs far fewer CG iterations than one global factorization for all 100. `chunk` also applies to rhs batches and to the direct-solver path.
+Two sizes control how an lhs batch is laid out, and they are independent:
+
+- **`chunk=C`: cases assembled at a time.** The batch is processed `C` cases at a time with `jax.lax.map` (the last chunk is padded by repeating the last case; the padded results are dropped and kept out of any group mean), so at most `C` operators are in memory at once, regardless of `N`.
+- **`share=S`: cases per shared preconditioner.** The batch is split into groups of `S` consecutive cases, and each group has one preconditioner. Without `share` (the default), every chunk is its own group: one preconditioner per chunk.
+
+With `fe.shared_factor()` the two combine: each group's mean operator is **accumulated chunk by chunk** (`C` operators at a time), factorized once, and that one factorization preconditions the CG of all of the group's chunks. So `share=N, chunk=4` is one factorization for the whole batch with only 4 operators in memory: one factorization can serve a batch whose operators do not fit in memory together.
+
+```python
+# one shared factorization for all N designs, 4 stiffness matrices in memory at a time
+designs = fe.vmap(solver, in_axes=0, share=N, chunk=4, return_info=True,
+                  options=fe.KrylovSolverOptions(solver="cg", tol=1e-8, maxiter=500))
+```
+
+From group to group, `fe.shared_factor()` **re-factorizes one cuDSS entry in place** (the same symbolic analysis and the same memory, new numeric values), so an evaluation costs one symbolic analysis and one factorization's memory however many groups it has. The adjoint runs the groups in reverse, starting from the forward's last factorization, so the adjoint of a single-group batch factorizes nothing.
+
+Grouping similar cases together makes the group mean a closer preconditioner: in the batched topology-optimization benchmark, neighbouring load angles give similar designs, and one factorization per group of 10 needs far fewer CG iterations than one global factorization for all 100. A typical schedule is to start with the whole batch in one group while the cases are alike and to lower `share` as the CG counts grow (see [Many Topology Optimizations at Once](batched_topology_optimization_shared_pcg.md)); `batched.operator_signature` and `feax.gene.similarity_order` order the batch so that consecutive cases, and hence the groups, are similar.
+
+Rules:
+
+- `share` applies to the **linear lhs batch solved by CG**; with an rhs batch, `options=fe.DirectSolverOptions()` or a Newton solver it raises `NotImplementedError`. `chunk` applies everywhere: rhs batches, the direct-solver path (one group of factorizations at a time) and Newton batches.
+- Only a preconditioner built from the mean operator can accumulate it chunk by chunk. Any other one (`fe.jacobi()`, AMG, a custom callable) needs every operator of its group at once, so `share > chunk` is a `ValueError` for it; with `share <= chunk` its groups of `share` cases are assembled whole.
+
+### Reusing factorizations: `factorize` and `factors=`
+
+The preconditioner only has to be close, not current. `batched.factorize(traced_params, initial_guess=None, traced_structure=None)` factorizes the mean operator of every group of `share` cases (accumulated `chunk` at a time, as above) and returns the stacked **per-group factorizations**, one cuDSS entry each, kept alive. Passing them back as `batched(..., factors=factors)` solves with them: **no mean is assembled and nothing is factorized**, the call only assembles the cases' own operators for CG, and the adjoint of that call uses the same factors.
+
+```python
+batched = fe.vmap(solver, in_axes=0, preconditioner=fe.shared_factor(),
+                  share=N, chunk=4, return_info=True, options=cg)
+factors = batched.factorize(tp_start, u0, ts)            # one factorization per group
+for k in range(n_iter):
+    U, info = batched(tp_k, u0, ts, factors=factors)     # CG only; the adjoint reuses them too
+    if info.iterations.mean() > threshold:               # grown too far from the factorized means
+        factors = batched.factorize(tp_k, u0, ts)
+```
+
+This is the pattern of an optimization loop: factorize once, reuse the factors over many iterations, and factorize again at the current parameters when the CG counts have grown too much. `factors` is a pytree of arrays and can be an argument of a jitted function.
+
+- The batch must keep its **order and `share`** while the factors are reused: factor `g` preconditions the `g`-th group of `share` consecutive cases. A different number of groups raises a `ValueError` (call `factorize` again); a re-ordered batch would pair groups with factors of other cases.
+- `factorize` and `factors=` need a preconditioner with token access, i.e. `fe.shared_factor()` (the default when cuDSS is available), on a linear lhs CG batch; otherwise they raise a `ValueError`.
+- spineax keeps `SPINEAX_FACTOR_CACHE` entries (default 8; the variable is read whenever a new entry is made). While factors are reused, set it to at least the number of groups, or an evicted group is re-factorized from its stored mean on every use (correct, but no reuse). Without `factors=`, each evaluation's entry stays resident until a later one evicts it (spineax cannot free one inside `jit`); on a large mesh set `SPINEAX_FACTOR_CACHE=1` before spineax is imported to keep exactly one.
 
 ### `return_info`
 
@@ -121,9 +162,9 @@ With `return_info=True` the call returns `(U, info)`, where `info` is a `feax.so
 
 ## The returned callable
 
-`fe.vmap` returns a `BatchedSolver`, called as `batched(traced_params, initial_guess=None, traced_structure=None)`; it exposes `kind`, `solver`, `in_axes`, `options`, `preconditioner` and `chunk`. The initial guess defaults to `fe.zero_like_initial_guess(problem, bc)` and the `TracedStructure` to the solver's; a `fe.Solution` is accepted as the initial guess. The result is a `fe.Solution` with the batch axis in front (`U.dofs` is `(N, n)`, `U.field(0)` is `(N, num_nodes, vec)`), or a raw `(N, n)` array if the solver was created with `return_solution=False`.
+`fe.vmap` returns a `BatchedSolver`, called as `batched(traced_params, initial_guess=None, traced_structure=None, factors=None)`; it exposes `kind`, `solver`, `in_axes`, `options`, `preconditioner`, `chunk` and `share`, and the methods `factorize` (above) and `operator_signature` (below). The initial guess defaults to `fe.zero_like_initial_guess(problem, bc)` and the `TracedStructure` to the solver's; a `fe.Solution` is accepted as the initial guess. The result is a `fe.Solution` with the batch axis in front (`U.dofs` is `(N, n)`, `U.field(0)` is `(N, num_nodes, vec)`), or a raw `(N, n)` array if the solver was created with `return_solution=False`.
 
-The callable is **differentiable** with respect to `traced_params`. An lhs batch has a custom VJP: the adjoint systems `K_i λ_i = v_i` are solved as one batch exactly like the forward (same preconditioner, same options, same chunking), and the cotangent of an unbatched leaf (an `in_axes` entry of `None`) is summed over the cases. An rhs batch differentiates through the solver's own `custom_vjp` under `jax.vmap`. The `info` output carries no gradient.
+The callable is **differentiable** with respect to `traced_params`. An lhs batch has a custom VJP: the adjoint systems `K_i λ_i = v_i` are solved as one batch exactly like the forward (same preconditioner, same options, same `chunk` / `share` groups, the same `factors` if given), and the cotangent of an unbatched leaf (an `in_axes` entry of `None`) is summed over the cases. The `traced_params` cotangents `-(∂r/∂p)ᵀ λ_i` are computed `chunk` cases at a time too: one case's residual VJP carries element-sized intermediates, and a `vmap` over the whole batch held 17 GiB for 100 cases at 500k DOF. An rhs batch differentiates through the solver's own `custom_vjp` under `jax.vmap`. The `info` output carries no gradient.
 
 ```python
 tp_batch = fe.TracedParams(volume_vars=(E_batch,), surface_vars=[(loads,)])
@@ -134,9 +175,15 @@ dJ.volume_vars[0].shape    # (N, n_nodes): one sensitivity per design
 It composes with `jax.jit` — put the batch axes wherever they are in your data and let `in_axes` describe them:
 
 ```python
-solve = jax.jit(lambda E, L, ts: designs(fe.TracedParams(volume_vars=(E,), surface_vars=[(L,)]), None, ts)[0].dofs)
-U = solve(E_batch, loads, ts)
+solve = jax.jit(lambda E, L, u0, ts: designs(fe.TracedParams(volume_vars=(E,), surface_vars=[(L,)]), u0, ts)[0].dofs)
+U = solve(E_batch, loads, u0, ts)
 ```
+
+**Pass the mesh-sized arrays into the jitted function.** The CSR pattern of the batch is read from the call's `TracedStructure`, whose arrays are traced leaves, so nothing nnz-sized is baked into the jitted caller as a constant. That only holds when `traced_structure` is an argument of the jitted function: with `traced_structure=None` the call falls back to the solver's own `TracedStructure`, closed over, and at ~10⁵ DOF and up XLA spends minutes (on one thread) folding such constants. The same goes for the initial guess, a `factors` pytree and a density filter (`gene.create_density_filter` returns a `DensityFilter` pytree for this reason).
+
+### `operator_signature`
+
+`batched.operator_signature(traced_params, initial_guess=None, traced_structure=None)` returns a signature of every case's operator, `(N, n_dof)`: the log of the diagonal of its BC-applied stiffness matrix at the initial guess. It does not depend on how the design is parametrized (density, modulus, orientation, ...): whatever enters the operator shows up here. Feed it to `feax.gene.similarity_order` to order the batch so that the groups of `share` (or `chunk`) cases hold similar operators. It is jitted once per `BatchedSolver`, with the mesh-sized arrays as arguments, and assembles `chunk` operators at a time (all at once would hold `N` operators: 29 GiB for 100 cases at 500k DOF).
 
 ## Full example
 
@@ -193,6 +240,12 @@ print(designs.kind, info.iterations, info.converged.all())   # lhs [..] True
 
 # sensitivities of a batch objective: one adjoint batch, solved the same way
 dJ = jax.grad(lambda tp: jnp.sum(designs(tp, u0, ts)[0].dofs ** 2))(tp_batch)
+
+# one factorization for the whole batch, 2 operators in memory at a time, made once and reused
+shared = fe.vmap(solver, in_axes=0, share=N, chunk=2, return_info=True,
+                 options=fe.KrylovSolverOptions(solver="cg", tol=1e-8, maxiter=500))
+factors = shared.factorize(tp_batch, u0, ts)
+U, info = shared(tp_batch, u0, ts, factors=factors)
 ```
 
 Each case of the lhs batch matches a direct solve of that case to the CG tolerance, and `dJ.volume_vars[0][i]` matches `jax.grad` of the single-case solver at case `i`.
@@ -213,7 +266,7 @@ def scaled_jacobi(shift=1e-12):
 batched = fe.vmap(solver, in_axes=0, preconditioner=scaled_jacobi())
 ```
 
-Per-group factorizations built from `fe.shared_factor()` — one cuDSS factorization per group of `G` consecutive cases, each applied to its own rows of the batch. This is what `chunk=G` does implicitly, but written out it keeps all cases in a single CG loop (one convergence test over the whole batch) and lets the groups be chosen freely:
+Per-group factorizations built from `fe.shared_factor()` — one cuDSS factorization per group of `G` consecutive cases, each applied to its own rows of the batch. This is what `share=G` does implicitly (there with the group means accumulated chunk by chunk), but written out it keeps all cases in a single CG loop (one convergence test over the whole batch) and lets the groups be chosen freely:
 
 ```python
 def grouped_factor(G):
@@ -246,7 +299,7 @@ A Newton solver (`create_solver(..., linear=False)`) is batched by the same call
 3. the Armijo line search of the solver's `NewtonOptions` runs per case;
 4. a case that has converged (`tol` / `rel_tol`), or whose line search failed, keeps its iterate while the others go on, until every case is done or `max_iter`.
 
-Every case's **final iterate is returned whether or not it converged**, and `info` is a `BatchedNewtonInfo` that says what happened to each case: `iterations` (Newton steps), `converged` (residual reached `tol` / `rel_tol`), `line_search_failed` (stopped because the Armijo search found no step), `cg_iterations` (CG iterations summed over the steps) and `residual` (final relative residual). A case that is neither converged nor failed ran out of `max_iter`. Under tracing no exception can be raised, so `raise_on_line_search_failure` does not apply here; check the flags. The custom VJP solves the `N` adjoint systems of the converged tangents the same way, so the tangents are assumed symmetric (a hyperelastic tangent derived from an energy is), with `symmetric_elimination=True`. `chunk=` groups the cases exactly as for a linear batch, with one preconditioner per group and per step. The initial guess may be shared, `(n,)`, or given per case, `(N, n)`.
+Every case's **final iterate is returned whether or not it converged**, and `info` is a `BatchedNewtonInfo` that says what happened to each case: `iterations` (Newton steps), `converged` (residual reached `tol` / `rel_tol`), `line_search_failed` (stopped because the Armijo search found no step), `cg_iterations` (CG iterations summed over the steps) and `residual` (final relative residual). A case that is neither converged nor failed ran out of `max_iter`. Under tracing no exception can be raised, so `raise_on_line_search_failure` does not apply here; check the flags. The custom VJP solves the `N` adjoint systems of the converged tangents the same way, so the tangents are assumed symmetric (a hyperelastic tangent derived from an energy is), with `symmetric_elimination=True`. `chunk=` groups the cases exactly as for a linear batch, with one preconditioner per group and per step (`share=` and `factors=` are for linear batches only). The initial guess may be shared, `(n,)`, or given per case, `(N, n)`.
 
 ```python
 newton = fe.create_solver(problem, bc, fe.DirectSolverOptions(), linear=False,
@@ -263,9 +316,10 @@ U, info = batched(fe.TracedParams((), [(loads,)]), u0, ts)   # N load levels, N 
 - **The sample parameters are required.** The solver must have been created with `traced_params=`; it is how `fe.vmap` sees the parameter structure and detects the batch kind.
 - **No reduced solvers.** A solver with `projection=` (periodic boundary conditions) is not supported yet.
 - **CG only, SPD operators.** The lhs batch is conjugate gradients on the symmetric, BC-eliminated operator: `options.solver` must be `"cg"` (or `"auto"`) and the solver must use `symmetric_elimination=True`. Non-symmetric problems can use `options=fe.DirectSolverOptions()` with `chunk=`.
+- **`share=`, `factorize` and `factors=` are for the linear CG batch.** They need `fe.shared_factor()` (cuDSS) to share a factorization across more cases than are assembled at a time, and they do not apply to rhs, direct-solver or Newton batches.
 - **One batch kind per `fe.vmap`.** The rhs/lhs decision is made once, at the sample parameters, from the leaves `in_axes` marks as batched; if a leaf changes the operator only away from the sample, pass `batch="lhs"` explicitly.
 - **The batch is over `traced_params`.** Boundary-condition *values* (`bc=bc.replace_vals(v)`) are not a batch axis of `fe.vmap`; use `jax.vmap` with `reuse_factorization=True` for those (see the [Solver Guide](../getting-started/solver.md#batched-solves-with-jaxvmap)).
 
 ## Benchmarks
 
-`examples/benchmark/bench_topopt_batched_oc.py` runs 100 independent topology optimizations (one design per load case) at 500k DOF through `fe.vmap` with `fe.shared_factor`, in groups of `--case-chunk` designs (`chunk=`), with `--k0 group` (one factorization per group) or `--k0 global` (one for the whole batch). On an A100, 100 designs in 10 OC iterations took 1970 s, about 21 s per design, with CG growing to ~210 (mean) / ~420 (max) iterations as the designs separated. See the [benchmark README](https://github.com/Naruki-Ichihara/feax/tree/main/examples/benchmark) for the numbers behind the shared factorization alone (`bench_shared_factor_pcg.py`: ~27 CG iterations and a 6.9–19.5× lower cost per case than a direct solve of each case at 500k DOF for a mild modulus spread).
+`examples/benchmark/bench_topopt_batched_oc.py` runs 100 independent topology optimizations (one design per load case) at 500k DOF through `fe.vmap` with `fe.shared_factor`, in groups of `--case-chunk` designs (`chunk=`), with `--k0 group` (one factorization per group) or `--k0 global` (one for the whole batch). On an A100, 100 designs in 10 OC iterations took 1970 s, about 21 s per design, with CG growing to ~210 (mean) / ~420 (max) iterations as the designs separated. That benchmark factorizes in every evaluation; the [batched topology-optimization tutorial](batched_topology_optimization_shared_pcg.md) instead factorizes once with `share=` and reuses the factors (`factors=`): at 503k DOF × 100 designs on an A100 40GB, the factorization of the uniform initial design, reused throughout, kept CG at ~130 iterations, and 8 iterations took 1303 s against 2191 s re-factorizing every evaluation. See the [benchmark README](https://github.com/Naruki-Ichihara/feax/tree/main/examples/benchmark) for the numbers behind the shared factorization alone (`bench_shared_factor_pcg.py`: ~27 CG iterations and a 6.9–19.5× lower cost per case than a direct solve of each case at 500k DOF for a mild modulus spread).

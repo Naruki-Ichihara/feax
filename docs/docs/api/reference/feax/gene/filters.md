@@ -109,6 +109,42 @@ Solves: ρ̃ - r² ∇²ρ̃ = ρ_source
 >>> grad_fn = jax.grad(objective)
 ```
 
+## DensityFilter Objects
+
+```python
+@jax.tree_util.register_pytree_node_class
+class DensityFilter()
+```
+
+The filter :func:`create_density_filter` returns: ``filt(rho)``.
+
+A pytree whose leaves are the sparse weights, so it can be an *argument*
+of a jitted function. Closed over instead, the weights (~10^7 entries at
+10^5 nodes) are baked into the executable as constants, which makes XLA
+compilation slow at scale; pass the filter in::
+
+    @jax.jit
+    def objective(X, filt):
+        rho = filt(X)
+        ...
+
+#### \_\_call\_\_
+
+```python
+def __call__(rho)
+```
+
+Apply density filter to node-based design variables.
+
+**Arguments**:
+
+- `rho` - Design variables at nodes (num_nodes,), or a batch (B, num_nodes)
+
+
+**Returns**:
+
+  Filtered design variables, same shape
+
 #### create\_density\_filter
 
 ```python
@@ -144,12 +180,15 @@ where w_ij is a distance-based weight function.
 
 **Returns**:
 
-- `filter_fn` - A pure-JAX function (rho) -&gt; rho_filtered; compose it
-  under the caller&#x27;s ``jax.jit`` (feax.gene.optimizer does this)
+- `filter_fn` - A :class:`DensityFilter`, pure-JAX (rho) -&gt; rho_filtered;
+  compose it under the caller&#x27;s ``jax.jit`` (feax.gene.optimizer
+  does this). It is a pytree: on a large mesh pass it to the jitted
+  function as an argument rather than closing over it, so the
+  weights are not compiled in as constants.
 - `Input` - (num_nodes,) node-based density field, or a batch
   of them, (B, num_nodes) (e.g. the designs of a
   ``feax.vmap`` batch)
-- `radius`0 - the filtered field(s), same shape
+- `radius`1 - the filtered field(s), same shape
 
 
 **Example**:
@@ -171,7 +210,8 @@ where w_ij is a distance-based weight function.
 **Notes**:
 - This filter is linear and does not require solving a PDE
 - The cone weight function (default) is most common in literature
-- For large meshes, pre-computation of weights may require significant memory
+- The weights hold every neighbour pair within the radius: ~(4/3 pi (r/h)^3)
+entries per node in 3-D
 - The filter preserves the integral of the density field (mass conservation)
 
 #### density\_filter

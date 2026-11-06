@@ -84,12 +84,17 @@ gmsh = [
 # the geometry and feax solves it on a fixed StructuredGrid, so shape parameters
 # carry sensitivity without the mesh ever moving. See
 # examples/experimental/sdf_shape_optimization.py. Not on PyPI; installed from
-# source. Only cadjoint's CAD layer is needed -- its own `fem` extra (jax-fem,
-# gmsh, petsc4py) is not, and is deliberately not pulled in here.
+# source. Only its CAD layer is used here; nothing in feax imports it outside
+# that example.
+#
+# open-physics depends on feax in turn -- it solves with it, and now owns the
+# backend adapter that used to live here as feax.experimental.cadjoint_backend.
+# That makes this a dependency cycle, so installing feax never pulls it in.
 #
 # It is deliberately NOT declared as an extra: PyPI rejects any distribution
 # whose metadata carries a direct URL dependency ("pkg @ git+..."), even inside
-# an extra (upload fails with 400 Bad Request). Install it by hand.
+# an extra (upload fails with 400 Bad Request). Install it by hand:
+#   pip install "open-physics @ git+https://github.com/Naruki-Ichihara/open-physics.git"
 # CUDA runtime libraries only. JAX itself is not pinned by any extra: install
 # jax / jax[cuda12] / jax[cuda13] first (or use the NVCR container's JAX).
 cuda12 = [

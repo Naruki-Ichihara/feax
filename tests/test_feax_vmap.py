@@ -154,3 +154,79 @@ def test_rejects_non_solver_and_accepts_newton(s):
     newton = fe.create_solver(s["problem"], s["bc"], s["direct"], linear=False,
                               traced_params=s["tp0"], traced_structure=s["ts"])
     assert fe.vmap(newton, in_axes=fe.TracedParams(volume_vars=(None,), surface_vars=[(0,)])).kind == "lhs"
+
+
+@pytest.mark.skipif(not fe.solvers.options.has_cudss(), reason="needs cuDSS")
+@pytest.mark.parametrize("share, chunk", [(None, None), (2, 2), (5, 2)])
+def test_lhs_scaled_shared_factor(s, share, chunk):
+    """shared_factor(scaling=True): same solution and gradient, factors reusable."""
+    opts = fe.KrylovSolverOptions(solver="cg", tol=1e-11, atol=1e-13, maxiter=500)
+    batched = fe.vmap(s["solver"], in_axes=0, preconditioner=fe.shared_factor(scaling=True),
+                      share=share, chunk=chunk, return_info=True, options=opts)
+    tp = fe.TracedParams(volume_vars=(s["E"],), surface_vars=[(s["loads"],)])
+    U, info = batched(tp, s["u0"], s["ts"])
+    assert _rel(U.dofs, s["ref_lhs"]) < 1e-7 and bool(info.converged.all())
+    g = jax.grad(lambda tp: jnp.sum(batched(tp, s["u0"], s["ts"])[0].dofs ** 2))(tp)
+    for i in range(s["N"]):
+        assert _rel(g.volume_vars[0][i], s["g_ref"][i].volume_vars[0]) < 1e-6
+    gj = jax.jit(jax.grad(lambda tp: jnp.sum(batched(tp, s["u0"], s["ts"])[0].dofs ** 2)))(tp)
+    assert _rel(gj.volume_vars[0], g.volume_vars[0]) < 1e-8
+    factors = batched.factorize(tp, s["u0"], s["ts"])
+    U2, _ = batched(tp, s["u0"], s["ts"], factors=factors)
+    assert _rel(U2.dofs, s["ref_lhs"]) < 1e-7
+
+
+def test_linear_system_batch_multi_rhs():
+    """fe.vmap on a LinearSystemBatch: several right-hand sides per case, solved
+    and differentiated against dense references."""
+    import numpy as onp
+    n, N, K = 30, 4, 3
+    rng = onp.random.default_rng(0)
+    # SPD tridiagonal operators on one pattern, scaled per case by a parameter field
+    rows, cols = [], []
+    for i in range(n):
+        for j in (i - 1, i, i + 1):
+            if 0 <= j < n:
+                rows.append(i); cols.append(j)
+    rows, cols = onp.array(rows), onp.array(cols)
+    indptr = jnp.asarray(onp.searchsorted(rows, onp.arange(n + 1)))
+    indices = jnp.asarray(cols)
+    diag_slots = jnp.asarray(onp.flatnonzero(rows == cols))
+    a = jnp.asarray(0.5 + rng.random((N, n)))                       # per-case node stiffness
+    f = jnp.asarray(rng.standard_normal((K, n)))
+
+    def values(tp, u0, ts):
+        ai = tp.volume_vars[0]                                       # (C, n)
+        off = -0.5 * jnp.minimum(ai[:, rows], ai[:, cols])
+        return jnp.where(jnp.asarray(rows == cols)[None], 2.0 * ai[:, rows], off)
+
+    def rhs(tp, u0, ts):
+        return jnp.broadcast_to(f[None] * tp.volume_vars[0][:, None, :], (tp.volume_vars[0].shape[0], K, n))
+
+    spec = fe.LinearSystemBatch(values=values, rhs=rhs, pattern=lambda ts: (indptr, indices),
+                                diag_slots=lambda ts: diag_slots, n_rhs=K)
+
+    def dense(ai):
+        V = values(fe.TracedParams(volume_vars=(ai[None],)), None, None)[0]
+        A = jnp.zeros((n, n)).at[rows, cols].set(V)
+        b = f * ai[None, :]
+        return jnp.linalg.solve(A, b.T).T                            # (K, n)
+
+    X_ref = jnp.stack([dense(a[i]) for i in range(N)])
+    loss_ref = lambda A_: jnp.sum(jnp.stack([dense(A_[i]) for i in range(N)]) ** 3)
+    g_ref = jax.grad(loss_ref)(a)
+    pcs = [fe.jacobi()] + ([fe.shared_factor(), fe.shared_factor(scaling=True)]
+                          if fe.solvers.options.has_cudss() else [])
+    for pc in pcs:
+        for share in (None, 2):
+            bs = fe.vmap(spec, in_axes=0, preconditioner=pc, share=share, chunk=share, return_info=True,
+                         options=fe.KrylovSolverOptions(solver="cg", tol=1e-12, maxiter=500))
+            tp = fe.TracedParams(volume_vars=(a,))
+            X, info = bs(tp)
+            assert X.shape == (N, K, n) and info.iterations.shape == (N, K)
+            assert _rel(X, X_ref) < 1e-9
+            g = jax.grad(lambda A_: jnp.sum(bs(fe.TracedParams(volume_vars=(A_,)))[0] ** 3))(a)
+            assert _rel(g, g_ref) < 1e-7
+            gj = jax.jit(jax.grad(lambda A_: jnp.sum(bs.solve(fe.TracedParams(volume_vars=(A_,)))[0] ** 3)))(a)
+            assert _rel(gj, g_ref) < 1e-7
+    assert bs.operator_signature(tp).shape == (N, n)

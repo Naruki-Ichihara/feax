@@ -3,7 +3,8 @@
 A shared preconditioner (:func:`feax.shared_factor`) is only as good as the
 designs of its group are alike, so a batch of designs is best solved in groups
 of *similar* ones. These helpers order a batch so that consecutive designs
-are similar; the solver's ``chunk=`` then groups them. They work on any
+are similar; :func:`feax.vmap`'s ``share=`` then groups them (one
+shared factorization per ``share`` consecutive designs). They work on any
 feature vector per design, ``(B, f)``: the design field itself, the SIMP
 modulus (on a log scale), or — independent of the parametrization — the
 operator signature of the batched solver

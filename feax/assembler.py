@@ -8,6 +8,7 @@ physics kernels (Laplace, mass, surface, and universal).
 """
 
 import functools
+import os
 import warnings
 from typing import TYPE_CHECKING, Any, Callable, List, Tuple
 
@@ -825,6 +826,200 @@ def _value_and_jacfwd(f: Callable, x: np.ndarray) -> Tuple[np.ndarray, np.ndarra
 _ASSEMBLY_BATCH_SIZE = 256
 
 
+# Assembly reductions without atomics ------------------------------------------
+#
+# Every reduction of element values into DOFs / CSR slots in this module is a
+# segmented sum over a *pre-sorted* segment-id array (``V[perm]`` with
+# ascending ids). On XLA:GPU a ``jax.ops.segment_sum`` -- sorted or not, as
+# long as the ids are not unique -- is lowered to a scatter-add with atomic
+# adds (checked on the PTX): the assembled values are not reproducible at
+# rounding level and, on at least one platform (GB10 / driver 580 / XLA
+# 0.11-dev), such kernels produced corrupted values on the first execution of a
+# compiled program when they ran at its start.
+#
+# ``segment_sum_fanin`` performs the same reduction without a scatter-add: the
+# fan-in of a segment (contributions per DOF / CSR slot) is small and fixed by
+# the mesh, so each segment's total is ``fanin`` masked gathers from the sorted
+# values, written with one unique-index store. The segment structure
+# (``uids``, ``ustart``, ``ulen``) is precomputed once per Problem
+# (:func:`seg_structure`) and shipped as TracedStructure leaves. Deterministic,
+# one fused pass. ``FEAX_ASSEMBLY_SCATTER`` selects ``fanin`` (default),
+# ``scan`` (segmented associative scan, no precompute) or ``atomic``
+# (``jax.ops.segment_sum``).
+_ASSEMBLY_SCATTER = os.environ.get("FEAX_ASSEMBLY_SCATTER", "fanin").lower()
+if _ASSEMBLY_SCATTER not in ("fanin", "scan", "atomic"):
+    raise ValueError("FEAX_ASSEMBLY_SCATTER must be 'fanin', 'scan' or 'atomic'.")
+
+
+class assembly_scatter_mode:
+    """Context manager selecting the assembly reduction for the traces made
+    inside it: ``"fanin"`` (default), ``"scan"`` or ``"atomic"``. Sparsity
+    detection (:func:`feax.asd.detect_jacobian_pattern`) runs under
+    ``"atomic"``: asdex's abstract interpretation follows a ``segment_sum``
+    with constant ids but not the computed gather indices of the fan-in form."""
+
+    def __init__(self, mode: str):
+        if mode not in ("fanin", "scan", "atomic"):
+            raise ValueError("mode must be 'fanin', 'scan' or 'atomic'.")
+        self.mode = mode
+
+    def __enter__(self):
+        global _ASSEMBLY_SCATTER
+        self._saved = _ASSEMBLY_SCATTER
+        _ASSEMBLY_SCATTER = self.mode
+        return self
+
+    def __exit__(self, *exc):
+        global _ASSEMBLY_SCATTER
+        _ASSEMBLY_SCATTER = self._saved
+        return False
+
+
+def _seg_structure_np(sorted_ids, num_segments: int, discard=None):
+    """Unique segments of ascending ``sorted_ids`` (1-D, or 2-D = per batch row):
+    ``(uids, ustart, ulen)`` padded to the widest row with ``uids =
+    num_segments`` (dropped by the store), and the maximum fan-in. The
+    ``discard`` id (the bucket of padded cells / filtered entries, whose total
+    is never read) is left out: its fan-in would be the whole padding."""
+    ids = onp.asarray(sorted_ids)
+    rows = ids.reshape(1, -1) if ids.ndim == 1 else ids
+    per_row = []
+    for r in rows:
+        if r.size == 0:
+            per_row.append((onp.zeros(0, onp.int64),) * 3)
+            continue
+        first = onp.concatenate([[True], r[1:] != r[:-1]])
+        starts = onp.flatnonzero(first)
+        lens = onp.diff(onp.append(starts, r.size))
+        u = r[starts].astype(onp.int64)
+        if discard is not None:
+            keep = u != discard
+            u, starts, lens = u[keep], starts[keep], lens[keep]
+        per_row.append((u, starts, lens))
+    width = max((u.size for u, _, _ in per_row), default=0)
+    fanin = int(max((l.max() if l.size else 0 for _, _, l in per_row), default=0))
+    uids = onp.full((rows.shape[0], width), num_segments, dtype=onp.int32)
+    ustart = onp.zeros((rows.shape[0], width), dtype=onp.int32)
+    ulen = onp.zeros((rows.shape[0], width), dtype=onp.int32)
+    for i, (u, st, ln) in enumerate(per_row):
+        uids[i, :u.size], ustart[i, :u.size], ulen[i, :u.size] = u, st, ln
+    if ids.ndim == 1:
+        uids, ustart, ulen = uids[0], ustart[0], ulen[0]
+    return uids, ustart, ulen, fanin
+
+
+# name -> (sorted ids of the site, number of segments)
+def _seg_sources(problem):
+    from feax.assembler import _res_vol_slot_sort, _vol_slot_sort   # noqa: F401 (same module)
+    n = problem.num_total_dofs_all_vars
+    nse = problem.csr_nse
+    # (sorted ids, number of segments, discard bucket or None)
+    return {
+        'res': lambda: (problem.res_sorted_dofs, n, None),
+        'res_face': lambda: (problem.res_face_sorted_dofs, n + 1, n),
+        'csr_face': lambda: (problem.csr_face_sorted_slots, nse + 1, nse),
+        'csr_ref': lambda: (problem.csr_seg_ids, nse, None),
+        'csr_vol': lambda: (_vol_slot_sort(problem)[1], nse + 1, nse),
+        'res_vol': lambda: (_res_vol_slot_sort(problem)[1], n + 1, n),
+    }
+
+
+def seg_structure(problem, name: str):
+    """Cached fan-in structure ``((uids, ustart, ulen), fanin)`` of one
+    assembly reduction site of ``problem`` (device arrays, static int)."""
+    cache = problem.__dict__.setdefault('_seg_structure_cache', {})
+    if name not in cache:
+        ids, num_segments, discard = _seg_sources(problem)[name]()
+        uids, ustart, ulen, fanin = _seg_structure_np(ids, num_segments, discard)
+        # host arrays only: a device array made under a jit trace would be a
+        # tracer and must not outlive the trace
+        cache[name] = ((uids, ustart, ulen), fanin)
+    (uids, ustart, ulen), fanin = cache[name]
+    return (np.asarray(uids), np.asarray(ustart), np.asarray(ulen)), fanin
+
+
+def seg_fanin(problem, name: str) -> int:
+    return seg_structure(problem, name)[1]
+
+
+def segment_sum_fanin(data, segment_ids, seg, fanin: int, *, num_segments: int, into=None):
+    """Segmented sum of ``data`` (values in ascending-segment order) into
+    ``num_segments`` slots without atomics.
+
+    ``segment_ids`` are the ascending ids (used by the ``scan`` / ``atomic``
+    modes only); ``seg = (uids, ustart, ulen)`` and ``fanin`` come from
+    :func:`seg_structure` (a row of them inside a batched scan). Same contract
+    as ``jax.ops.segment_sum(data, segment_ids, num_segments=...,
+    indices_are_sorted=True)``; ids ``>= num_segments`` are discarded. With
+    ``into`` (an accumulator of length ``num_segments``) the totals are added
+    into it in place -- ``into + segment_sum(...)`` at the cost of the touched
+    segments only, for the batched assembly scans.
+    """
+    if _ASSEMBLY_SCATTER == "atomic":
+        out = jax.ops.segment_sum(data, segment_ids, num_segments=num_segments,
+                                  indices_are_sorted=True)
+        return out if into is None else into + out
+    if _ASSEMBLY_SCATTER == "scan":
+        out = sorted_segment_sum(data, segment_ids, num_segments=num_segments)
+        return out if into is None else into + out
+    data = np.asarray(data)
+    uids, ustart, ulen = seg
+    m = data.shape[0]
+    padded = np.concatenate([data, np.zeros((1,) + data.shape[1:], data.dtype)])
+    total = np.zeros((uids.shape[0],) + data.shape[1:], data.dtype)
+
+    def gather_add(j, total):
+        idx = np.where(j < ulen, ustart + j, m)
+        return total + padded[idx]
+    fanin = int(fanin)
+    if fanin <= 16:                      # unrolled: one fused gather-reduce kernel
+        for j in range(fanin):
+            total = gather_add(j, total)
+    else:                                # bounded compile time for large valences
+        total = jax.lax.fori_loop(0, fanin, gather_add, total)
+    if into is not None:
+        return into.at[uids].add(total, mode="drop", unique_indices=True, indices_are_sorted=True)
+    out = np.zeros((num_segments,) + data.shape[1:], data.dtype)
+    return out.at[uids].set(total, mode="drop", unique_indices=True, indices_are_sorted=True)
+
+
+def sorted_segment_sum(data, segment_ids, *, num_segments: int,
+                       indices_are_sorted: bool = True):
+    """``jax.ops.segment_sum`` for *sorted* ``segment_ids`` without atomics and
+    without precomputed structure: an inclusive segmented prefix sum
+    (``jax.lax.associative_scan``) read at the last position of each segment,
+    written with a unique-index scatter. Deterministic, but several passes over
+    the data; the assembly uses :func:`segment_sum_fanin` instead.
+    """
+    if not indices_are_sorted:
+        raise ValueError("sorted_segment_sum needs ascending segment_ids.")
+    data = np.asarray(data)
+    ids = np.asarray(segment_ids)
+    m = data.shape[0]
+    if m == 0:
+        return np.zeros((num_segments,) + data.shape[1:], data.dtype)
+    starts = np.concatenate([np.ones(1, bool), ids[1:] != ids[:-1]])
+    ends = np.concatenate([ids[1:] != ids[:-1], np.ones(1, bool)])
+
+    def combine(a, b):
+        va, fa = a
+        vb, fb = b
+        return np.where(fb, vb, va + vb), fa | fb
+    prefix, _ = jax.lax.associative_scan(combine, (data, starts))
+    target = np.where(ends, ids, num_segments)          # non-ends and discards -> dropped
+    out = np.zeros((num_segments,) + data.shape[1:], data.dtype)
+    return out.at[target].set(prefix, mode="drop", unique_indices=True, indices_are_sorted=True)
+
+
+def _seg_of(src, problem, name: str):
+    """``(seg arrays, fanin)`` of a reduction site: TracedStructure leaves when
+    ``src`` is one (``<name>_seg``), else the problem's cached arrays."""
+    fanin = seg_fanin(problem, name)
+    if src is not problem and hasattr(src, name + '_seg'):
+        return getattr(src, name + '_seg'), fanin
+    return seg_structure(problem, name)[0], fanin
+
+
 def _batching(n_items: int, batch_size: int = _ASSEMBLY_BATCH_SIZE):
     """Return ``(batch_size, num_cuts, n_padded)`` for a fixed-size scan.
 
@@ -1084,10 +1279,11 @@ def compute_residual_vars_helper(problem: 'Problem',
     Notes
     -----
     Volume and all boundary contributions are concatenated into one value array
-    and reduced with a single sorted ``segment_sum`` over the precomputed DOF
-    scatter map (``problem.res_perm`` / ``res_sorted_dofs``). This replaces the
-    ``1 + num_boundaries`` scatter-adds with one deterministic reduction (no
-    atomics), matching the CSR-direct Jacobian assembly.
+    and reduced with a single segmented sum over the precomputed DOF scatter
+    map (``problem.res_perm`` / ``res_sorted_dofs``), performed by
+    :func:`segment_sum_fanin` (no atomics, deterministic). This replaces the
+    ``1 + num_boundaries`` scatter-adds with one reduction, matching the
+    CSR-direct Jacobian assembly.
     """
     src = ts if ts is not None else problem
     # Values in volume-then-boundary order — exactly the order the residual
@@ -1097,9 +1293,10 @@ def compute_residual_vars_helper(problem: 'Problem',
         val_arrays.append(weak_form_face_flat[j].reshape(-1))
     V = np.concatenate(val_arrays) if len(val_arrays) > 1 else val_arrays[0]
 
-    res_flat = jax.ops.segment_sum(
-        V[src.res_perm], src.res_sorted_dofs,
-        num_segments=problem.num_total_dofs_all_vars, indices_are_sorted=True)
+    seg, fanin = _seg_of(src, problem, 'res')
+    res_flat = segment_sum_fanin(
+        V[src.res_perm], src.res_sorted_dofs, seg, fanin,
+        num_segments=problem.num_total_dofs_all_vars)
     return problem.unflatten_fn_sol_list(res_flat)
 
 
@@ -1148,17 +1345,18 @@ def _csr_data_from_values(problem: 'Problem', V: np.ndarray) -> np.ndarray:
     """Turn a full raw value array ``V`` into the deduplicated CSR ``data``.
 
     Uses the precomputed slot map (``problem.csr_perm`` / ``csr_seg_ids``) to
-    perform a single sorted ``segment_sum`` — no sort, no BCOO, and (unlike
-    scatter-add) deterministic. The matrix-view filter is applied first so that
-    UPPER/LOWER assemble only their retained entries.
+    perform a single segmented sum (:func:`segment_sum_fanin`: no sort, no
+    BCOO, no atomics, deterministic). The matrix-view filter is applied first
+    so that UPPER/LOWER assemble only their retained entries.
 
     This materializes the full value array; the memory-efficient assembly path
     (:func:`_assemble_volume_csr_data`) avoids that. Kept for reference / testing.
     """
     V_f = V if problem.filter_indices is None else V[problem.filter_indices]
-    return jax.ops.segment_sum(
-        V_f[problem.csr_perm], problem.csr_seg_ids,
-        num_segments=problem.csr_nse, indices_are_sorted=True)
+    seg, fanin = seg_structure(problem, 'csr_ref')
+    return segment_sum_fanin(
+        V_f[problem.csr_perm], problem.csr_seg_ids, seg, fanin,
+        num_segments=problem.csr_nse)
 
 
 def _vol_slot_sort(problem: 'Problem') -> Tuple[onp.ndarray, onp.ndarray]:
@@ -1258,8 +1456,8 @@ def _assemble_volume_csr_data(problem: 'Problem',
     element Jacobians.
 
     Each scan batch computes only its own element Jacobians, reduces them into
-    the shared length-``nse`` CSR accumulator via ``segment_sum`` over the
-    precomputed per-cell slot map, and is then discarded. Peak memory is one
+    the shared length-``nse`` CSR accumulator via :func:`segment_sum_fanin`
+    over the precomputed per-cell slot map, and is then discarded. Peak memory is one
     batch of element Jacobians plus the accumulator — not the full
     ``(num_cells, ndof, ndof)`` stack. This is the core memory win of the
     CSR-direct path.
@@ -1294,12 +1492,12 @@ def _assemble_volume_csr_data(problem: 'Problem',
     else:
         perm_np, sorted_np = _vol_slot_sort(problem)
         perm_arr, sorted_arr = np.asarray(perm_np), np.asarray(sorted_np)
+    seg_arr, fanin = _seg_of(ts if ts is not None else problem, problem, 'csr_vol')
 
     if num_cuts <= 1:
         _, jacs = vmap_fn(*inputs)
-        return carry + jax.ops.segment_sum(
-            jacs.reshape(-1)[perm_arr], sorted_arr,
-            num_segments=nse + 1, indices_are_sorted=True)
+        return segment_sum_fanin(
+            jacs.reshape(-1)[perm_arr], sorted_arr, seg_arr, fanin, num_segments=nse + 1, into=carry)
 
     pad = n_padded - num_cells
     padded_inputs = jax.tree_util.tree_map(lambda x: _pad_axis0(x, pad), inputs)
@@ -1307,14 +1505,14 @@ def _assemble_volume_csr_data(problem: 'Problem',
         lambda x: x.reshape(num_cuts, bs, *x.shape[1:]), padded_inputs)
 
     def scan_body(carry, batch):
-        binputs, bperm, bsorted = batch
+        binputs, bperm, bsorted, bseg = batch
         _, jacs = vmap_fn(*binputs)
         vals = jacs.reshape(-1)
-        carry = carry + jax.ops.segment_sum(
-            vals[bperm], bsorted, num_segments=nse + 1, indices_are_sorted=True)
+        carry = segment_sum_fanin(
+            vals[bperm], bsorted, bseg, fanin, num_segments=nse + 1, into=carry)
         return carry, None
 
-    carry, _ = jax.lax.scan(scan_body, carry, (main_inputs, perm_arr, sorted_arr))
+    carry, _ = jax.lax.scan(scan_body, carry, (main_inputs, perm_arr, sorted_arr, seg_arr))
     return carry
 
 
@@ -1397,9 +1595,10 @@ def _get_J_csr(problem: 'Problem',
         _, cells_jac_face_flat = compute_face(problem, cells_sol_flat, True, traced_params.surface_vars, ts)
     if cells_jac_face_flat:
         face_vals = np.concatenate([fj.reshape(-1) for fj in cells_jac_face_flat])
-        csr_data = csr_data + jax.ops.segment_sum(
-            face_vals[src.csr_face_perm], src.csr_face_sorted_slots,
-            num_segments=problem.csr_nse + 1, indices_are_sorted=True)
+        seg, fanin = _seg_of(src, problem, 'csr_face')
+        csr_data = segment_sum_fanin(
+            face_vals[src.csr_face_perm], src.csr_face_sorted_slots, seg, fanin,
+            num_segments=problem.csr_nse + 1, into=csr_data)
 
     return csr_data[:problem.csr_nse], src.csr_indptr, src.csr_indices
 
@@ -1448,15 +1647,16 @@ def _assemble_volume_res_and_J(problem: 'Problem',
         _rp, _rs = _res_vol_slot_sort(problem)
         jperm, jsorted = np.asarray(_jp), np.asarray(_js)
         rperm, rsorted = np.asarray(_rp), np.asarray(_rs)
+    _src = ts if ts is not None else problem
+    jseg, jfanin = _seg_of(_src, problem, 'csr_vol')
+    rseg, rfanin = _seg_of(_src, problem, 'res_vol')
 
     if num_cuts <= 1:
         y, jac = vmap_fn(*inputs)
-        R_carry = R_carry + jax.ops.segment_sum(
-            y.reshape(-1)[rperm], rsorted,
-            num_segments=ndof_total + 1, indices_are_sorted=True)
-        J_carry = J_carry + jax.ops.segment_sum(
-            jac.reshape(-1)[jperm], jsorted,
-            num_segments=nse + 1, indices_are_sorted=True)
+        R_carry = segment_sum_fanin(
+            y.reshape(-1)[rperm], rsorted, rseg, rfanin, num_segments=ndof_total + 1, into=R_carry)
+        J_carry = segment_sum_fanin(
+            jac.reshape(-1)[jperm], jsorted, jseg, jfanin, num_segments=nse + 1, into=J_carry)
         return R_carry, J_carry
 
     # Pad cells; padded entries route to the discard buckets (nse / ndof_total).
@@ -1464,16 +1664,16 @@ def _assemble_volume_res_and_J(problem: 'Problem',
     main_inputs = jax.tree_util.tree_map(
         lambda x: _pad_axis0(x, pad).reshape(num_cuts, bs, *x.shape[1:]), inputs)
 
-    xs = (main_inputs, jperm, jsorted, rperm, rsorted)
+    xs = (main_inputs, jperm, jsorted, rperm, rsorted, jseg, rseg)
 
     def scan_body(carry, batch):
         Rc, Jc = carry
-        binputs, bjperm, bjsorted, brperm, brsorted = batch
+        binputs, bjperm, bjsorted, brperm, brsorted, bjseg, brseg = batch
         y, jac = vmap_fn(*binputs)
-        Jc = Jc + jax.ops.segment_sum(
-            jac.reshape(-1)[bjperm], bjsorted, num_segments=nse + 1, indices_are_sorted=True)
-        Rc = Rc + jax.ops.segment_sum(
-            y.reshape(-1)[brperm], brsorted, num_segments=ndof_total + 1, indices_are_sorted=True)
+        Jc = segment_sum_fanin(
+            jac.reshape(-1)[bjperm], bjsorted, bjseg, jfanin, num_segments=nse + 1, into=Jc)
+        Rc = segment_sum_fanin(
+            y.reshape(-1)[brperm], brsorted, brseg, rfanin, num_segments=ndof_total + 1, into=Rc)
         return (Rc, Jc), None
 
     (R_carry, J_carry), _ = jax.lax.scan(scan_body, (R_carry, J_carry), xs)
@@ -1502,13 +1702,15 @@ def _get_res_J_csr(problem: 'Problem',
     face_res, face_jacs = compute_face(problem, cells_sol_flat, True, traced_params.surface_vars, ts)
     if face_jacs:
         fjv = np.concatenate([fj.reshape(-1) for fj in face_jacs])
-        J_carry = J_carry + jax.ops.segment_sum(
-            fjv[src.csr_face_perm], src.csr_face_sorted_slots,
-            num_segments=problem.csr_nse + 1, indices_are_sorted=True)
+        fseg, ffanin = _seg_of(src, problem, 'csr_face')
+        J_carry = segment_sum_fanin(
+            fjv[src.csr_face_perm], src.csr_face_sorted_slots, fseg, ffanin,
+            num_segments=problem.csr_nse + 1, into=J_carry)
         frv = np.concatenate([fr.reshape(-1) for fr in face_res])
-        R_carry = R_carry + jax.ops.segment_sum(
-            frv[src.res_face_perm], src.res_face_sorted_dofs,
-            num_segments=problem.num_total_dofs_all_vars + 1, indices_are_sorted=True)
+        rfseg, rffanin = _seg_of(src, problem, 'res_face')
+        R_carry = segment_sum_fanin(
+            frv[src.res_face_perm], src.res_face_sorted_dofs, rfseg, rffanin,
+            num_segments=problem.num_total_dofs_all_vars + 1, into=R_carry)
 
     res_list = problem.unflatten_fn_sol_list(R_carry[:problem.num_total_dofs_all_vars])
     return res_list, J_carry[:problem.csr_nse], src.csr_indptr, src.csr_indices

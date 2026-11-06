@@ -403,6 +403,67 @@ parameter selects which surface map and universal kernel to use.
 For multi-variable problems, only universal_kernels_surface should be used,
 as get_surface_maps() only supports single-variable problems.
 
+## assembly\_scatter\_mode Objects
+
+```python
+class assembly_scatter_mode()
+```
+
+Context manager selecting the assembly reduction for the traces made
+inside it: ``&quot;fanin&quot;`` (default), ``&quot;scan&quot;`` or ``&quot;atomic&quot;``. Sparsity
+detection (:func:`feax.asd.detect_jacobian_pattern`) runs under
+``&quot;atomic&quot;``: asdex&#x27;s abstract interpretation follows a ``segment_sum``
+with constant ids but not the computed gather indices of the fan-in form.
+
+#### seg\_structure
+
+```python
+def seg_structure(problem, name: str)
+```
+
+Cached fan-in structure ``((uids, ustart, ulen), fanin)`` of one
+assembly reduction site of ``problem`` (device arrays, static int).
+
+#### segment\_sum\_fanin
+
+```python
+def segment_sum_fanin(data,
+                      segment_ids,
+                      seg,
+                      fanin: int,
+                      *,
+                      num_segments: int,
+                      into=None)
+```
+
+Segmented sum of ``data`` (values in ascending-segment order) into
+``num_segments`` slots without atomics.
+
+``segment_ids`` are the ascending ids (used by the ``scan`` / ``atomic``
+modes only); ``seg = (uids, ustart, ulen)`` and ``fanin`` come from
+:func:``4 (a row of them inside a batched scan). Same contract
+as ``jax.ops.segment_sum(data, segment_ids, num_segments=...,
+indices_are_sorted=True)``; ids ``&gt;= num_segments`` are discarded. With
+``into`` (an accumulator of length ``num_segments``) the totals are added
+into it in place -- ``into + segment_sum(...)`` at the cost of the touched
+segments only, for the batched assembly scans.
+
+#### sorted\_segment\_sum
+
+```python
+def sorted_segment_sum(data,
+                       segment_ids,
+                       *,
+                       num_segments: int,
+                       indices_are_sorted: bool = True)
+```
+
+``jax.ops.segment_sum`` for *sorted* ``segment_ids`` without atomics and
+without precomputed structure: an inclusive segmented prefix sum
+(``jax.lax.associative_scan``) read at the last position of each segment,
+written with a unique-index scatter. Deterministic, but several passes over
+the data; the assembly uses :func:`segment_sum_fanin` instead.
+
 #### split\_and\_compute\_cell
 
 ```python
@@ -503,10 +564,11 @@ list of np.ndarray
 Notes
 -----
 Volume and all boundary contributions are concatenated into one value array
-and reduced with a single sorted ``segment_sum`` over the precomputed DOF
-scatter map (``problem.res_perm`` / ``res_sorted_dofs``). This replaces the
-``1 + num_boundaries`` scatter-adds with one deterministic reduction (no
-atomics), matching the CSR-direct Jacobian assembly.
+and reduced with a single segmented sum over the precomputed DOF scatter
+map (``problem.res_perm`` / ``res_sorted_dofs``), performed by
+:func:`segment_sum_fanin` (no atomics, deterministic). This replaces the
+``1 + num_boundaries`` scatter-adds with one reduction, matching the
+CSR-direct Jacobian assembly.
 
 #### detect\_zero\_surface\_jacobian
 

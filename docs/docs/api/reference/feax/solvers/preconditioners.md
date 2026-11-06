@@ -108,7 +108,10 @@ regularizes near-zero diagonal entries.
 #### shared\_factor
 
 ```python
-def shared_factor(matrix_type: str = "spd", *, device_id: int = 0) -> Callable
+def shared_factor(matrix_type: str = "spd",
+                  *,
+                  device_id: int = 0,
+                  scaling: bool = False) -> Callable
 ```
 
 One factorization shared by a batch: ``M = K_avg⁻¹`` with
@@ -125,12 +128,23 @@ the &quot;mean&quot; is the operator itself and CG converges in one iteration.
 
 Known as a mean-based preconditioner (stochastic FEM) / approximate
 reanalysis; it is only as good as the spread of the batch — watch the
-iteration counts :func:`feax.vmap` returns.
+iteration counts :func:`feax.vmap` returns. In :func:`feax.vmap` the mean
+is accumulated chunk by chunk (``chunk=``), so one factorization can serve
+a batch whose operators do not fit in memory together (``share=``), and
+the groups of a batch and the adjoint solve re-factorize one cuDSS entry
+in place: one symbolic analysis and one factorization&#x27;s memory per
+evaluation, and no factorization at all in the adjoint of a single group.
+
+Memory: spineax keeps up to ``SPINEAX_FACTOR_CACHE`` entries (default 8)
+and cannot free one inside ``jit``, so each evaluation&#x27;s entry stays
+resident until a later one evicts it. On a large mesh set
+``SPINEAX_FACTOR_CACHE=1`` (before spineax is imported) to keep exactly one.
 
 Parameters
 ----------
 - **matrix_type** (*{`&quot;spd&quot;, &quot;symmetric&quot;, &quot;general&quot;`}*): cuDSS factorization of the mean matrix (an SPD elasticity / diffusion operator after symmetric Dirichlet elimination is ``&quot;spd&quot;``).
 - **device_id** (*int*): CUDA device of the factorization.
+- **scaling** (*bool*): Apply the shared factorization with a per-case symmetric diagonal scaling, ``M_i = S_i K̄⁻¹ S_i`` with ``S_i = sqrt(diag K̄ / diag K_i)``. One diagonal product per application; it keeps the shared preconditioner effective when the cases&#x27; stiffness differs by orders of magnitude in places (lattice struts vs void, SIMP designs that have separated): a batch of BCC lattices went from up to 2086 CG iterations to 68. Default ``False`` (the plain mean preconditioner).
 
 
 ## AMGOptions Objects

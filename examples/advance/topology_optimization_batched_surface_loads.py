@@ -14,6 +14,11 @@ This file is intended as a compact FEAX example that shows how to:
   - define multiple Neumann load locations on one problem
   - assemble per-case surface variables for batched solves
   - optimize several density models simultaneously in a single training loop
+
+JIT rule followed here: everything mesh-sized that the jitted loss needs at run
+time -- the TracedStructure, the initial guess, and the per-cell volume
+weights -- is passed to it as an ARGUMENT. Closing over them would bake every
+array into the compiled executable as a constant.
 """
 
 from __future__ import annotations
@@ -259,7 +264,13 @@ def main():
 
     initial_guess = fe.zero_like_initial_guess(problem, bc)
     compliance_fn = gene.create_dynamic_compliance_fn(problem)
-    volume_fraction_fn = gene.create_volume_fn(problem)
+
+    # Volume fraction of a cell-wise density is linear in it, V(rho) = w . rho,
+    # and w is exactly the gradient of gene's volume_fn. Compute w once and pass
+    # it to the jitted loss: volume_fn itself closes over the cell connectivity
+    # and quadrature weights, which would be baked in as constants.
+    cell_volume_weights = jax.grad(gene.create_volume_fn(problem))(
+        jnp.zeros(problem.num_cells))
 
     # Create spatially varying traction variables for each patch center
     case_surface_vars = [
@@ -307,19 +318,24 @@ def main():
     coord_range = jnp.where(coord_max > coord_min, coord_max - coord_min, 1.0)
     coords = 2.0 * (cell_centroids - coord_min) / coord_range - 1.0
 
-    def solve_forward(rho, surface_vars):
+    # ts and the initial guess come in as arguments (not closures), so they are
+    # traced inputs of the compiled loss rather than constants baked into it.
+    def solve_forward(rho, surface_vars, ts, u0):
         traced_params = fe.TracedParams(volume_vars=(rho,), surface_vars=surface_vars)
-        solution = solver(traced_params, initial_guess, traced_structure=ts)
+        solution = solver(traced_params, u0, traced_structure=ts)
         return compliance_fn(solution, surface_vars)
 
     @eqx.filter_jit
     @eqx.filter_value_and_grad(has_aux=True)
     def batched_loss(
-        models, coords, target_volume_fractions, lams, penalties, batched_surface_vars
+        models, coords, target_volume_fractions, lams, penalties, batched_surface_vars,
+        ts, u0, volume_weights,
     ):
         densities = predict_densities(models, coords)
-        compliances = jax.vmap(solve_forward)(densities, batched_surface_vars)
-        volume_fractions = jax.vmap(volume_fraction_fn)(densities)
+        # Batch over the cases (density, load); the structure is shared.
+        compliances = jax.vmap(solve_forward, in_axes=(0, 0, None, None))(
+            densities, batched_surface_vars, ts, u0)
+        volume_fractions = densities @ volume_weights
 
         volume_errors = volume_fractions - target_volume_fractions
         violations = jnp.maximum(volume_errors, 0.0)
@@ -353,6 +369,9 @@ def main():
             lams,
             penalties,
             batched_surface_vars,
+            ts,
+            initial_guess,
+            cell_volume_weights,
         )
         updates, opt_states = jax.vmap(optimizer.update)(
             grads,

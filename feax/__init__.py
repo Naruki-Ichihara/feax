@@ -181,7 +181,7 @@ from .solver import (
     Solver,
     create_solver,
 )
-from .vmap import BatchedSolver, vmap
+from .vmap import BatchedSolver, BatchedSystemSolver, LinearSystemBatch, vmap
 from .solvers.common import (
     check_convergence,
     create_direct_solve_fn,

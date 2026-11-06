@@ -223,20 +223,40 @@ def _translation_pin_dofs(P, vec, dim):
     return onp.array(pins, dtype=onp.int64)
 
 
-def _create_direct_homogenization_solve(problem, bc, P, mesh, dim,
-                                        unit_strains_arr, labels, solver_options):
-    """Build the differentiable factor-once / solve-many homogenization solve."""
+class _ReducedSystem(NamedTuple):
+    """The pinned, periodic-reduced homogenization system of one unit cell,
+    as functions of the traced parameters (shared by the single and the
+    batched solvers)."""
+    operator_data: Any      # tp -> (nnz,) CSR values of the pinned P^T K P
+    case_rhs: Any           # (unit_strain, tp) -> ((n_red,) rhs, (ndof,) u_macro)
+    zero_mean: Any          # (ndof,) fluctuation -> zero-mean fluctuation
+    indptr: Any             # static CSR pattern of the reduced operator
+    indices: Any
+    rows: Any               # (nnz,) row of every CSR slot (numpy)
+    diag_slots: Any         # (n_red,) CSR slot of every diagonal entry
+    pins: Any               # pinned reduced dofs (one per translation)
+
+
+def _reduced_system(problem, bc, P, mesh, dim) -> _ReducedSystem:
+    """Build the reduced periodic operator on its static CSR pattern with the
+    rigid translations pinned (zero-mean gauge): symmetric positive definite,
+    so it can be factorized or solved by CG."""
     from ..assembler import (create_matfree_res_J_parametric,
                              create_res_bc_parametric)
     from ..asd import (connectivity_pattern, operator_assembler,
                        reduced_operator_pattern)
-    from feax.solvers._cudss_compat import factorize, solve_with
+
+    from ..traced_structure import TracedStructure
 
     vec = problem.fes[0].vec
     ndof = problem.num_total_dofs_all_vars
 
     matfree_res_J = create_matfree_res_J_parametric(problem, symmetric=True)
     res_bc_parametric = create_res_bc_parametric(problem)
+    # Assemble on the TracedStructure path (the closure path is deprecated).
+    # ``free_scratch=False`` keeps the host slot maps so the same problem can
+    # still be assembled elsewhere (get_jacobian, create_solver auto-detect).
+    ts = TracedStructure.from_problem(problem, free_scratch=False)
 
     # Reduced operator pattern (values-independent) → static CSR structure.
     R_pat = reduced_operator_pattern(P, connectivity_pattern(problem))
@@ -250,20 +270,47 @@ def _create_direct_homogenization_solve(problem, bc, P, mesh, dim,
     ip = onp.asarray(R_pat.indptr); jc = onp.asarray(R_pat.indices)
     rows_np = onp.repeat(onp.arange(len(ip) - 1), onp.diff(ip))
     keep = np.asarray(~(onp.isin(rows_np, pins) | onp.isin(jc, pins)))
-    diag_slots = []
-    for p in pins:
-        hit = onp.where((rows_np == p) & (jc == p))[0]
-        if hit.size == 0:
-            raise ValueError(f"Diagonal slot for pinned dof {p} missing from the "
-                             "reduced pattern.")
-        diag_slots.append(int(hit[0]))
-    diag_slots = np.asarray(diag_slots)
+    diag_all = onp.full(len(ip) - 1, -1, dtype=onp.int64)
+    on_diag = onp.flatnonzero(rows_np == jc)
+    diag_all[rows_np[on_diag]] = on_diag
+    if onp.any(diag_all < 0):
+        raise ValueError("The reduced pattern misses diagonal slots.")
+    diag_slots = np.asarray(diag_all[pins])
     pins_j = np.asarray(pins)
-
-    _mtype, _mview = 1, 0                         # cuDSS SYMMETRIC, FULL storage
 
     def _pinned_data(K_data):
         return np.where(keep, K_data, 0.0).at[diag_slots].set(1.0)
+
+    def operator_data(traced_params):
+        # Linear elasticity: J is constant, evaluate the reduced operator at u=0.
+        _, J_matvec = matfree_res_J(np.zeros(ndof), traced_params, bc, ts)
+        K = assemble(lambda v: P.T @ J_matvec(P @ v))
+        return _pinned_data(K.data)
+
+    def case_rhs(unit_strain, traced_params):
+        u_macro = macro_displacement(mesh, unit_strain)
+        rhs = -(P.T @ res_bc_parametric(u_macro, traced_params, bc, ts))
+        return rhs.at[pins_j].set(0.0), u_macro
+
+    def zero_mean(fluct):
+        # Re-centre each spatial component to zero volume-mean (nodal mean is a
+        # fine gauge fix; C_hom is unaffected by the constant translation).
+        f = fluct.reshape(-1, vec)
+        return (f - f.mean(axis=0)).reshape(-1)
+
+    return _ReducedSystem(operator_data, case_rhs, zero_mean, indptr, indices, rows_np,
+                          np.asarray(diag_all), pins)
+
+
+def _create_direct_homogenization_solve(problem, bc, P, mesh, dim,
+                                        unit_strains_arr, labels, solver_options):
+    """Build the differentiable factor-once / solve-many homogenization solve."""
+    from feax.solvers._cudss_compat import factorize, solve_with
+
+    rs = _reduced_system(problem, bc, P, mesh, dim)
+    indptr, indices, rows_np = rs.indptr, rs.indices, rs.rows
+
+    _mtype, _mview = 1, 0                         # cuDSS SYMMETRIC, FULL storage
 
     # custom_vjp linear solve: factor ONCE, solve every RHS, and reuse the same
     # factorization for the adjoint (PᵀKP is symmetric ⇒ Kᵀ = K).
@@ -286,31 +333,14 @@ def _create_direct_homogenization_solve(problem, bc, P, mesh, dim,
 
     _solve_many.defvjp(_solve_fwd, _solve_bwd)
 
-    def _reduced_operator_data(traced_params):
-        # Linear elasticity: J is constant, evaluate the reduced operator at u=0.
-        _, J_matvec = matfree_res_J(np.zeros(ndof), traced_params, bc, None)
-        K = assemble(lambda v: P.T @ J_matvec(P @ v))
-        return _pinned_data(K.data)
-
-    def _case_rhs(unit_strain, traced_params):
-        u_macro = macro_displacement(mesh, unit_strain)
-        rhs = -(P.T @ res_bc_parametric(u_macro, traced_params, bc, None))
-        return rhs.at[pins_j].set(0.0), u_macro
-
-    def _zero_mean(fluct):
-        # Re-centre each spatial component to zero volume-mean (nodal mean is a
-        # fine gauge fix; C_hom is unaffected by the constant translation).
-        f = fluct.reshape(-1, vec)
-        return (f - f.mean(axis=0)).reshape(-1)
-
     def solve(traced_params) -> HomogenizationResult:
-        data = _reduced_operator_data(traced_params)
+        data = rs.operator_data(traced_params)
         rhs_batch, u_macros = jax.vmap(
-            lambda s: _case_rhs(s, traced_params))(unit_strains_arr)
+            lambda s: rs.case_rhs(s, traced_params))(unit_strains_arr)
         sol_reduced = _solve_many(data, rhs_batch)          # (n_cases, n_red)
 
         def _finish(u_macro, sol_red):
-            fluct = _zero_mean(P @ sol_red)
+            fluct = rs.zero_mean(P @ sol_red)
             u_total = u_macro + fluct
             return average_stress(problem, u_total, traced_params, dim), u_total
 
@@ -374,7 +404,11 @@ def create_homogenization_solver(
     Returns
     -------
     callable
-        ``solve(traced_params) -> HomogenizationResult``
+        ``solve(traced_params) -> HomogenizationResult``. :func:`feax.vmap`
+        batches it over designs (``fe.vmap(solve, in_axes=...,
+        preconditioner=fe.shared_factor(scaling=True), share=...)``), giving
+        the :class:`BatchedHomogenizationSolver` of
+        :func:`create_batched_homogenization_solver`.
 
     Examples
     --------
@@ -404,8 +438,10 @@ def create_homogenization_solver(
 
     if isinstance(solver_options, DirectSolverOptions):
         if has_cudss():
-            return _create_direct_homogenization_solve(
+            solve = _create_direct_homogenization_solve(
                 problem, bc, P, mesh, dim, unit_strains_arr, labels, solver_options)
+            solve._homogenization = (problem, bc, P, mesh, dim)
+            return solve
         warnings.warn(
             "DirectSolverOptions requested for homogenization but cuDSS is "
             "unavailable; falling back to matrix-free Krylov (CG).",
@@ -415,12 +451,16 @@ def create_homogenization_solver(
     _verbose = solver_options.verbose
 
     # Internal: the raw flat vector feeds average_stress / vmapped strain cases.
+    # TracedStructure path (the closure path is deprecated); keep the host slot
+    # maps so the same problem can still be assembled elsewhere.
+    from ..traced_structure import TracedStructure
+    ts = TracedStructure.from_problem(problem, free_scratch=False)
     fluctuation_solver = create_solver(problem, bc, solver_options, projection=P,
-                                       return_solution=False)
+                                       return_solution=False, traced_structure=ts)
 
     def _single_case(unit_strain, traced_params):
         u_macro = macro_displacement(mesh, unit_strain)
-        u_total = fluctuation_solver(traced_params, u_macro)
+        u_total = fluctuation_solver(traced_params, u_macro, traced_structure=ts)
         sigma_voigt = average_stress(problem, u_total, traced_params, dim)
         return sigma_voigt, u_total, u_macro
 
@@ -443,5 +483,266 @@ def create_homogenization_solver(
 
     solve.labels = labels
     solve.unit_strains = unit_strains_arr
+    solve._homogenization = (problem, bc, P, mesh, dim)   # lets fe.vmap batch this solver
 
     return solve
+
+
+# ---------------------------------------------------------------------------
+# Batched homogenization: many unit cells, one shared factorization
+# ---------------------------------------------------------------------------
+
+class BatchedHomogenizationResult(NamedTuple):
+    """Result of :class:`BatchedHomogenizationSolver`.
+
+    Attributes
+    ----------
+    C_hom : ndarray, shape (B, 3, 3) or (B, 6, 6)
+        Homogenized stiffness of every design (Voigt).
+    iterations : ndarray, shape (B, n_cases)
+        CG iterations of every design and unit-strain case.
+    converged : ndarray, shape (B, n_cases)
+        Whether each case reached the tolerance.
+    u_totals : ndarray (B, n_cases, num_dofs) or None
+        Total displacement fields (only with ``return_fields=True``).
+    """
+    C_hom: np.ndarray
+    iterations: np.ndarray
+    converged: np.ndarray
+    u_totals: Any = None
+
+
+class BatchedHomogenizationSolver:
+    """Homogenized stiffness of a batch of unit cells that share one mesh and
+    differ in their parameters (density, modulus, ... fields).
+
+    Built by :func:`create_batched_homogenization_solver`. Every design has its
+    own reduced periodic operator ``PᵀK_bP`` (translations pinned, SPD) and the
+    ``n_cases`` unit-strain right-hand sides. The batch is a
+    :class:`feax.LinearSystemBatch` solved by :func:`feax.vmap`'s lhs engine:
+    all ``B × n_cases`` systems by conjugate gradients, preconditioned -- per
+    group of ``share`` designs -- by ONE cuDSS factorization of the group's
+    mean operator (:func:`feax.shared_factor`, diagonally scaled per design by
+    default), or by Jacobi without cuDSS.
+
+    ``solver(traced_params, factors=None) -> BatchedHomogenizationResult`` is
+    jit-compiled and differentiable w.r.t. ``traced_params``;
+    ``solver.evaluate`` is the same function unjitted (to compose with a
+    caller's own ``jax.grad`` / ``jax.jit``). ``factorize(traced_params)``
+    returns the group factorizations for reuse over many evaluations;
+    ``operator_signature(traced_params)`` gives a per-design feature vector for
+    :func:`feax.gene.similarity_order`.
+    """
+
+    def __init__(self, problem, bc, P, mesh, dim, *, in_axes, share, chunk, preconditioner,
+                 tol, atol, maxiter, return_fields, scaling=True):
+        from ..solvers.preconditioners import jacobi, shared_factor
+        from ..vmap import LinearSystemBatch, _axes_tree, _is_axis_leaf, _to_front, vmap
+
+        if dim not in (2, 3):
+            raise ValueError(f"dim must be 2 or 3, got {dim}")
+        pc = None
+        if callable(preconditioner):                 # fe.shared_factor(...) / fe.jacobi(...)
+            pc = preconditioner
+            if getattr(pc, "scaling", None) is not None:
+                preconditioner, scaling = "shared_factor", pc.scaling
+            else:
+                preconditioner = "jacobi"
+        if preconditioner is None:
+            preconditioner = "shared_factor" if has_cudss() else "jacobi"
+        if preconditioner not in ("shared_factor", "jacobi"):
+            raise ValueError("preconditioner must be 'shared_factor', 'jacobi', or a "
+                             "preconditioner object (feax.shared_factor / feax.jacobi).")
+        if preconditioner == "shared_factor" and not has_cudss():
+            raise ImportError("preconditioner='shared_factor' needs cuDSS (spineax); use 'jacobi'.")
+
+        self.problem, self.P, self.mesh, self.dim = problem, P, mesh, dim
+        self.in_axes, self.share, self.chunk = in_axes, share, chunk
+        self.preconditioner, self.scaling = preconditioner, bool(scaling)
+        self.return_fields = return_fields
+        self.unit_strains = UNIT_STRAINS_3D if dim == 3 else UNIT_STRAINS_2D
+        self.labels = (('eps11', 'eps22', 'eps33', 'gam23', 'gam13', 'gam12') if dim == 3
+                       else ('eps11', 'eps22', 'gam12'))
+        self._axes_tree, self._to_front, self._is_axis_leaf = _axes_tree, _to_front, _is_axis_leaf
+
+        rs = _reduced_system(problem, bc, P, mesh, dim)
+        self._rs = rs
+        self._u_macros = jax.vmap(lambda s_: macro_displacement(mesh, s_))(self.unit_strains)
+        strains = self.unit_strains
+
+        def front_of(tp):
+            return jax.tree_util.tree_map(lambda ax: None if ax is None else 0,
+                                          _axes_tree(in_axes, tp), is_leaf=_is_axis_leaf)
+
+        def values(tp_c, u0, ts):
+            return jax.vmap(rs.operator_data, in_axes=(front_of(tp_c),))(tp_c)
+
+        def rhs(tp_c, u0, ts):
+            return jax.vmap(lambda t: jax.vmap(lambda e: rs.case_rhs(e, t)[0])(strains),
+                            in_axes=(front_of(tp_c),))(tp_c)
+
+        spec = LinearSystemBatch(values=values, rhs=rhs,
+                                 pattern=lambda ts: (rs.indptr, rs.indices),
+                                 diag_slots=lambda ts: rs.diag_slots,
+                                 n_rhs=len(strains))
+        if pc is None:
+            pc = (shared_factor("spd", scaling=self.scaling) if preconditioner == "shared_factor"
+                  else jacobi())
+        from ..solvers.options import KrylovSolverOptions as _KO
+        self._batched = vmap(spec, in_axes=in_axes, preconditioner=pc, share=share, chunk=chunk,
+                             options=_KO(solver="cg", tol=tol, atol=atol, maxiter=maxiter),
+                             return_info=True)
+        self._front_of = front_of
+        self._jit = {}
+
+    def evaluate(self, traced_params, factors=None) -> BatchedHomogenizationResult:
+        """The batched homogenization, unjitted (differentiable)."""
+        X, info = self._batched.solve(traced_params, factors)          # (B, K, n_red)
+        tp, front, _ = self._to_front(traced_params, self._axes_tree(self.in_axes, traced_params))
+        rs, P, dim, problem = self._rs, self.P, self.dim, self.problem
+
+        def finish(x_b, t):                                           # x_b (K, n)
+            def case(x, u_macro):
+                u_total = u_macro + rs.zero_mean(P @ x)
+                return average_stress(problem, u_total, t, dim), u_total
+            cols, u_tot = jax.vmap(case)(x_b, self._u_macros)
+            return cols.T, u_tot
+        C, U = jax.vmap(finish, in_axes=(0, front))(X, tp)
+        return BatchedHomogenizationResult(C, info.iterations, info.converged,
+                                           U if self.return_fields else None)
+
+    def __call__(self, traced_params, factors=None) -> BatchedHomogenizationResult:
+        """Homogenized stiffness of every design. ``factors`` (from
+        :meth:`factorize`, same batch size and ``share``) precondition without
+        assembling a mean or factorizing."""
+        if factors is not None and self.preconditioner != "shared_factor":
+            raise ValueError("factors= needs preconditioner='shared_factor'.")
+        key = factors is None
+        if key not in self._jit:
+            self._jit[key] = jax.jit(self.evaluate)
+        result = self._jit[key](traced_params, factors)
+        # Safety net: a run whose CG did not converge is re-evaluated once. On
+        # one platform (GB10, driver 580, XLA 0.11-dev) the compiled program
+        # intermittently -- mostly on its first execution -- produced a
+        # corrupted mean operator, visible as a non-converging CG; a second
+        # execution was correct, and XLA_FLAGS=--xla_gpu_deterministic_ops=true
+        # makes it rare (not impossible). A genuinely ill-conditioned batch
+        # fails both times and raises.
+        if isinstance(result.converged, jax.core.Tracer):      # under jit / grad: no host check
+            return result
+        if not bool(onp.all(onp.asarray(result.converged))):
+            warnings.warn(
+                "feax batched homogenization: the batched CG did not converge for every "
+                "design (max iterations "
+                f"{int(onp.asarray(result.iterations).max())}); re-evaluating once. If this "
+                "recurs, run with XLA_FLAGS=--xla_gpu_deterministic_ops=true (see "
+                "create_batched_homogenization_solver) or raise maxiter / lower share.",
+                stacklevel=2)
+            result = self._jit[key](traced_params, factors)
+            if not bool(onp.all(onp.asarray(result.converged))):
+                raise RuntimeError(
+                    "feax batched homogenization: CG did not converge for every design in two "
+                    "evaluations (max iterations "
+                    f"{int(onp.asarray(result.iterations).max())}). Raise maxiter, lower share "
+                    "(or use preconditioner='jacobi'), or set "
+                    "XLA_FLAGS=--xla_gpu_deterministic_ops=true if the failure is intermittent.")
+        return result
+
+    def factorize(self, traced_params):
+        """One factorization of the mean reduced operator per group of
+        ``share`` designs (one cuDSS entry each, kept alive), for
+        ``solver(traced_params, factors=...)``. Keep the batch order and size
+        while reusing them; set ``SPINEAX_FACTOR_CACHE`` (before spineax is
+        imported) to at least the number of groups."""
+        if self.preconditioner != "shared_factor":
+            raise ValueError("factorize needs preconditioner='shared_factor'.")
+        return self._batched.factorize(traced_params)
+
+    def operator_signature(self, traced_params):
+        """``(B, n_red)``: log of the diagonal of every design's reduced
+        operator -- a parametrization-independent feature vector for
+        :func:`feax.gene.similarity_order`."""
+        return self._batched.operator_signature(traced_params)
+
+
+def create_batched_homogenization_solver(problem, bc, P, mesh, dim: int = 3, *, in_axes=0,
+                                         share: int = None, chunk: int = None, preconditioner: str = None,
+                                         tol: float = 1e-8, atol: float = 0.0, maxiter: int = 2000,
+                                         return_fields: bool = False,
+                                         scaling: bool = True) -> BatchedHomogenizationSolver:
+    """Batched computational homogenization: ``C_hom`` of many unit cells at once.
+
+    The cells share the mesh, the periodic prolongation ``P`` and the material
+    law; they differ in ``traced_params`` (e.g. a lattice density or modulus
+    field per design), which carries the batch along ``in_axes`` (as in
+    :func:`feax.vmap`; e.g. ``fe.TracedParams(volume_vars=(0, None))`` for a
+    batched modulus and a shared Poisson ratio).
+
+    Instead of factorizing every design's reduced operator ``PᵀK_bP`` (B
+    factorizations, memory-bound quickly), the ``B × n_cases`` unit-strain
+    systems are solved together by CG preconditioned by one factorization of
+    the mean operator per group of ``share`` designs -- the mean-based
+    preconditioner of :func:`feax.shared_factor`, run by :func:`feax.vmap`
+    on a :class:`feax.LinearSystemBatch` (the same engine as a batch of
+    topology-optimization designs). It is exact for identical
+    designs and degrades as they spread: watch ``result.iterations`` and lower
+    ``share`` (after ordering the batch by :meth:`operator_signature` and
+    :func:`feax.gene.similarity_order`) when the counts grow.
+
+    Parameters
+    ----------
+    problem, bc, P, mesh, dim :
+        As for :func:`create_homogenization_solver` (fully periodic cell,
+        empty Dirichlet BC; the translations are pinned internally).
+    in_axes : int, None or a TracedParams-shaped prefix
+        Which leaves of ``traced_params`` carry the batch axis.
+    share : int, optional
+        Designs per shared factorization (default: the whole batch).
+    chunk : int, optional
+        Designs assembled and solved at a time (memory bound: ``chunk``
+        reduced operators held at once; the group mean is accumulated chunk by
+        chunk, as in :func:`feax.vmap`). Default: ``share``.
+    preconditioner : {"shared_factor", "jacobi"} or preconditioner object, optional
+        Default: ``"shared_factor"`` with cuDSS, else ``"jacobi"``. A
+        :func:`feax.shared_factor` / :func:`feax.jacobi` object is used as is
+        (its ``scaling`` wins over the argument below).
+    tol, atol, maxiter :
+        CG stopping criterion per case: ``||r|| <= max(tol ||b||, atol)``.
+    return_fields : bool
+        Also return the total displacement fields ``(B, n_cases, num_dofs)``.
+        The solver call checks ``converged`` and re-evaluates once when a
+        design did not converge (see the note on platform reliability below);
+        ``solver.evaluate`` (for use under your own ``jax.grad`` / ``jax.jit``)
+        performs no such check -- inspect ``result.converged`` yourself.
+    scaling : bool
+        Shared factorization with a per-design symmetric diagonal scaling,
+        ``M_b = S_b K̄⁻¹ S_b`` with ``S_b = sqrt(diag K̄ / diag K_b)`` (default).
+        It costs one diagonal product per CG iteration and keeps the shared
+        preconditioner effective when the designs' stiffness differs by orders
+        of magnitude in places (lattice struts vs void); ``False`` is the plain
+        mean preconditioner of :func:`feax.shared_factor`.
+
+    Returns
+    -------
+    BatchedHomogenizationSolver
+        ``solver(traced_params, factors=None) -> BatchedHomogenizationResult``,
+        plus ``solver.factorize(traced_params)`` and
+        ``solver.operator_signature(traced_params)``.
+
+    Notes
+    -----
+    On one platform (NVIDIA GB10 with driver 580 and a JAX 0.11 development
+    build) the compiled gradient of this solver intermittently -- mostly on the
+    first execution of the executable -- produced a corrupted mean operator
+    (a race in XLA:GPU kernels outside feax; feax's own assembly uses no
+    atomics), visible as a non-converging batched CG. It was seen with the
+    operators assembled inside the solve's custom VJP; the shipped structure
+    (operators assembled outside, see :func:`feax.vmap`) has not reproduced
+    it. ``XLA_FLAGS=--xla_gpu_deterministic_ops=true`` makes it rare at some
+    cost in speed; the solver call also re-evaluates once when ``converged``
+    is not all true.
+    """
+    return BatchedHomogenizationSolver(problem, bc, P, mesh, dim, in_axes=in_axes, share=share,
+                                       chunk=chunk, preconditioner=preconditioner, tol=tol, atol=atol,
+                                       maxiter=maxiter, return_fields=return_fields,
+                                       scaling=scaling)

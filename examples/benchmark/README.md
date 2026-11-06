@@ -275,6 +275,18 @@ stacked vector would need a dense 13 GB constraint Jacobian). Per-iteration
 timing goes to `bench_topopt_batched_oc_iters.csv`, a summary row to
 `bench_topopt_batched_oc.csv`, the B designs to one VTU.
 
+The benchmark factorizes in every evaluation (one factorization per group of
+`--case-chunk`, or of the whole batch with `--k0 global`). `fe.vmap` can now
+also separate the two sizes and reuse factorizations: `share=S` sets the cases
+per shared factorization independently of `chunk=` (the group mean is
+accumulated `chunk` operators at a time), and `batched.factorize(...)` /
+`batched(..., factors=factors)` make the group factorizations once and reuse
+them across iterations. The example
+`examples/advance/batched_topology_optimization_shared_pcg.py` uses this: at
+503k DOF x 100 designs on an A100 40GB, the factorization of the uniform
+initial design, reused throughout, kept CG at ~130 iterations, and 8
+iterations took 1303 s vs 2191 s re-factorizing every evaluation.
+
 ```bash
 python bench_topopt_batched_oc.py                 # 500k DOF, B = 100, 10 iterations, group K0, tol 1e-6
 ```

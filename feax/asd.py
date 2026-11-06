@@ -108,12 +108,16 @@ def detect_jacobian_pattern(f: Callable, x_sample) -> sp.csr_matrix:
 
     Uses asdex's jaxpr abstract interpretation — no derivative evaluation.
     """
-    return _to_scipy_pattern(asdex.jacobian_sparsity(f, x_sample))
+    from feax.assembler import assembly_scatter_mode
+    with assembly_scatter_mode("atomic"):          # asdex follows segment_sum, not fan-in gathers
+        return _to_scipy_pattern(asdex.jacobian_sparsity(f, x_sample))
 
 
 def detect_hessian_pattern(f: Callable, x_sample) -> sp.csr_matrix:
     """Global Hessian sparsity of scalar ``f`` as boolean CSR."""
-    return _to_scipy_pattern(asdex.hessian_sparsity(f, x_sample))
+    from feax.assembler import assembly_scatter_mode
+    with assembly_scatter_mode("atomic"):
+        return _to_scipy_pattern(asdex.hessian_sparsity(f, x_sample))
 
 
 def connectivity_pattern(problem) -> sp.csr_matrix:
@@ -223,7 +227,9 @@ def sparse_jacobian_fn(f: Callable, x_sample=None, pattern=None, *,
         if x_sample is None:
             raise ValueError("sparse_jacobian_fn needs x_sample (for detection) "
                              "or an explicit pattern")
-        sparsity = asdex.jacobian_sparsity(f, x_sample)
+        from feax.assembler import assembly_scatter_mode
+        with assembly_scatter_mode("atomic"):      # asdex follows segment_sum, not fan-in gathers
+            sparsity = asdex.jacobian_sparsity(f, x_sample)
     else:
         sparsity = _sparsity_from_scipy(_to_scipy_pattern(pattern))
     coloring = asdex.jacobian_coloring_from_sparsity(sparsity, mode=mode)
@@ -244,7 +250,9 @@ def sparse_hessian_fn(f: Callable, x_sample=None, pattern=None, *,
         if x_sample is None:
             raise ValueError("sparse_hessian_fn needs x_sample (for detection) "
                              "or an explicit pattern")
-        sparsity = asdex.hessian_sparsity(f, x_sample)
+        from feax.assembler import assembly_scatter_mode
+        with assembly_scatter_mode("atomic"):
+            sparsity = asdex.hessian_sparsity(f, x_sample)
     else:
         sparsity = _sparsity_from_scipy(_to_scipy_pattern(pattern))
     coloring = asdex.hessian_coloring_from_sparsity(sparsity, mode=mode,

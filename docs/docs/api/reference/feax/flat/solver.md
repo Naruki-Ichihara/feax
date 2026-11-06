@@ -76,6 +76,44 @@ Attributes
 - **u_macros** (*ndarray, shape (n_cases, num_dofs)*): Macroscopic (affine) displacement fields for each unit strain case.
 
 
+## \_ReducedSystem Objects
+
+```python
+class _ReducedSystem(NamedTuple)
+```
+
+The pinned, periodic-reduced homogenization system of one unit cell,
+as functions of the traced parameters (shared by the single and the
+batched solvers).
+
+#### operator\_data
+
+tp -&gt; (nnz,) CSR values of the pinned P^T K P
+
+#### case\_rhs
+
+(unit_strain, tp) -&gt; ((n_red,) rhs, (ndof,) u_macro)
+
+#### zero\_mean
+
+(ndof,) fluctuation -&gt; zero-mean fluctuation
+
+#### indptr
+
+static CSR pattern of the reduced operator
+
+#### rows
+
+(nnz,) row of every CSR slot (numpy)
+
+#### diag\_slots
+
+(n_red,) CSR slot of every diagonal entry
+
+#### pins
+
+pinned reduced dofs (one per translation)
+
 #### create\_homogenization\_solver
 
 ```python
@@ -110,7 +148,11 @@ Parameters
 Returns
 -------
 callable
-    ``solve(traced_params) -&gt; HomogenizationResult``
+    ``solve(traced_params) -&gt; HomogenizationResult``. :func:``0
+    batches it over designs (``fe.vmap(solve, in_axes=...,
+    preconditioner=fe.shared_factor(scaling=True), share=...)``), giving
+    the :class:``3 of
+    :func:``4.
 
 Examples
 --------
@@ -120,4 +162,156 @@ Examples
 >>> result.C_hom   # ndarray, shape (6, 6)
 >>> result.u_totals[0]  # displacement field for first strain case
 ```
+
+## BatchedHomogenizationResult Objects
+
+```python
+class BatchedHomogenizationResult(NamedTuple)
+```
+
+Result of :class:`BatchedHomogenizationSolver`.
+
+Attributes
+----------
+- **C_hom** (*ndarray, shape (B, 3, 3) or (B, 6, 6)*): Homogenized stiffness of every design (Voigt).
+- **iterations** (*ndarray, shape (B, n_cases)*): CG iterations of every design and unit-strain case.
+- **converged** (*ndarray, shape (B, n_cases)*): Whether each case reached the tolerance.
+- **u_totals** (*ndarray (B, n_cases, num_dofs) or None*): Total displacement fields (only with ``return_fields=True``).
+
+
+## BatchedHomogenizationSolver Objects
+
+```python
+class BatchedHomogenizationSolver()
+```
+
+Homogenized stiffness of a batch of unit cells that share one mesh and
+differ in their parameters (density, modulus, ... fields).
+
+Built by :func:`create_batched_homogenization_solver`. Every design has its
+own reduced periodic operator ``PᵀK_bP`` (translations pinned, SPD) and the
+``n_cases`` unit-strain right-hand sides. The batch is a
+:class:`feax.LinearSystemBatch` solved by :func:`feax.vmap`&#x27;s lhs engine:
+all ``B × n_cases`` systems by conjugate gradients, preconditioned -- per
+group of ``share`` designs -- by ONE cuDSS factorization of the group&#x27;s
+mean operator (:func:``1, diagonally scaled per design by
+default), or by Jacobi without cuDSS.
+
+``solver(traced_params, factors=None) -&gt; BatchedHomogenizationResult`` is
+jit-compiled and differentiable w.r.t. ``traced_params``;
+``solver.evaluate`` is the same function unjitted (to compose with a
+caller&#x27;s own ``jax.grad`` / ``jax.jit``). ``factorize(traced_params)``
+returns the group factorizations for reuse over many evaluations;
+``operator_signature(traced_params)`` gives a per-design feature vector for
+:func:``6.
+
+#### evaluate
+
+```python
+def evaluate(traced_params, factors=None) -> BatchedHomogenizationResult
+```
+
+The batched homogenization, unjitted (differentiable).
+
+#### \_\_call\_\_
+
+```python
+def __call__(traced_params, factors=None) -> BatchedHomogenizationResult
+```
+
+Homogenized stiffness of every design. ``factors`` (from
+:meth:`factorize`, same batch size and ``share``) precondition without
+assembling a mean or factorizing.
+
+#### factorize
+
+```python
+def factorize(traced_params)
+```
+
+One factorization of the mean reduced operator per group of
+``share`` designs (one cuDSS entry each, kept alive), for
+``solver(traced_params, factors=...)``. Keep the batch order and size
+while reusing them; set ``SPINEAX_FACTOR_CACHE`` (before spineax is
+imported) to at least the number of groups.
+
+#### operator\_signature
+
+```python
+def operator_signature(traced_params)
+```
+
+``(B, n_red)``: log of the diagonal of every design&#x27;s reduced
+operator -- a parametrization-independent feature vector for
+:func:`feax.gene.similarity_order`.
+
+#### create\_batched\_homogenization\_solver
+
+```python
+def create_batched_homogenization_solver(
+        problem,
+        bc,
+        P,
+        mesh,
+        dim: int = 3,
+        *,
+        in_axes=0,
+        share: int = None,
+        chunk: int = None,
+        preconditioner: str = None,
+        tol: float = 1e-8,
+        atol: float = 0.0,
+        maxiter: int = 2000,
+        return_fields: bool = False,
+        scaling: bool = True) -> BatchedHomogenizationSolver
+```
+
+Batched computational homogenization: ``C_hom`` of many unit cells at once.
+
+The cells share the mesh, the periodic prolongation ``P`` and the material
+law; they differ in ``traced_params`` (e.g. a lattice density or modulus
+field per design), which carries the batch along ``in_axes`` (as in
+:func:`feax.vmap`; e.g. ``fe.TracedParams(volume_vars=(0, None))`` for a
+batched modulus and a shared Poisson ratio).
+
+Instead of factorizing every design&#x27;s reduced operator ``PᵀK_bP`` (B
+factorizations, memory-bound quickly), the ``B × n_cases`` unit-strain
+systems are solved together by CG preconditioned by one factorization of
+the mean operator per group of ``share`` designs -- the mean-based
+preconditioner of :func:``7, run by :func:`feax.vmap`
+on a :class:``9 (the same engine as a batch of
+topology-optimization designs). It is exact for identical
+designs and degrades as they spread: watch ``result.iterations`` and lower
+``share`` (after ordering the batch by :meth:``4 and
+:func:``5) when the counts grow.
+
+Parameters
+----------
+- **in_axes** (*int, None or a TracedParams-shaped prefix*): Which leaves of ``traced_params`` carry the batch axis.
+- **share** (*int, optional*): Designs per shared factorization (default: the whole batch).
+- **chunk** (*int, optional*): Designs assembled and solved at a time (memory bound: ``chunk`` reduced operators held at once; the group mean is accumulated chunk by chunk, as in :func:`feax.vmap`). Default: ``share``.
+- **preconditioner** (*{`&quot;shared_factor&quot;, &quot;jacobi&quot;`} or preconditioner object, optional*): Default: ``&quot;shared_factor&quot;`` with cuDSS, else ``&quot;jacobi&quot;``. A :func:``7 / :func:``9 object is used as is (its ``scaling`` wins over the argument below).
+- **return_fields** (*bool*): Also return the total displacement fields ``(B, n_cases, num_dofs)``. The solver call checks ``converged`` and re-evaluates once when a design did not converge (see the note on platform reliability below); ``solver.evaluate`` (for use under your own ``jax.grad`` / ``jax.jit``) performs no such check -- inspect ``result.converged`` yourself.
+- **scaling** (*bool*): Shared factorization with a per-design symmetric diagonal scaling, ``M_b = S_b K̄⁻¹ S_b`` with ``S_b = sqrt(diag K̄ / diag K_b)`` (default). It costs one diagonal product per CG iteration and keeps the shared preconditioner effective when the designs&#x27; stiffness differs by orders of magnitude in places (lattice struts vs void); ``False`` is the plain mean preconditioner of :func:``7.
+
+
+Returns
+-------
+BatchedHomogenizationSolver
+    ``solver(traced_params, factors=None) -&gt; BatchedHomogenizationResult``,
+    plus ``solver.factorize(traced_params)`` and
+    ``solver.operator_signature(traced_params)``.
+
+Notes
+-----
+On one platform (NVIDIA GB10 with driver 580 and a JAX 0.11 development
+build) the compiled gradient of this solver intermittently -- mostly on the
+first execution of the executable -- produced a corrupted mean operator
+(a race in XLA:GPU kernels outside feax; feax&#x27;s own assembly uses no
+atomics), visible as a non-converging batched CG. It was seen with the
+operators assembled inside the solve&#x27;s custom VJP; the shipped structure
+(operators assembled outside, see :func:`feax.vmap`) has not reproduced
+it. ``XLA_FLAGS=--xla_gpu_deterministic_ops=true`` makes it rare at some
+cost in speed; the solver call also re-evaluates once when ``converged``
+is not all true.
 

@@ -348,12 +348,14 @@ class Problem:
         value array with a single sorted segment-sum::
 
             V_f      = V if filter_indices is None else V[filter_indices]
-            csr_data = segment_sum(V_f[csr_perm], csr_seg_ids,
-                                   num_segments=csr_nse, indices_are_sorted=True)
+            csr_data = segment_sum_fanin(V_f[csr_perm], csr_seg_ids, seg, fanin,
+                                         num_segments=csr_nse)
 
         This eliminates the per-solve ``BCOO.sum_duplicates`` sort and the
-        intermediate BCOO entirely, and — unlike scatter-add — is deterministic
-        (no atomics).
+        intermediate BCOO entirely. The reduction itself is performed by
+        :func:`feax.assembler.segment_sum_fanin` (fan-in gathers plus a
+        unique-index store, no atomics -- a plain ``segment_sum`` over
+        non-unique ids compiles to atomic adds on XLA:GPU even when sorted).
 
         Attributes set
         --------------

@@ -634,7 +634,7 @@ Without `reuse_factorization`, `jax.vmap` still works but re-factorizes each bat
 `jax.vmap` does not know what a batch means. If the batched parameters change only the right-hand side (load cases on one design), a direct solver should factorize once and back-substitute every case; if they change the stiffness matrix (one design per case), `jax.vmap` of a direct solver factorizes every case and holds all `N` factorizations at once — an A100 runs out of memory at `N = 10` for 254k DOF. `fe.vmap` batches a solver (linear, or the traced Newton solver) over its `TracedParams`, detects which of the two it is (a JVP of the assembled matrix with respect to the batched leaves at the solver's sample parameters) and picks the solve:
 
 - **rhs batch** (same matrix): plain `jax.vmap` of the solver — with a direct solver, one factorization and a multi-RHS solve.
-- **lhs batch** (one matrix per case): all `N` matrices are assembled on the shared sparsity pattern and solved together by batched conjugate gradients, preconditioned by one shared cuDSS factorization of their mean (`fe.shared_factor()`, or `fe.jacobi()` without cuDSS). `chunk=C` bounds the memory to `C` matrices at a time, and `return_info=True` reports the CG iterations of every case.
+- **lhs batch** (one matrix per case): all `N` matrices are assembled on the shared sparsity pattern and solved together by batched conjugate gradients, preconditioned by one shared cuDSS factorization of their mean (`fe.shared_factor()`, or `fe.jacobi()` without cuDSS). `chunk=C` bounds the memory to `C` matrices at a time, `share=S` sets how many cases share one factorization (by default one per chunk; with `fe.shared_factor()` the group mean is accumulated chunk by chunk, so `share=N, chunk=4` is one factorization for the whole batch with 4 matrices in memory), and `return_info=True` reports the CG iterations of every case. `batched.factorize(...)` returns the group factorizations, and `batched(..., factors=factors)` reuses them across calls (e.g. optimization iterations) without factorizing again.
 
 ```python
 solver = fe.create_solver(problem, bc, fe.DirectSolverOptions(), linear=True,
@@ -649,7 +649,7 @@ designs = fe.vmap(solver, in_axes=0, chunk=10, return_info=True)
 U, info = designs(fe.TracedParams(volume_vars=(E_batch,), surface_vars=[(loads,)]), u0, ts)
 ```
 
-The returned callable is differentiable (the adjoint batch is solved the same way) and jit-able. It takes the `fe.Solver` object from `create_solver(..., linear=True, traced_params=tp)`; Newton solves still go through `jax.vmap`. See [Batched Solves: feax.vmap](../advanced/batched_solves.md) for `in_axes`, the options, custom batch-level preconditioners and the limitations.
+The returned callable is differentiable (the adjoint batch is solved the same way) and jit-able; under `jax.jit`, pass the `TracedStructure` (and other mesh-sized arrays) as arguments of the jitted function, so they are not compiled in as constants. It takes the `fe.Solver` object from `create_solver(..., traced_params=tp)`, linear or the traced Newton solver (one shared factorization of the mean tangent per Newton step). See [Batched Solves: feax.vmap](../advanced/batched_solves.md) for `in_axes`, the options, custom batch-level preconditioners and the limitations.
 
 ### Gradients with `jax.grad`
 
