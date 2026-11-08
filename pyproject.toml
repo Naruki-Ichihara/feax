@@ -43,6 +43,7 @@ dependencies = [
     "pyvista",
     "tetgen",
     "asdex",
+    "h5py"
 ]
 
 [project.optional-dependencies]

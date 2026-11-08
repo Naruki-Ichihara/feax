@@ -41,24 +41,21 @@ RUN python -c "import tomllib; p = tomllib.load(open('pyproject.toml', 'rb'))['p
 # package must point at it rather than at a stale copy in site-packages.
 RUN pip install --no-deps -e .
 
-# Install spineax WITHOUT touching the base JAX. --no-deps is essential: both the
-# wheel and its lineax dep declare jax[cuda13]. The official PyPI release ships an
-# x86_64-only abi3 wheel, so on other arches (e.g. aarch64 / GB10) fall back to
-# building the fork from source against the container's own jaxlib (matching the
-# cuDSS FFI ABI at runtime). cuDSS 0.8 (libcudss.so.0), cuSPARSE and lineax are the
-# runtime deps installed here; jaxtyping / equinox already come from above.
+# Install spineax WITHOUT touching the base JAX. --no-deps is essential: spineax
+# and its lineax dep declare jax[cuda13]. spineax comes from the fork
+# github.com/Naruki-Ichihara/spineax (cuDSS 1.x support), built from source on
+# every arch against the container's own jaxlib (matching the cuDSS FFI ABI at
+# runtime). cuDSS 1.x (libcudss.so.1, which loads libnvrtc.so.13 from the
+# nvidia-cuda-nvrtc wheel it pulls in), cuSPARSE and lineax are the runtime deps
+# installed here; jaxtyping / equinox already come from above.
 # spineax's CMake only searches site-packages/nvidia/*/lib, so cuSPARSE must come from
 # the pip wheel (not /usr/local/cuda). nvidia-cuda-cccl provides <nv/target>, which
 # CUDA 13's cusparse.h -> cuda_fp16.h includes, for the source build.
-RUN pip install nvidia-cudss-cu13 nvidia-cusparse nvidia-cuda-cccl && \
+RUN pip install "nvidia-cudss-cu13>=1.0.0,<2" nvidia-cusparse nvidia-cuda-cccl && \
     pip install --no-deps lineax && \
-    if [ "$(uname -m)" = "x86_64" ]; then \
-        pip install --no-deps spineax ; \
-    else \
-        pip install --no-build-isolation "scikit-build-core>=0.5" nanobind && \
-        pip install --no-build-isolation --no-deps \
-            "git+https://github.com/johnviljoen/spineax.git" ; \
-    fi
+    pip install --no-build-isolation "scikit-build-core>=0.5" nanobind && \
+    pip install --no-build-isolation --no-deps \
+        "git+https://github.com/Naruki-Ichihara/spineax.git"
 
 # Fail the build if the base JAX was replaced or feax does not import.
 RUN python -c "import importlib.metadata as m; pins = dict(l.strip().split('==') for l in open('/etc/pip-constraints-jax.txt')); bad = {p: m.version(p) for p, v in pins.items() if m.version(p) != v}; assert not bad, f'base JAX replaced: {bad} (expected {pins})'; import feax, asdex, amjax, pyamg"
