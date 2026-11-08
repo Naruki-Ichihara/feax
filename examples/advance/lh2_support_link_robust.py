@@ -2,22 +2,26 @@
 
 Eight links (front/rear x top/bottom/left/right) hold the inner tank; links
 with identical load sets share a design (here: top, bottom, side). All designs
-are optimised together:
+are optimised together, density and (ANISOTROPY = True) the fibre orientation
+tensor a2 per element:
 
     minimise    sum_d m_d (mu_d + KAPPA sigma_d) / sum_d m_d
     subject to  sum_d m_d Q_d <= Q_ALLOW
 
 mu_d, sigma_d: weighted mean / std over load cases of U_dk / U_ref_dk (stored
 energy over that of the solid block). Q_d: heat leak of one link. m_d: number of
-links per design. Thermal strain is coupled one way (T -> u). Elastic cases are
-superposed from unit-force and thermal-only solves, batched with fe.vmap.
+links per design. Glass/epoxy UD lamina, orientation-averaged: K and alpha are
+linear in a2, C uses the hybrid closure. K depends on T (NIST G-10CR fits), so
+the thermal problem is solved by Newton and Q is the heat flow through it; a2 = I/3 is the isotropic state used
+for the reference and for ANISOTROPY = False. Thermal strain is coupled one way
+(T -> u). Elastic cases are superposed from unit-force and thermal-only solves,
+batched with fe.vmap.
+
+Requires cuDSS.
 
 Run:
-    python lh2_support_link_robust.py [--loads loads.csv] [--mass 5000] [--qallow 10]
-
-loads.csv: link,case,Fx,Fy,Fz [N], link-local frame (z: outer shell -> tank).
+    python lh2_support_link_robust.py
 """
-import argparse
 import collections
 import csv
 import os
@@ -32,15 +36,12 @@ import numpy as onp
 import feax as fe
 import feax.gene as gene
 from feax.experimental.mma import GCMMA
+from feax.mechanics.orientation import (box_to_triangle, hybrid_closure,
+                                        orientation_averaged_stiffness_3d,
+                                        principal_direction, smooth_sgn)
 from feax.utils import save_sol
 
 jax.config.update("jax_enable_x64", True)
-
-_ap = argparse.ArgumentParser()
-_ap.add_argument("--loads", default=None)
-_ap.add_argument("--mass", type=float, default=5000.0)    # kg
-_ap.add_argument("--qallow", type=float, default=10.0)    # W, all 8 links
-ARGS, _ = _ap.parse_known_args()
 
 # ── Parameters (mm, N, MPa, K, W) ──────────────────────────────────────────
 LX = LY = 50.0
@@ -48,19 +49,26 @@ LZ = 100.0
 ELEM_SIZE = 2.5
 PASSIVE_THICKNESS = 5.0
 
-# G-10CR, isotropic
-E_SOLID, NU = 28.0e3, 0.15
-K_MEAN = 0.40e-3                   # int k dT / dT, 20-293 K
+ANISOTROPY = True
+
+# E-glass/epoxy UD lamina (approximate)
+E1, E2, G12, NU12, NU23 = 45.0e3, 12.0e3, 5.5e3, 0.28, 0.40
+# k(T) of G-10CR, NIST fits (4-300 K): log10 k = sum c_i (log10 T)^i, W/(m K).
+# Warp (in-plane) for the fibre direction, normal for the transverse one.
+K_PAR_FIT = (-2.64827, 8.80228, -24.8998, 41.1625, -39.8754, 23.1778,
+             -7.95635, 1.48806, -0.11701)
+K_PERP_FIT = (-4.1236, 13.788, -26.068, 26.272, -14.663, 4.4954, -0.6905,
+              0.0397)
 T_HOT, T_COLD = 293.0, 20.0
 T_REF = T_HOT
-ALPHA = 0.0024 / (T_HOT - T_COLD)
+ALPHA_PAR = 0.0015 / (T_HOT - T_COLD)    # secant, 293 -> 20 K
+ALPHA_PERP = 0.0060 / (T_HOT - T_COLD)
 E_MIN, K_MIN = 1e-6, 1e-4
 RAMP_Q_E, RAMP_Q_K = 8.0, -0.8
-HEAT_TO_WATT = 2.0 / (T_HOT - T_COLD)
-LAM = E_SOLID * NU / ((1.0 + NU) * (1.0 - 2.0 * NU))
-MU = E_SOLID / (2.0 * (1.0 + NU))
+SGN_BETA = 10.0
+T_ISO = -0.1547008478              # t1 = t2 = T_ISO -> a2 = I/3
 
-INNER_MASS = ARGS.mass
+INNER_MASS = 5000.0                # kg
 G0 = 9.80665
 LINKS = ("front_top", "front_bottom", "front_left", "front_right",
          "rear_top", "rear_bottom", "rear_left", "rear_right")
@@ -86,12 +94,13 @@ CASE_WEIGHTS = onp.asarray(_w) / onp.sum(_w)
 
 KAPPA = 1.0
 SIGMA_EPS = 1e-8
-Q_ALLOW = ARGS.qallow
+Q_ALLOW = 10.0                     # W, all 8 links
 REF_FLOOR = 1e-3
 LOAD_IGNORE = 1e-3                 # cases with ~no force on a link get w = 0
 
 MIN_WIDTH = 6.0
 FILTER_RADIUS = gene.radius_for_minimum_width(MIN_WIDTH, 0.7)
+FILTER_RADIUS_ORI = 2.0 * ELEM_SIZE
 HEAVISIDE_BETAS = (2, 4, 8, 12, 16)
 ITER_PER_STAGE = (6, 6, 10, 20)
 ITER_PER_STAGE_FINAL = 50
@@ -102,7 +111,7 @@ MMA_MAX_INNER = 5
 MMA_C_CONSTRAINT = 1e7
 X_INIT = 0.2
 
-SHARE_TH = 1                       # one factor per design: exact
+NEWTON_TOL, NEWTON_RTOL, NEWTON_MAXITER = 1e-10, 1e-10, 30
 SHARE_ME = 4                       # 4 sub-cases of a design share its operator
 CHUNK_ME = 4
 CG_TOL, CG_MAXITER = 1e-9, 2000
@@ -138,18 +147,7 @@ def factor_loads():
     return F
 
 
-def read_loads(path):
-    F = onp.full((N_LINKS, N_CASES, 3), onp.nan)
-    with open(path, newline="") as fh:
-        for row in csv.DictReader(fh):
-            F[int(row["link"]), int(row["case"])] = (
-                float(row["Fx"]), float(row["Fy"]), float(row["Fz"]))
-    if onp.isnan(F).any():
-        raise ValueError(f"{path}: missing (link, case) rows")
-    return F
-
-
-LOADS = read_loads(ARGS.loads) if ARGS.loads else factor_loads()
+LOADS = factor_loads()
 
 _Fn = onp.linalg.norm(LOADS, axis=2)
 LINK_WEIGHTS = CASE_WEIGHTS[None, :] * (_Fn >= LOAD_IGNORE * _Fn.max(axis=1, keepdims=True))
@@ -193,7 +191,8 @@ passive_cell = jnp.asarray((centroids[:, 2] <= PASSIVE_THICKNESS + TOL)
                            | (centroids[:, 2] >= LZ - PASSIVE_THICKNESS - TOL))
 design_cell = ~passive_cell
 n_design = int(design_cell.sum())
-n_total = N_DES * n_cells
+N_FIELDS = 5 if ANISOTROPY else 1    # rho, t1, t2, t12, t13
+n_total = N_DES * N_FIELDS * n_cells
 
 
 # ── Problems ───────────────────────────────────────────────────────────────
@@ -205,26 +204,82 @@ def w_k(rho):
     return K_MIN + (1.0 - K_MIN) * rho / (1.0 + RAMP_Q_K * (1.0 - rho))
 
 
-def elastic_strain(u_grad, T):
-    return 0.5 * (u_grad + u_grad.T) - ALPHA * (T - T_REF) * jnp.eye(3)
+def unit_trace_a2(t1, t2, t12, t13):
+    """Trace-1 PSD a2 from four box variables (s23 = s12 s13)."""
+    a11, a22 = box_to_triangle(t1, t2)
+    a33 = 1.0 - a11 - a22
+    s12, s13 = smooth_sgn(t12, SGN_BETA), smooth_sgn(t13, SGN_BETA)
+    a12 = jnp.sqrt(jnp.maximum(a11 * a22, 0.0)) * s12
+    a13 = jnp.sqrt(jnp.maximum(a11 * a33, 0.0)) * s13
+    a23 = jnp.sqrt(jnp.maximum(a22 * a33, 0.0)) * s12 * s13
+    return jnp.array([[a11, a12, a13], [a12, a22, a23], [a13, a23, a33]])
 
 
-def solid_stress(eps):
-    return LAM * jnp.trace(eps) * jnp.eye(3) + 2.0 * MU * eps
+def stiffness(a2):
+    return orientation_averaged_stiffness_3d(a2, hybrid_closure(a2), E1=E1, E2=E2,
+                                             G12=G12, nu12=NU12, nu23=NU23)
+
+
+def elastic_strain(u_grad, a2, T):
+    alpha = ALPHA_PERP * jnp.eye(3) + (ALPHA_PAR - ALPHA_PERP) * a2
+    return 0.5 * (u_grad + u_grad.T) - alpha * (T - T_REF)
+
+
+def k_fit(c, T):
+    """W/(mm K)."""
+    lt = jnp.log10(jnp.clip(T, 4.0, 300.0))
+    return 1e-3 * 10.0 ** sum(ci * lt ** i for i, ci in enumerate(c))
+
+
+def heat_flux(grad_T, T, rho, a2):
+    """q = -w_k(rho) K(T, a2) grad T."""
+    kp, kt = k_fit(K_PAR_FIT, T), k_fit(K_PERP_FIT, T)
+    return -w_k(rho) * (kt * jnp.eye(3) + (kp - kt) * a2) @ grad_T
 
 
 class Conduction(fe.Problem):
-    def get_energy_density(self):
-        def psi(grad_T, rho):
-            return 0.5 * K_MEAN * w_k(rho) * jnp.sum(grad_T ** 2)
-        return psi
+    """Nonlinear: K depends on T, so the element residual is written directly."""
+
+    def get_universal_kernel(self):
+        sval = self.fes[0].shape_vals
+        nn = sval.shape[1]
+
+        def kernel(cell_sol_flat, x, cell_shape_grads, cell_JxW,
+                   cell_v_grads_JxW, *cell_vars):
+            rho, t1, t2, t12, t13 = (jnp.reshape(v, -1)[0] for v in cell_vars)
+            a2 = unit_trace_a2(t1, t2, t12, t13)
+            Tn = cell_sol_flat.reshape(nn)
+            Tq = sval @ Tn
+            gq = jnp.einsum("n,qnd->qd", Tn, cell_shape_grads[:, :nn])
+            q = jax.vmap(lambda g, t: heat_flux(g, t, rho, a2))(gq, Tq)
+            return -jnp.sum(q[:, None, :] * cell_v_grads_JxW[:, :nn, 0, :],
+                            axis=(0, 2))
+        return kernel
+
+
+def create_heat_flow_fn(problem):
+    """Heat flow hot -> cold face, Q = (1/LZ) int q_z dV (the reaction of the
+    discrete equations for the test function 1 - z/LZ)."""
+    fe0 = problem.fes[0]
+    cells_ = problem.cells_list[0]
+    sg, sval, jxw = fe0.shape_grads, fe0.shape_vals, fe0.JxW
+
+    def heat_flow(T, rho, a2):
+        Tc = T[cells_]
+        Tq = jnp.einsum("qn,cn->cq", sval, Tc)
+        gq = jnp.einsum("cn,cqnd->cqd", Tc, sg)
+        qz = jax.vmap(lambda g, t, r, a: jax.vmap(
+            lambda gg, tt: heat_flux(gg, tt, r, a)[2])(g, t))(gq, Tq, rho, a2)
+        return jnp.sum(qz * jxw) / LZ
+    return heat_flow
 
 
 class ThermoElastic(fe.Problem):
     def get_energy_density(self):
-        def psi(u_grad, rho, T):
-            eps = elastic_strain(u_grad, T)
-            return 0.5 * w_E(rho) * jnp.sum(eps * solid_stress(eps))
+        def psi(u_grad, rho, t1, t2, t12, t13, T):
+            a2 = unit_trace_a2(t1, t2, t12, t13)
+            eps = elastic_strain(u_grad, a2, T)
+            return 0.5 * w_E(rho) * jnp.einsum("ij,ijkl,kl->", eps, stiffness(a2), eps)
         return psi
 
     def get_surface_maps(self):
@@ -236,33 +291,35 @@ class ThermoElastic(fe.Problem):
 def create_vonmises_fn(problem):
     fe0 = problem.fes[0]
     cells_ = problem.cells_list[0]
-    sg, sval, nq = fe0.shape_grads, fe0.shape_vals, fe0.num_quads
+    sg, sval = fe0.shape_grads, fe0.shape_vals
 
     def vm(sigma):
         dev = sigma - jnp.eye(3) * (jnp.trace(sigma) / 3.0)
         return jnp.sqrt(jnp.maximum(1.5 * jnp.sum(dev * dev), 1e-30))
 
-    def vonmises(u_flat, rho, T):
+    def vonmises(u_flat, a2, T):
+        """Material stress von Mises per quad point; a2 (n_cells, 3, 3)."""
         cell_u = jnp.asarray(u_flat).reshape(-1, 3)[cells_]
         T_q = jnp.einsum("qn,cn->cq", sval, T[cells_])
-        rho_q = jnp.tile(rho[:, None], (1, nq))
 
-        def per_cell(cu, csg, rq, tq):
+        def per_cell(cu, csg, a, tq):
             ug = jnp.sum(cu[None, :, :, None] * csg[:, :, None, :], axis=1)
-            return jax.vmap(lambda g, r, t: vm(solid_stress(elastic_strain(g, t))))(
-                ug, rq, tq)
+            C = stiffness(a)
+            return jax.vmap(lambda g, t: vm(jnp.einsum(
+                "ijkl,kl->ij", C, elastic_strain(g, a, t))))(ug, tq)
 
-        return jax.vmap(per_cell)(cell_u, sg, rho_q, T_q)
+        return jax.vmap(per_cell)(cell_u, sg, a2, T_q)
 
     return vonmises
 
 
-_o = jnp.ones((n_cells,))
+_o, _z = jnp.ones((n_cells,)), jnp.zeros((n_cells,))
+_ti = jnp.full((n_cells,), T_ISO)
+ISO = (_ti, _ti, _z, _z)
 T_REF_NODES = jnp.full((n_nodes,), T_REF)
 cg = fe.KrylovSolverOptions(solver="cg", tol=CG_TOL, atol=1e-14,
                             maxiter=CG_MAXITER)
-cudss = fe.solvers.options.has_cudss()
-precond = fe.shared_factor() if cudss else fe.jacobi()
+precond = fe.shared_factor()
 
 thermal = Conduction(mesh, vec=1, dim=3, ele_type="HEX8")
 bc_th = fe.DirichletBCConfig([
@@ -270,15 +327,17 @@ bc_th = fe.DirichletBCConfig([
     fe.DirichletBCSpec(loaded_face, "all", T_COLD),
 ]).create_bc(thermal)
 ts_th = fe.TracedStructure.from_problem(thermal)
-_solve_T = fe.create_solver(thermal, bc_th, cg, linear=True,
-                            traced_structure=ts_th,
-                            traced_params=fe.TracedParams(volume_vars=(_o,)))
-solve_T_batch = fe.vmap(
-    _solve_T, in_axes=fe.TracedParams(volume_vars=(0,)), options=cg,
-    preconditioner=precond, chunk=SHARE_TH,
-    share=SHARE_TH if cudss else None, return_info=True)
-guess_T = fe.zero_like_initial_guess(thermal, bc_th)
-energy_T = fe.create_energy_fn(thermal)
+# The Newton tangent is non-symmetric (K depends on T): LU, not Cholesky/CG.
+_lu = fe.DirectSolverOptions(solver="cudss",
+                             cudss_options=fe.CUDSSOptions(matrix_type="GENERAL"))
+solve_T = fe.create_solver(
+    thermal, bc_th, _lu, adjoint_solver_options=_lu, linear=False,
+    traced_structure=ts_th,
+    newton_options=fe.NewtonOptions(tol=NEWTON_TOL, rel_tol=NEWTON_RTOL,
+                                    max_iter=NEWTON_MAXITER),
+    traced_params=fe.TracedParams(volume_vars=(_o,) + ISO))
+guess_T = jnp.asarray(T_HOT + (T_COLD - T_HOT) * pts[:, 2] / LZ)
+heat_flow = create_heat_flow_fn(thermal)
 
 mech = ThermoElastic(mesh, vec=3, dim=3, ele_type="HEX8",
                      location_fns=(loaded_face,))
@@ -297,70 +356,87 @@ SURF_B = tuple(jnp.asarray(_t_b[:, j]).reshape(_lead) * _unit_sv[None]
                for j in range(3))
 _solve_u = fe.create_solver(
     mech, bc_me, cg, linear=True, traced_structure=ts_me,
-    traced_params=fe.TracedParams(volume_vars=(_o, T_REF_NODES),
+    traced_params=fe.TracedParams(volume_vars=(_o,) + ISO + (T_REF_NODES,),
                                   surface_vars=[tuple(s[0] for s in SURF_B)]))
 solve_u_batch = fe.vmap(
-    _solve_u, in_axes=fe.TracedParams(volume_vars=(0, 0),
+    _solve_u, in_axes=fe.TracedParams(volume_vars=(0,) * 6,
                                       surface_vars=[(0, 0, 0)]),
-    options=cg, preconditioner=precond, chunk=CHUNK_ME,
-    share=SHARE_ME if cudss else None, return_info=True)
+    options=cg, preconditioner=precond, chunk=CHUNK_ME, share=SHARE_ME,
+    return_info=True)
 guess_u = fe.zero_like_initial_guess(mech, bc_me)
 energy_fn = fe.create_energy_fn(mech)
 vonmises = create_vonmises_fn(mech)
 
 STRUCTURES = (ts_th, ts_me, guess_T, guess_u)
-FILTERS = (gene.create_density_filter(mesh, radius=FILTER_RADIUS,
-                                      weight_type="cone", points=centroids),)
+FILTERS = tuple(gene.create_density_filter(mesh, radius=r, weight_type="cone",
+                                           points=centroids)
+                for r in (FILTER_RADIUS, FILTER_RADIUS_ORI))
 
 
 # ── Responses ──────────────────────────────────────────────────────────────
-def process(xs, beta, filters):
-    rho = gene.heaviside_projection(filters[0](xs), beta=beta, threshold=0.5)
-    return jnp.where(passive_cell[None, :], 1.0, rho)
+def process(x, beta, filters):
+    """x (N_DES * N_FIELDS * n_cells,) -> fields (rho, t1, t2, t12, t13), each
+    (N_DES, n_cells)."""
+    xs = x.reshape(N_DES, N_FIELDS, n_cells)
+    rho = gene.heaviside_projection(filters[0](xs[:, 0]), beta=beta, threshold=0.5)
+    rho = jnp.where(passive_cell[None, :], 1.0, rho)
+    if ANISOTROPY:
+        return (rho,) + tuple(filters[1](xs[:, i]) for i in range(1, 5))
+    return (rho,) + tuple(jnp.broadcast_to(v, rho.shape) for v in ISO)
 
 
-def solve_states(rho, F, structures):
+def cell_a2(fields):
+    """(N_DES, n_cells, 3, 3)."""
+    return jax.vmap(jax.vmap(unit_trace_a2))(*fields[1:])
+
+
+def solve_states(fields, F, structures):
     ts_th, ts_me, gT, gu = structures
-    sol_T, info_T = solve_T_batch(fe.TracedParams(volume_vars=(rho,)), gT, ts_th)
-    T = sol_T.dofs
-    Q = jax.vmap(lambda Ti, ri: energy_T(
-        Ti, fe.TracedParams(volume_vars=(ri,))))(T, rho) * HEAT_TO_WATT
+    T = jnp.stack([jnp.asarray(getattr(s, "dofs", s)) for s in (
+        solve_T(fe.TracedParams(volume_vars=tuple(f[d] for f in fields)), gT,
+                traced_structure=ts_th) for d in range(N_DES))])
+    Q = jax.vmap(heat_flow)(T, fields[0], cell_a2(fields))
     T_b = jnp.concatenate([jnp.broadcast_to(T_REF_NODES, (N_DES, 3, n_nodes)),
                            T[:, None, :]], axis=1).reshape(N_ME, n_nodes)
-    tp = fe.TracedParams(volume_vars=(jnp.repeat(rho, N_SUB, axis=0), T_b),
-                         surface_vars=[SURF_B])
+    tp = fe.TracedParams(
+        volume_vars=tuple(jnp.repeat(f, N_SUB, axis=0) for f in fields) + (T_b,),
+        surface_vars=[SURF_B])
     sol_u, info_u = solve_u_batch(tp, gu, ts_me)
     U = sol_u.dofs.reshape(N_DES, N_SUB, -1)
     u = jnp.einsum("ikj,ijn->ikn", F, U[:, :3]) + U[:, 3:4]
-    return Q, T, u, (info_T.iterations, info_u.iterations)
+    return Q, T, u, info_u.iterations
 
 
-def case_energies(rho, T, u):
-    def per_design(r, Ti, ui):
-        tp = fe.TracedParams(volume_vars=(r, Ti))
+def case_energies(fields, T, u):
+    def per_design(Ti, ui, *f):
+        tp = fe.TracedParams(volume_vars=f + (Ti,))
         return jax.vmap(lambda uk: energy_fn(uk, tp))(ui)
-    return jax.vmap(per_design)(rho, T, u)
+    return jax.vmap(per_design)(T, u, *fields)
 
 
 @jax.jit
 def reference(F, structures):
-    rho = jnp.ones((N_DES, n_cells))
-    Q, T, u, _ = solve_states(rho, F, structures)
-    return Q, case_energies(rho, T, u)
+    fields = (jnp.ones((N_DES, n_cells)),) + tuple(
+        jnp.broadcast_to(v, (N_DES, n_cells)) for v in ISO)
+    Q, T, u, _ = solve_states(fields, F, structures)
+    return Q, case_energies(fields, T, u)
 
 
 def responses(x, beta, filters, structures, cdata):
     F, U_ref, w, mult, q_allow = cdata
-    rho = process(x.reshape(N_DES, n_cells), beta, filters)
-    Q, T, u, its = solve_states(rho, F, structures)
-    U = case_energies(rho, T, u) / U_ref
+    fields = process(x, beta, filters)
+    rho = fields[0]
+    Q, T, u, its = solve_states(fields, F, structures)
+    U = case_energies(fields, T, u) / U_ref
     mu = jnp.sum(w * U, axis=1)
     sig = jnp.sqrt(jnp.sum(w * (U - mu[:, None]) ** 2, axis=1) + SIGMA_EPS)
     J = jnp.sum(mult * (mu + KAPPA * sig)) / jnp.sum(mult)
     c = jnp.sum(mult * Q) / q_allow - 1.0
     aux = dict(Q=Q, mu=mu, sigma=sig, U=U,
                volume=(rho * design_cell).sum(axis=1) / n_design,
-               cg_T=its[0], cg_u=its[1])
+               azz=(cell_a2(fields)[..., 2, 2] * rho * design_cell).sum(axis=1)
+               / jnp.maximum((rho * design_cell).sum(axis=1), 1e-12),
+               cg_u=its)
     return J, c, aux
 
 
@@ -384,11 +460,12 @@ def values_only(x, beta, filters, structures, cdata):
 
 @jax.jit
 def final_fields(x, beta, filters, structures, cdata):
-    rho = process(x.reshape(N_DES, n_cells), beta, filters)
-    _, T, u, _ = solve_states(rho, cdata[0], structures)
-    vm = jax.vmap(lambda r, Ti, ui: jax.vmap(
-        lambda uk: vonmises(uk, r, Ti).mean(axis=1))(ui))(rho, T, u)
-    return rho, T, u, vm
+    fields = process(x, beta, filters)
+    _, T, u, _ = solve_states(fields, cdata[0], structures)
+    a2 = cell_a2(fields)
+    vm = jax.vmap(lambda a, Ti, ui: jax.vmap(
+        lambda uk: vonmises(uk, a, Ti).mean(axis=1))(ui))(a2, T, u)
+    return fields[0], a2, T, u, vm
 
 
 # ── Setup ──────────────────────────────────────────────────────────────────
@@ -399,14 +476,19 @@ CDATA = (jnp.asarray(LOADS_D), jnp.asarray(U_REF), jnp.asarray(WEIGHTS_D),
          jnp.asarray(MULT), jnp.float64(Q_ALLOW))
 
 print(f"{N_LINKS} links -> {N_DES} designs, {n_cells:,} cells each; "
-      f"solid link {HEAT_REF_W:.3f} W, budget {Q_ALLOW:g} W; cuDSS {cudss}")
+      f"solid link {HEAT_REF_W:.3f} W, budget {Q_ALLOW:g} W")
 print("axial / shear force [kN] per case: " + ", ".join(CASE_NAMES))
 for i, name in enumerate(LINKS):
     print(f"  {name:13s} d{DESIGN_OF[i]} "
           + " ".join(f"{f[2]/1e3:+6.1f}/{onp.hypot(f[0], f[1])/1e3:4.1f}"
                      for f in LOADS[i]))
 
-opt = GCMMA(value_and_grad, onp.zeros(n_total), onp.ones(n_total),
+_lower = onp.full((N_DES, N_FIELDS, n_cells), -1.0)
+_lower[:, 0] = 0.0
+_x0 = onp.zeros((N_DES, N_FIELDS, n_cells))
+_x0[:, 0] = X_INIT
+_x0[:, 1:3] = T_ISO
+opt = GCMMA(value_and_grad, _lower.ravel(), onp.ones(n_total),
             n_constraints=1, value_fn=values_only, has_aux=True,
             c=onp.array([MMA_C_CONSTRAINT]), max_inner=MMA_MAX_INNER)
 step = jax.jit(opt.step)
@@ -426,18 +508,20 @@ def record(state, beta):
     for d in range(N_DES):
         row[f"Q{d}"], row[f"mu{d}"], row[f"sigma{d}"] = Q[d], mu[d], sig[d]
         row[f"V{d}"] = float(a["volume"][d])
+        row[f"azz{d}"] = float(a["azz"][d])
     for key, val in row.items():
         hist[key].append(float(val))
     print(f"  it {it:4d} b={beta:4.1f} J={row['objective']:.4f} "
           f"Q8={q8:.3f}/{Q_ALLOW:g} W "
           f"mu=[" + " ".join(f"{m:5.2f}" for m in mu) + "] "
           f"sig=[" + " ".join(f"{s:4.2f}" for s in sig) + "] "
-          f"cg[T {int(onp.max(a['cg_T']))} u {int(onp.max(a['cg_u']))}]")
+          f"azz=[" + " ".join(f"{z:4.2f}" for z in onp.asarray(a["azz"])) + "] "
+          f"cg {int(onp.max(a['cg_u']))}")
     return row["objective"], q8 / Q_ALLOW - 1.0
 
 
 # ── Optimisation ───────────────────────────────────────────────────────────
-x = jnp.full((n_total,), X_INIT)
+x = jnp.asarray(_x0.ravel())
 t0 = time.perf_counter()
 for stage, beta in enumerate(HEAVISIDE_BETAS):
     beta_t = jnp.float64(beta)
@@ -461,15 +545,17 @@ dt = time.perf_counter() - t0
 
 # ── Results ────────────────────────────────────────────────────────────────
 a = state.aux
-Q, mu, sig, U, V = (onp.asarray(a[k]) for k in ("Q", "mu", "sigma", "U", "volume"))
-rho, T, u, vm = (onp.asarray(v) for v in final_fields(
+Q, mu, sig, U, V, AZZ = (onp.asarray(a[k]) for k in
+                         ("Q", "mu", "sigma", "U", "volume", "azz"))
+rho, a2, T, u, vm = (onp.asarray(v) for v in final_fields(
     x, jnp.float64(HEAVISIDE_BETAS[-1]), FILTERS, STRUCTURES, CDATA))
 vmax = onp.array([float((vm[d] * rho[d][None, :]).max()) for d in range(N_DES)])
 Q8 = float(MULT @ Q)
 
 for d, name in enumerate(DESIGN_NAMES):
     print(f"  {name:32s} x{MULT[d]:g} Q={Q[d]:.4f} W V={V[d]:.3f} "
-          f"mu={mu[d]:.2f} sigma={sig[d]:.2f} vm_max={vmax[d]:.1f} MPa")
+          f"mu={mu[d]:.2f} sigma={sig[d]:.2f} a_zz={AZZ[d]:.2f} "
+          f"vm_max={vmax[d]:.1f} MPa")
 print(f"  total heat leak {Q8:.4f} W (budget {Q_ALLOW:g} W), "
       f"{it} evaluations, {dt:.0f} s")
 
@@ -480,10 +566,10 @@ with open(os.path.join(OUTROOT, "history.csv"), "w", newline="") as fh:
 with open(os.path.join(OUTROOT, "summary.csv"), "w", newline="") as fh:
     wr = csv.writer(fh)
     wr.writerow(["link", "name", "design", "Q_W", "volume", "mu", "sigma",
-                 "vm_max_MPa"] + [f"U{k}" for k in range(N_CASES)])
+                 "a_zz", "vm_max_MPa"] + [f"U{k}" for k in range(N_CASES)])
     for i, name in enumerate(LINKS):
         d = DESIGN_OF[i]
-        wr.writerow([i, name, d, Q[d], V[d], mu[d], sig[d], vmax[d]]
+        wr.writerow([i, name, d, Q[d], V[d], mu[d], sig[d], AZZ[d], vmax[d]]
                     + [U[d, k] if WEIGHTS_D[d, k] > 0 else ""
                        for k in range(N_CASES)])
     wr.writerow(["total", "", "", Q8])
@@ -496,6 +582,9 @@ for d in range(N_DES):
              point_infos=[("density", rho_n), ("temperature", T[d])]
              + [(f"u_case{k}", u[d, k].reshape(-1, 3) * rho_n[:, None])
                 for k in range(N_CASES)],
-             cell_infos=[("rho", rho[d])]
+             cell_infos=[("rho", rho[d]), ("a11", a2[d, :, 0, 0]),
+                         ("a22", a2[d, :, 1, 1]), ("a33", a2[d, :, 2, 2]),
+                         ("director", onp.asarray(principal_direction(
+                             jnp.asarray(a2[d]))) * rho[d][:, None])]
              + [(f"vm_case{k}", vm[d, k] * rho[d]) for k in range(N_CASES)])
 print(f"wrote {OUTROOT}")
