@@ -24,6 +24,7 @@ Run:
     python lh2_support_link_robust.py
 """
 import collections
+import contextlib
 import csv
 import os
 import time
@@ -41,14 +42,14 @@ from feax.experimental.mma import GCMMA
 from feax.mechanics.orientation import (box_to_triangle, hybrid_closure,
                                         orientation_averaged_stiffness_3d,
                                         principal_direction, smooth_sgn)
-from feax.utils import save_sol
+from feax.utils import XDMFWriter, save_sol
 
 jax.config.update("jax_enable_x64", True)
 
 # ── Parameters (mm, N, MPa, K, W) ──────────────────────────────────────────
 LX = LY = 50.0
 LZ = 100.0
-ELEM_SIZE = 2
+ELEM_SIZE = 3
 PASSIVE_THICKNESS = 5.0
 
 ANISOTROPY = True
@@ -477,7 +478,8 @@ def responses(x, beta, filters, structures, cdata):
                volume=(rho * design_cell).sum(axis=1) / n_design,
                azz=(cell_a2(fields)[..., 2, 2] * rho * design_cell).sum(axis=1)
                / jnp.maximum((rho * design_cell).sum(axis=1), 1e-12),
-               **diag)
+               rho=rho, a2_diag=jnp.diagonal(cell_a2(fields), axis1=-2, axis2=-1),
+               T=T, **diag)
     return J, c, aux
 
 
@@ -536,8 +538,18 @@ opt = GCMMA(value_and_grad, _lower.ravel(), onp.ones(n_total),
             c=onp.array([MMA_C_CONSTRAINT]), max_inner=MMA_MAX_INNER)
 step = jax.jit(opt.step)
 
-hist = collections.defaultdict(list)
-hist_cases = []                    # (iteration, beta, design, case, U~, weight)
+# Logs and per-design XDMF time series, written every iteration.
+_logs = contextlib.ExitStack()
+_hist_fh = _logs.enter_context(open(os.path.join(OUTROOT, "history.csv"), "w",
+                                    newline=""))
+_cases_fh = _logs.enter_context(open(os.path.join(OUTROOT, "history_cases.csv"),
+                                     "w", newline=""))
+hist_csv, cases_csv = csv.writer(_hist_fh), csv.writer(_cases_fh)
+cases_csv.writerow(["iteration", "beta", "design", "design_links", "case",
+                    "case_name", "U_norm", "weight"])
+xdmf = [_logs.enter_context(XDMFWriter(mesh, os.path.join(
+            OUTROOT, f"design{d}_{LINKS[REP[d]].split('_')[1]}deg_history.xdmf")))
+        for d in range(N_DES)]
 it = 0
 
 
@@ -555,12 +567,23 @@ def record(state, beta):
         row[f"azz{d}"] = float(a["azz"][d])
         row[f"newton_res{d}"] = float(a["res_T"][d])
         row[f"T_mid{d}"] = float(a["T_mid"][d])
-    for key, val in row.items():
-        hist[key].append(float(val))
+    if it == 1:
+        hist_csv.writerow(list(row))
+    hist_csv.writerow([float(v) for v in row.values()])
     U = onp.asarray(a["U"])
     for d in range(N_DES):
         for k in range(N_CASES):
-            hist_cases.append((it, beta, d, k, U[d, k], WEIGHTS_D[d, k]))
+            cases_csv.writerow([it, beta, d, DESIGN_NAMES[d], k, CASE_NAMES[k],
+                                U[d, k], WEIGHTS_D[d, k]])
+    _hist_fh.flush()
+    _cases_fh.flush()
+    rho_it, a2d, T_it = (onp.asarray(a[k]) for k in ("rho", "a2_diag", "T"))
+    for d, w in enumerate(xdmf):
+        w.write_iteration(it, cell_infos=[
+            ("rho", rho_it[d]), ("a11", a2d[d, :, 0]), ("a22", a2d[d, :, 1]),
+            ("a33", a2d[d, :, 2])], point_infos=[("temperature", T_it[d])])
+        w._h5.flush()                      # readable while the run goes on
+        w._write_xdmf_xml()
     print(f"  it {it:4d} b={beta:4.1f} J={row['objective']:.4f} "
           f"Q8={q8:.3f}/{Q_ALLOW:g} W "
           f"mu=[" + " ".join(f"{m:5.2f}" for m in mu) + "] "
@@ -598,6 +621,7 @@ for stage, beta in enumerate(HEAVISIDE_BETAS):
                     break
     x = state.x
 dt = time.perf_counter() - t0
+_logs.close()
 
 # ── Results ────────────────────────────────────────────────────────────────
 a = state.aux
@@ -615,16 +639,6 @@ for d, name in enumerate(DESIGN_NAMES):
 print(f"  total heat leak {Q8:.4f} W (budget {Q_ALLOW:g} W), "
       f"{it} evaluations, {dt:.0f} s")
 
-with open(os.path.join(OUTROOT, "history.csv"), "w", newline="") as fh:
-    wr = csv.writer(fh)
-    wr.writerow(list(hist))
-    wr.writerows(zip(*hist.values()))
-with open(os.path.join(OUTROOT, "history_cases.csv"), "w", newline="") as fh:
-    wr = csv.writer(fh)
-    wr.writerow(["iteration", "beta", "design", "design_links", "case",
-                 "case_name", "U_norm", "weight"])
-    for it_, b_, d, k, Uk, w in hist_cases:
-        wr.writerow([it_, b_, d, DESIGN_NAMES[d], k, CASE_NAMES[k], Uk, w])
 with open(os.path.join(OUTROOT, "summary.csv"), "w", newline="") as fh:
     wr = csv.writer(fh)
     wr.writerow(["link", "name", "design", "Q_W", "volume", "mu", "sigma",
