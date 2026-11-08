@@ -1,7 +1,7 @@
 """Inner-tank support links of an aircraft LH2 double-wall tank.
 
-Eight links (front/rear x top/bottom/left/right) hold the inner tank; links
-with identical load sets share a design (here: top, bottom, side). All designs
+Eight links, four per station at LINK_ANGLES (45 deg diagonals) about the tank
+axis, hold the inner tank; links with identical load sets share a design. All designs
 are optimised together, density and (ANISOTROPY = True) the fibre orientation
 tensor a2 per element:
 
@@ -11,9 +11,10 @@ tensor a2 per element:
 mu_d, sigma_d: weighted mean / std over load cases of U_dk / U_ref_dk (stored
 energy over that of the solid block). Q_d: heat leak of one link. m_d: number of
 links per design. Glass/epoxy UD lamina, orientation-averaged: K and alpha are
-linear in a2, C uses the hybrid closure. K depends on T (NIST G-10CR fits), so
-the thermal problem is solved by Newton and Q is the heat flow through it; a2 = I/3 is the isotropic state used
-for the reference and for ANISOTROPY = False. Thermal strain is coupled one way
+linear in a2, C uses the hybrid closure; a2 = I/3 is the isotropic state used
+for the reference and for ANISOTROPY = False. THERMAL_NONLINEAR = True uses
+k(T) (NIST G-10CR fits) and solves the thermal problem by Newton; False uses the
+20-293 K mean of each k and one linear solve. Q is the heat flow either way. Thermal strain is coupled one way
 (T -> u). Elastic cases are superposed from unit-force and thermal-only solves,
 batched with fe.vmap.
 
@@ -32,6 +33,7 @@ os.environ.setdefault("SPINEAX_FACTOR_CACHE", "1")
 import jax
 import jax.numpy as jnp
 import numpy as onp
+import pyvista as pv
 
 import feax as fe
 import feax.gene as gene
@@ -46,10 +48,11 @@ jax.config.update("jax_enable_x64", True)
 # ── Parameters (mm, N, MPa, K, W) ──────────────────────────────────────────
 LX = LY = 50.0
 LZ = 100.0
-ELEM_SIZE = 2.5
+ELEM_SIZE = 2
 PASSIVE_THICKNESS = 5.0
 
 ANISOTROPY = True
+THERMAL_NONLINEAR = True
 
 # E-glass/epoxy UD lamina (approximate)
 E1, E2, G12, NU12, NU23 = 45.0e3, 12.0e3, 5.5e3, 0.28, 0.40
@@ -70,8 +73,12 @@ T_ISO = -0.1547008478              # t1 = t2 = T_ISO -> a2 = I/3
 
 INNER_MASS = 5000.0                # kg
 G0 = 9.80665
-LINKS = ("front_top", "front_bottom", "front_left", "front_right",
-         "rear_top", "rear_bottom", "rear_left", "rear_right")
+# Links per station at these angles about the tank axis, from +Z (up) towards
+# +Y (left): 45 / 135 / 225 / 315 = upper-left, lower-left, lower-right,
+# upper-right.
+LINK_ANGLES = (45.0, 135.0, 225.0, 315.0)
+STATIONS = ("front", "rear")
+LINKS = tuple(f"{st}_{int(a)}" for st in STATIONS for a in LINK_ANGLES)
 N_LINKS = len(LINKS)
 LOAD_FACTOR_TABLE = (               # name, n_x, n_y, n_z, +-n_y
     ("manoeuvre +2.5",  0.0, 0.0,  2.5, False),   # CS 25.337
@@ -112,6 +119,7 @@ MMA_C_CONSTRAINT = 1e7
 X_INIT = 0.2
 
 NEWTON_TOL, NEWTON_RTOL, NEWTON_MAXITER = 1e-10, 1e-10, 30
+NEWTON_VERBOSE = False             # print every Newton step of every solve
 SHARE_ME = 4                       # 4 sub-cases of a design share its operator
 CHUNK_ME = 4
 CG_TOL, CG_MAXITER = 1e-9, 2000
@@ -122,28 +130,33 @@ os.makedirs(OUTROOT, exist_ok=True)
 
 
 # ── Loads ──────────────────────────────────────────────────────────────────
+def radial(name):
+    """Unit vector from the tank axis to the link, aircraft axes (X fwd, Y left, Z up)."""
+    t = onp.radians(float(name.split("_")[1]))
+    return onp.array([0.0, onp.sin(t), onp.cos(t)])
+
+
 def link_frame(name):
-    """Rows: link-local x, y, z in aircraft axes (X fwd, Y left, Z up)."""
-    ez = onp.asarray({"top": (0, 0, -1), "bottom": (0, 0, 1),
-                      "left": (0, -1, 0), "right": (0, 1, 0)}[name.split("_")[1]],
-                     float)
+    """Rows: link-local x, y, z in aircraft axes; local z points inwards."""
+    ez = -radial(name)
     ex = onp.array([1.0, 0.0, 0.0])
     return onp.stack([ex, onp.cross(ez, ex), ez])
 
 
 def factor_loads():
-    """Determinate split of F = -m g n: Z over top/bottom, Y over left/right
-    (axial, /4), X over all 8 (shear, /8)."""
+    """Split of F = -m g n: half per station; in the Y-Z plane the links of a
+    station act as equal axial springs (f_i = e_i . (sum e e^T)^-1 F/2); X is
+    taken in shear by all links equally."""
+    E = onp.stack([radial(n)[1:] for n in LINKS[:len(LINK_ANGLES)]])
+    Minv = onp.linalg.inv(E.T @ E)
     F = onp.zeros((N_LINKS, N_CASES, 3))
     for li, name in enumerate(LINKS):
-        side = name.split("_")[1]
+        e = radial(name)
         R = link_frame(name)
         for k, n in enumerate(CASE_N):
             Fg = -INNER_MASS * G0 * n
-            F[li, k] = R @ onp.array([
-                Fg[0] / 8.0,
-                Fg[1] / 4.0 if side in ("left", "right") else 0.0,
-                Fg[2] / 4.0 if side in ("top", "bottom") else 0.0])
+            f_ax = e[1:] @ Minv @ (Fg[1:] / len(STATIONS))
+            F[li, k] = R @ (onp.array([Fg[0] / N_LINKS, 0.0, 0.0]) + f_ax * e)
     return F
 
 
@@ -186,6 +199,7 @@ cells = onp.asarray(mesh.cells)
 n_nodes, n_cells = pts.shape[0], cells.shape[0]
 centroids = pts[cells].mean(axis=1)
 A_FACE = LX * LY
+MID_NODE = int(onp.argmin(onp.linalg.norm(pts - [0.5 * LX, 0.5 * LY, 0.5 * LZ], axis=1)))
 
 passive_cell = jnp.asarray((centroids[:, 2] <= PASSIVE_THICKNESS + TOL)
                            | (centroids[:, 2] >= LZ - PASSIVE_THICKNESS - TOL))
@@ -231,14 +245,29 @@ def k_fit(c, T):
     return 1e-3 * 10.0 ** sum(ci * lt ** i for i, ci in enumerate(c))
 
 
+def k_mean(c):
+    Ts = onp.linspace(T_COLD, T_HOT, 2001)
+    return float(onp.trapezoid(onp.asarray(k_fit(c, Ts)), Ts) / (T_HOT - T_COLD))
+
+
+K_PAR_MEAN, K_PERP_MEAN = k_mean(K_PAR_FIT), k_mean(K_PERP_FIT)
+
+
+def conductivities(T):
+    """(k_par, k_perp), W/(mm K): k(T), or its 20-293 K mean."""
+    if THERMAL_NONLINEAR:
+        return k_fit(K_PAR_FIT, T), k_fit(K_PERP_FIT, T)
+    return K_PAR_MEAN, K_PERP_MEAN
+
+
 def heat_flux(grad_T, T, rho, a2):
     """q = -w_k(rho) K(T, a2) grad T."""
-    kp, kt = k_fit(K_PAR_FIT, T), k_fit(K_PERP_FIT, T)
+    kp, kt = conductivities(T)
     return -w_k(rho) * (kt * jnp.eye(3) + (kp - kt) * a2) @ grad_T
 
 
 class Conduction(fe.Problem):
-    """Nonlinear: K depends on T, so the element residual is written directly."""
+    """K may depend on T, so the element residual is written directly."""
 
     def get_universal_kernel(self):
         sval = self.fes[0].shape_vals
@@ -327,17 +356,20 @@ bc_th = fe.DirichletBCConfig([
     fe.DirichletBCSpec(loaded_face, "all", T_COLD),
 ]).create_bc(thermal)
 ts_th = fe.TracedStructure.from_problem(thermal)
-# The Newton tangent is non-symmetric (K depends on T): LU, not Cholesky/CG.
+# With k(T) the Newton tangent is non-symmetric: LU, not Cholesky/CG.
 _lu = fe.DirectSolverOptions(solver="cudss",
                              cudss_options=fe.CUDSSOptions(matrix_type="GENERAL"))
 solve_T = fe.create_solver(
-    thermal, bc_th, _lu, adjoint_solver_options=_lu, linear=False,
+    thermal, bc_th, _lu, adjoint_solver_options=_lu,
+    linear=not THERMAL_NONLINEAR,
     traced_structure=ts_th,
     newton_options=fe.NewtonOptions(tol=NEWTON_TOL, rel_tol=NEWTON_RTOL,
-                                    max_iter=NEWTON_MAXITER),
+                                    max_iter=NEWTON_MAXITER,
+                                    verbose=NEWTON_VERBOSE),
     traced_params=fe.TracedParams(volume_vars=(_o,) + ISO))
 guess_T = jnp.asarray(T_HOT + (T_COLD - T_HOT) * pts[:, 2] / LZ)
 heat_flow = create_heat_flow_fn(thermal)
+res_T = fe.create_res_bc_function(thermal, bc_th)
 
 mech = ThermoElastic(mesh, vec=3, dim=3, ele_type="HEX8",
                      location_fns=(loaded_face,))
@@ -392,10 +424,17 @@ def cell_a2(fields):
 
 def solve_states(fields, F, structures):
     ts_th, ts_me, gT, gu = structures
+    tps = [fe.TracedParams(volume_vars=tuple(f[d] for f in fields))
+           for d in range(N_DES)]
     T = jnp.stack([jnp.asarray(getattr(s, "dofs", s)) for s in (
-        solve_T(fe.TracedParams(volume_vars=tuple(f[d] for f in fields)), gT,
-                traced_structure=ts_th) for d in range(N_DES))])
+        solve_T(tp_d, gT, traced_structure=ts_th) for tp_d in tps)])
     Q = jax.vmap(heat_flow)(T, fields[0], cell_a2(fields))
+    # Newton check: ||R(T)|| at the solution, and relative to ||R(guess)||.
+    sg = jax.lax.stop_gradient
+    r = jnp.stack([jnp.linalg.norm(res_T(sg(T[d]), sg(tps[d])))
+                   for d in range(N_DES)])
+    r0 = jnp.stack([jnp.linalg.norm(res_T(gT, sg(tps[d])))
+                    for d in range(N_DES)])
     T_b = jnp.concatenate([jnp.broadcast_to(T_REF_NODES, (N_DES, 3, n_nodes)),
                            T[:, None, :]], axis=1).reshape(N_ME, n_nodes)
     tp = fe.TracedParams(
@@ -404,7 +443,9 @@ def solve_states(fields, F, structures):
     sol_u, info_u = solve_u_batch(tp, gu, ts_me)
     U = sol_u.dofs.reshape(N_DES, N_SUB, -1)
     u = jnp.einsum("ikj,ijn->ikn", F, U[:, :3]) + U[:, 3:4]
-    return Q, T, u, info_u.iterations
+    diag = dict(cg_u=info_u.iterations, res_T=r, rel_T=r / jnp.maximum(r0, 1e-30),
+                T_min=jnp.min(T, axis=1), T_mid=T[:, MID_NODE])
+    return Q, T, u, diag
 
 
 def case_energies(fields, T, u):
@@ -426,7 +467,7 @@ def responses(x, beta, filters, structures, cdata):
     F, U_ref, w, mult, q_allow = cdata
     fields = process(x, beta, filters)
     rho = fields[0]
-    Q, T, u, its = solve_states(fields, F, structures)
+    Q, T, u, diag = solve_states(fields, F, structures)
     U = case_energies(fields, T, u) / U_ref
     mu = jnp.sum(w * U, axis=1)
     sig = jnp.sqrt(jnp.sum(w * (U - mu[:, None]) ** 2, axis=1) + SIGMA_EPS)
@@ -436,7 +477,7 @@ def responses(x, beta, filters, structures, cdata):
                volume=(rho * design_cell).sum(axis=1) / n_design,
                azz=(cell_a2(fields)[..., 2, 2] * rho * design_cell).sum(axis=1)
                / jnp.maximum((rho * design_cell).sum(axis=1), 1e-12),
-               cg_u=its)
+               **diag)
     return J, c, aux
 
 
@@ -477,6 +518,8 @@ CDATA = (jnp.asarray(LOADS_D), jnp.asarray(U_REF), jnp.asarray(WEIGHTS_D),
 
 print(f"{N_LINKS} links -> {N_DES} designs, {n_cells:,} cells each; "
       f"solid link {HEAT_REF_W:.3f} W, budget {Q_ALLOW:g} W")
+print(f"ANISOTROPY {ANISOTROPY}, THERMAL_NONLINEAR {THERMAL_NONLINEAR} "
+      f"(mean k_par {K_PAR_MEAN*1e3:.3f}, k_perp {K_PERP_MEAN*1e3:.3f} W/mK)")
 print("axial / shear force [kN] per case: " + ", ".join(CASE_NAMES))
 for i, name in enumerate(LINKS):
     print(f"  {name:13s} d{DESIGN_OF[i]} "
@@ -494,6 +537,7 @@ opt = GCMMA(value_and_grad, _lower.ravel(), onp.ones(n_total),
 step = jax.jit(opt.step)
 
 hist = collections.defaultdict(list)
+hist_cases = []                    # (iteration, beta, design, case, U~, weight)
 it = 0
 
 
@@ -509,14 +553,26 @@ def record(state, beta):
         row[f"Q{d}"], row[f"mu{d}"], row[f"sigma{d}"] = Q[d], mu[d], sig[d]
         row[f"V{d}"] = float(a["volume"][d])
         row[f"azz{d}"] = float(a["azz"][d])
+        row[f"newton_res{d}"] = float(a["res_T"][d])
+        row[f"T_mid{d}"] = float(a["T_mid"][d])
     for key, val in row.items():
         hist[key].append(float(val))
+    U = onp.asarray(a["U"])
+    for d in range(N_DES):
+        for k in range(N_CASES):
+            hist_cases.append((it, beta, d, k, U[d, k], WEIGHTS_D[d, k]))
     print(f"  it {it:4d} b={beta:4.1f} J={row['objective']:.4f} "
           f"Q8={q8:.3f}/{Q_ALLOW:g} W "
           f"mu=[" + " ".join(f"{m:5.2f}" for m in mu) + "] "
           f"sig=[" + " ".join(f"{s:4.2f}" for s in sig) + "] "
           f"azz=[" + " ".join(f"{z:4.2f}" for z in onp.asarray(a["azz"])) + "] "
           f"cg {int(onp.max(a['cg_u']))}")
+    res, rel = onp.asarray(a["res_T"]), onp.asarray(a["rel_T"])
+    ok = (res <= NEWTON_TOL) | (rel <= NEWTON_RTOL)
+    print(f"           newton |R|=[" + " ".join(f"{v:.1e}" for v in res) + "] "
+          f"rel=[" + " ".join(f"{v:.1e}" for v in rel) + "] "
+          f"{'ok' if ok.all() else 'NOT CONVERGED ' + str(onp.flatnonzero(~ok).tolist())}  "
+          f"T(z=L/2)=[" + " ".join(f"{v:5.1f}" for v in onp.asarray(a['T_mid'])) + "] K")
     return row["objective"], q8 / Q_ALLOW - 1.0
 
 
@@ -563,6 +619,12 @@ with open(os.path.join(OUTROOT, "history.csv"), "w", newline="") as fh:
     wr = csv.writer(fh)
     wr.writerow(list(hist))
     wr.writerows(zip(*hist.values()))
+with open(os.path.join(OUTROOT, "history_cases.csv"), "w", newline="") as fh:
+    wr = csv.writer(fh)
+    wr.writerow(["iteration", "beta", "design", "design_links", "case",
+                 "case_name", "U_norm", "weight"])
+    for it_, b_, d, k, Uk, w in hist_cases:
+        wr.writerow([it_, b_, d, DESIGN_NAMES[d], k, CASE_NAMES[k], Uk, w])
 with open(os.path.join(OUTROOT, "summary.csv"), "w", newline="") as fh:
     wr = csv.writer(fh)
     wr.writerow(["link", "name", "design", "Q_W", "volume", "mu", "sigma",
@@ -578,7 +640,7 @@ _hits = onp.maximum(onp.bincount(cells.ravel(), minlength=n_nodes), 1)
 for d in range(N_DES):
     rho_n = onp.bincount(cells.ravel(), weights=onp.repeat(rho[d], cells.shape[1]),
                          minlength=n_nodes) / _hits
-    save_sol(mesh, os.path.join(OUTROOT, f"design{d}_{LINKS[REP[d]].split('_')[1]}.vtu"),
+    save_sol(mesh, os.path.join(OUTROOT, f"design{d}_{LINKS[REP[d]].split('_')[1]}deg.vtu"),
              point_infos=[("density", rho_n), ("temperature", T[d])]
              + [(f"u_case{k}", u[d, k].reshape(-1, 3) * rho_n[:, None])
                 for k in range(N_CASES)],
@@ -587,4 +649,66 @@ for d in range(N_DES):
                          ("director", onp.asarray(principal_direction(
                              jnp.asarray(a2[d]))) * rho[d][:, None])]
              + [(f"vm_case{k}", vm[d, k] * rho[d]) for k in range(N_CASES)])
+
+# ── Assembly view: the 8 links on a virtual tank (visualisation only) ──────
+VIS_R_INNER = 1000.0               # mm, inner tank radius
+VIS_LENGTH = 4000.0                # mm, cylindrical part
+VIS_STATION = 1200.0               # mm, front / rear station from the centre
+R_OUTER = VIS_R_INNER + LZ         # the links span the vacuum gap
+
+_hex = onp.hstack([onp.full((n_cells, 1), 8), cells]).ravel()
+_local = pts - onp.array([0.5 * LX, 0.5 * LY, 0.0])
+_blocks = []
+for i, name in enumerate(LINKS):
+    d, R = DESIGN_OF[i], link_frame(name)
+    x0 = onp.array([VIS_STATION if name.startswith("front") else -VIS_STATION, 0, 0])
+    g = pv.UnstructuredGrid(_hex, onp.full(n_cells, pv.CellType.HEXAHEDRON),
+                            x0 - R[2] * R_OUTER + _local @ R)
+    g.cell_data["rho"] = rho[d]
+    g.cell_data["link"] = onp.full(n_cells, i)
+    g.cell_data["design"] = onp.full(n_cells, d)
+    g.cell_data["a_axial"] = a2[d, :, 2, 2]
+    g.cell_data["director"] = (onp.asarray(principal_direction(jnp.asarray(a2[d])))
+                               @ R) * rho[d][:, None]
+    g.point_data["temperature"] = T[d]
+    _blocks.append(g)
+links_vis = pv.merge(_blocks, merge_points=False)
+
+
+def _tank(radius):
+    body = pv.Cylinder(center=(0, 0, 0), direction=(1, 0, 0), radius=radius,
+                       height=VIS_LENGTH, resolution=120, capping=False)
+    caps = [pv.Sphere(radius=radius, center=(s * VIS_LENGTH / 2, 0, 0),
+                      direction=(s, 0, 0), end_phi=90, theta_resolution=120)
+            for s in (1, -1)]
+    return body.merge(caps)
+
+
+assembly = pv.MultiBlock({"links": links_vis, "inner_tank": _tank(VIS_R_INNER),
+                          "outer_shell": _tank(R_OUTER)})
+assembly.save(os.path.join(OUTROOT, "assembly.vtm"))
+try:
+    pl = pv.Plotter(off_screen=True, window_size=(1600, 900))
+    pl.add_mesh(assembly["inner_tank"], color="lightsteelblue", smooth_shading=True)
+    pl.add_mesh(assembly["outer_shell"], color="white", opacity=0.12)
+    pl.add_mesh(links_vis.threshold(0.5, scalars="rho"), scalars="temperature",
+                cmap="coolwarm", scalar_bar_args=dict(title="T [K]"))
+    pl.camera_position = "iso"
+    pl.screenshot(os.path.join(OUTROOT, "assembly.png"))
+    pl.close()
+    del pl
+    # Cross-section at the front station, seen along the tank axis.
+    pl = pv.Plotter(off_screen=True, window_size=(1200, 1200))
+    cut = dict(normal=(1, 0, 0), origin=(VIS_STATION, 0, 0))
+    pl.add_mesh(assembly["inner_tank"].clip(**cut), color="lightsteelblue")
+    pl.add_mesh(assembly["outer_shell"].clip(**cut), color="lightgray", opacity=0.4)
+    pl.add_mesh(links_vis.threshold(0.5, scalars="rho"), scalars="temperature",
+                cmap="coolwarm", scalar_bar_args=dict(
+                    title="T [K]", vertical=True, position_x=0.88, position_y=0.3))
+    pl.camera_position = [(VIS_STATION + 4500.0, 0, 0), (VIS_STATION, 0, 0), (0, 0, 1)]
+    pl.screenshot(os.path.join(OUTROOT, "assembly_station.png"))
+    pl.close()
+    del pl
+except Exception as e:                            # no off-screen rendering
+    print(f"(no assembly.png: {e})")
 print(f"wrote {OUTROOT}")
