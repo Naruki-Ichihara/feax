@@ -1,0 +1,1 @@
+var e=`/feax/slides/assets/logo-CH9M50Ph.svg`;export{e as t};
